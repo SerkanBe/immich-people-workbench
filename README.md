@@ -221,3 +221,8 @@ changes that were already synced to Immich.
 ```bash
 python3 -m unittest discover -s tests -p 'test_people_workbench.py' -v
 ```
+
+## License
+
+Copyright (C) 2026 Serkan Bekdemir. People Workbench is licensed under the
+[GNU Affero General Public License v3.0](LICENSE).

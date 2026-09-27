@@ -1,3 +1,5 @@
+// Copyright (C) 2026 Serkan Bekdemir
+// SPDX-License-Identifier: AGPL-3.0-only
 "use strict";
 
 const BROWSER_SETTINGS_KEY = "immichPeopleWorkbench.connection.v1";

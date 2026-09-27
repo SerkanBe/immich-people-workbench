@@ -1,3 +1,5 @@
+# Copyright (C) 2026 Serkan Bekdemir
+# SPDX-License-Identifier: AGPL-3.0-only
 import tempfile
 import unittest
 from pathlib import Path

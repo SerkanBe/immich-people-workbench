@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Serkan Bekdemir
+# SPDX-License-Identifier: AGPL-3.0-only
 """Keyboard-first local people inbox for Immich.
 
 The API key is kept in memory. Names, skips, and pending operations are stored
