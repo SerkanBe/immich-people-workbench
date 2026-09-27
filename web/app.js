@@ -8,6 +8,12 @@ const PAGINATION_SETTINGS_KEY = "immichPeopleWorkbench.pagination.v1";
 const LEGACY_BROWSER_SETTINGS_KEY = "immichPeopleConsole.connection.v1";
 const LEGACY_MERGE_CANVAS_KEY = "immichPeopleConsole.mergeCanvas.v1";
 const LEGACY_PAGINATION_SETTINGS_KEY = "immichPeopleConsole.pagination.v1";
+const VIEW_ROUTES = new Set(["unnamed", "merge", "investigate", "faces", "pending", "named", "ignored"]);
+
+function viewFromPath(path) {
+  const view = path.replace(/^\/|\/$/g, "");
+  return VIEW_ROUTES.has(view) ? view : "unnamed";
+}
 
 function readStoredSetting(key, legacyKey) {
   const current = localStorage.getItem(key);
@@ -78,7 +84,7 @@ const ui = {
 };
 
 const state = {
-  view: "unnamed", summary: null, names: [], sort: "most", duplicateAction: null,
+  view: viewFromPath(window.location.pathname), summary: null, names: [], sort: "most", duplicateAction: null,
   duplicateInput: null, detailItem: null, detailTarget: null, toastTimer: null,
   pageSize: readPageSize(), pages: { unnamed: 1, investigate: 1, pending: 1, named: 1, ignored: 1, facePeople: 1 },
   mergePeople: [], mergeSelected: new Set(), mergeFocusedId: null, mergeHoveredId: null,
@@ -272,11 +278,17 @@ async function waitUntilReady() {
   }
 }
 
-function switchView(view) {
+function switchView(view, pushHistory = true, render = true) {
+  if (!VIEW_ROUTES.has(view)) return;
+  if (pushHistory && window.location.pathname !== `/${view}`) window.history.pushState(null, "", `/${view}`);
   state.view = view;
-  document.querySelectorAll(".nav-button").forEach(button => button.classList.toggle("active", button.dataset.view === view));
+  document.querySelectorAll(".nav-button").forEach(button => {
+    const active = button.dataset.view === view;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
+  });
   document.querySelectorAll(".view").forEach(section => section.classList.toggle("active", section.id === `${view}-view`));
-  renderCurrentView(true).catch(error => showToast(error.message));
+  if (render) renderCurrentView(true).catch(error => showToast(error.message));
 }
 
 async function renderCurrentView(focusFirst = false, refresh = true) {
@@ -1923,7 +1935,11 @@ async function renderIgnored() {
 }
 
 document.querySelector("#page-size-select").value = String(state.pageSize);
-document.querySelectorAll(".nav-button").forEach(button => button.addEventListener("click", () => switchView(button.dataset.view)));
+document.querySelectorAll(".nav-button").forEach(button => button.addEventListener("click", event => {
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault(); switchView(button.dataset.view);
+}));
+window.addEventListener("popstate", () => switchView(viewFromPath(window.location.pathname), false));
 document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => switchView(button.dataset.go)));
 document.querySelector("#connect-button").addEventListener("click", () => ui.connect.showModal());
 document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
@@ -2038,6 +2054,7 @@ document.querySelector("#detail-save").addEventListener("click", async () => {
 document.querySelector("#return-button").addEventListener("click", async () => { if (!state.detailItem) return; await api("/api/pending/return", { method: "POST", body: { personId: state.detailItem.personId } }); ui.detail.close(); await renderPending(); await refreshSummary(); });
 
 initializeMergeCanvas();
+switchView(state.view, false, false);
 const savedConnection = readBrowserSettings();
 fillConnectionForm(savedConnection);
 document.querySelector("#forget-settings").disabled = !savedConnection;

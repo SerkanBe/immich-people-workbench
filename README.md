@@ -48,6 +48,10 @@ The Merge Workbench intentionally remains unpaginated: it is one persistent
 spatial canvas, so hiding most cards behind pages would break saved positions,
 buckets, groups, and similarity-map context.
 
+Each section has its own URL, such as `/merge` or `/faces`. Reloading the page
+keeps the current section open, and browser Back and Forward navigate between
+sections.
+
 ## Merge Workbench
 
 The Merge page shows every currently available unnamed Immich cluster on a

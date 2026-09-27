@@ -1,13 +1,17 @@
 # Copyright (C) 2026 Serkan Bekdemir
 # SPDX-License-Identifier: AGPL-3.0-only
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from people_workbench import AppState, Store, name_fragment_matches, paginate, sort_people
+from people_workbench import AppState, Handler, Store, name_fragment_matches, paginate, sort_people
 
 
 class FakeImmich:
@@ -70,6 +74,28 @@ class FakeImmich:
 
 
 class PeopleWorkbenchTests(unittest.TestCase):
+    def test_section_routes_serve_the_app_shell(self):
+        class QuietHandler(Handler):
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = f"http://127.0.0.1:{server.server_port}"
+            for route in ("/", "/unnamed", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"):
+                with self.subTest(route=route), urllib.request.urlopen(base + route) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertIn(b'nav aria-label="People sections"', response.read())
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(base + "/not-a-section")
+            self.assertEqual(error.exception.code, 404)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
     def test_name_matching_is_case_insensitive_fragment(self):
         self.assertTrue(name_fragment_matches("Lorem Ipsum", "OREM"))
         self.assertFalse(name_fragment_matches("Lorem Ipsum", "amet"))

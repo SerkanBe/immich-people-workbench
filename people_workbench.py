@@ -35,6 +35,7 @@ DEFAULT_STATE_DIR = ROOT / ".people-workbench"
 MAX_BODY = 1_000_000
 MAX_IMAGE = 20_000_000
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{20,50}$")
+PAGE_ROUTES = frozenset({"/unnamed", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"})
 
 
 class ToolError(RuntimeError):
@@ -1097,7 +1098,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
         try:
-            if path == "/":
+            if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                 self.static("index.html")
             elif path in {"/app.js", "/styles.css"}:
                 self.static(path[1:])
