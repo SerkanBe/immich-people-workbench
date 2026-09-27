@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Keyboard-first local people inbox for Immich.
 
-The API key is kept in memory. Names, skips, and pending operations are stored
+The Immich session token is kept in memory. Names, skips, and pending operations are stored
 locally in SQLite so an unfinished review survives restarts. Immich is only
 changed by an explicit sync from the review screen.
 """
@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import http.cookies
 import json
 import mimetypes
 import os
@@ -21,6 +22,7 @@ import secrets
 import sqlite3
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,6 +38,9 @@ MAX_BODY = 1_000_000
 MAX_IMAGE = 20_000_000
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{20,50}$")
 PAGE_ROUTES = frozenset({"/unnamed", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"})
+SESSION_SECONDS = 8 * 60 * 60
+ADMIN_CHECK_SECONDS = 60
+SESSION_COOKIE = "people_workbench_session"
 
 
 class ToolError(RuntimeError):
@@ -90,19 +95,23 @@ def paginate(rows: Iterable[dict[str, Any]], page: int, size: int, key: str) -> 
 
 
 class Immich:
-    def __init__(self, url: str, api_key: str, insecure: bool = False):
+    def __init__(self, url: str, credential: str = "", insecure: bool = False, *, session: bool = False):
         base = url.strip().rstrip("/")
-        if not urllib.parse.urlparse(base).scheme:
+        parsed = urllib.parse.urlparse(base)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
             raise ToolError("Immich URL must start with http:// or https://")
-        if not api_key.strip():
-            raise ToolError("API key is required")
+        if not credential.strip() and session:
+            raise ToolError("Immich session token is required")
         self.base = base if base.endswith("/api") else base + "/api"
-        self.api_key = api_key.strip()
+        self.credential = credential.strip()
+        self.session = session
         self.context = ssl._create_unverified_context() if insecure else None
 
     def request(self, method: str, path: str, payload: Any = None) -> tuple[bytes, str]:
         data = json.dumps(payload).encode() if payload is not None else None
-        headers = {"x-api-key": self.api_key, "Accept": "application/json"}
+        headers = {"Accept": "application/json"}
+        if self.credential:
+            headers["x-immich-user-token" if self.session else "x-api-key"] = self.credential
         if data is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
@@ -134,6 +143,21 @@ class Immich:
             if all(isinstance(value, int) for value in values):
                 return ".".join(str(value) for value in values)
         return "unknown"
+
+    def login(self, email: str, password: str) -> tuple[str, str]:
+        data = self.json("POST", "/auth/login", {"email": email, "password": password})
+        if not isinstance(data, dict) or data.get("isAdmin") is not True:
+            raise ToolError("Only Immich admins can sign in to People Workbench")
+        token, user_id = data.get("accessToken"), data.get("userId")
+        if not isinstance(token, str) or not token or not isinstance(user_id, str) or not user_id:
+            raise ToolError("Immich did not return a valid admin session")
+        return token, user_id
+
+    def current_admin(self) -> str:
+        data = self.json("GET", "/users/me")
+        if not isinstance(data, dict) or data.get("isAdmin") is not True or not isinstance(data.get("id"), str):
+            raise ToolError("Immich admin access is no longer available")
+        return data["id"]
 
     def all_people(self) -> list[dict[str, Any]]:
         people: list[dict[str, Any]] = []
@@ -492,10 +516,28 @@ class AppState:
         self.sample_cache: dict[str, list[dict[str, Any]]] = {}
         self.similarity_cache: dict[int, tuple[tuple[str, ...], dict[str, Any]]] = {}
 
+    def disconnect(self) -> None:
+        with self.lock:
+            self.client = None
+            self.version = ""
+            self.people = {}
+            self.sample_cache = {}
+            self.similarity_cache = {}
+            self.phase = "idle"
+            self.message = "Sign in to Immich"
+            self.progress = {"current": 0, "total": None}
+
     def set_status(self, phase: str, message: str, current: int = 0, total: int | None = None) -> None:
         with self.lock:
             self.phase, self.message = phase, message
             self.progress = {"current": current, "total": total}
+
+    def set_status_for_client(self, client: Immich, phase: str, message: str, current: int = 0, total: int | None = None) -> bool:
+        with self.lock:
+            if client is not self.client:
+                return False
+            self.set_status(phase, message, current, total)
+            return True
 
     def require_client(self) -> Immich:
         with self.lock:
@@ -503,21 +545,23 @@ class AppState:
                 raise ToolError("Connect to Immich first")
             return self.client
 
-    def connect(self, url: str, key: str, insecure: bool) -> str:
-        client = Immich(url, key, insecure)
+    def connect(self, client: Immich) -> str:
         version = client.version()
         with self.lock:
             self.client, self.version = client, version
-            self.people, self.sample_cache = {}, {}
+            self.people, self.sample_cache, self.similarity_cache = {}, {}, {}
         self.set_status("connected", f"Connected to Immich {version}")
         return version
 
     def load(self) -> None:
+        client: Immich | None = None
         try:
             client = self.require_client()
-            self.set_status("loading", "Loading people from Immich")
+            if not self.set_status_for_client(client, "loading", "Loading people from Immich"):
+                return
             people = client.all_people()
-            self.set_status("statistics", "Loading person photo counts", 0, len(people))
+            if not self.set_status_for_client(client, "statistics", "Loading person photo counts", 0, len(people)):
+                return
             counts: dict[str, int | None] = {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
                 futures = {pool.submit(client.statistics, person["id"]): person["id"] for person in people}
@@ -526,7 +570,8 @@ class AppState:
                         counts[futures[future]] = future.result()
                     except Exception:
                         counts[futures[future]] = None
-                    self.set_status("statistics", "Loading person photo counts", index, len(people))
+                    if not self.set_status_for_client(client, "statistics", "Loading person photo counts", index, len(people)):
+                        return
             mapped = {}
             for person in people:
                 item = dict(person)
@@ -534,11 +579,14 @@ class AppState:
                 item["assetCount"] = counts.get(item["id"])
                 mapped[item["id"]] = item
             with self.lock:
+                if client is not self.client:
+                    return
                 self.people = mapped
                 self.similarity_cache = {}
-            self.set_status("ready", f"Loaded {len(mapped)} people", len(mapped), len(mapped))
+                self.set_status_for_client(client, "ready", f"Loaded {len(mapped)} people", len(mapped), len(mapped))
         except Exception as exc:
-            self.set_status("error", str(exc))
+            if client is not None:
+                self.set_status_for_client(client, "error", str(exc))
 
     def summary(self) -> dict[str, Any]:
         with self.lock:
@@ -1026,7 +1074,71 @@ class AppState:
         return {"results": results, "failed": sum(item["result"] == "failed" for item in results), "report": str(report)}
 
 
+class AdminSession:
+    """One active admin per local state database."""
+
+    def __init__(self, state: AppState):
+        self.state = state
+        self.lock = threading.RLock()
+        self.cookie = ""
+        self.user_id = ""
+        self.expires = 0.0
+        self.checked = 0.0
+
+    def login(self, url: str, email: str, password: str, insecure: bool) -> tuple[str, str]:
+        if not email.strip() or not password:
+            raise ToolError("Immich email and password are required")
+        anonymous = Immich(url, insecure=insecure)
+        token, user_id = anonymous.login(email.strip(), password)
+        client = Immich(url, token, insecure, session=True)
+        if client.current_admin() != user_id:
+            raise ToolError("Immich account verification failed")
+        with self.lock:
+            owner = json.dumps({"url": client.base, "userId": user_id}, sort_keys=True)
+            bound_owner = self.state.store.setting("owner")
+            if bound_owner and bound_owner != owner:
+                raise ToolError("This local state belongs to a different Immich admin or server. Use a separate --state-dir.")
+            version = self.state.connect(client)
+            if not bound_owner:
+                self.state.store.set_setting("owner", owner)
+            self.cookie = secrets.token_urlsafe(32)
+            self.user_id = user_id
+            self.expires = time.monotonic() + SESSION_SECONDS
+            self.checked = time.monotonic()
+            return version, self.cookie
+
+    def authorized(self, cookie: str) -> bool:
+        with self.lock:
+            if not cookie or not self.cookie or not secrets.compare_digest(cookie, self.cookie):
+                return False
+            if time.monotonic() >= self.expires:
+                self._clear()
+                return False
+            if time.monotonic() - self.checked >= ADMIN_CHECK_SECONDS:
+                try:
+                    if self.state.require_client().current_admin() != self.user_id:
+                        raise ToolError("Immich admin account changed")
+                except Exception:
+                    self._clear()
+                    return False
+                self.checked = time.monotonic()
+            return True
+
+    def logout(self, cookie: str) -> None:
+        with self.lock:
+            if cookie and self.cookie and secrets.compare_digest(cookie, self.cookie):
+                self._clear()
+
+    def _clear(self) -> None:
+        self.cookie = ""
+        self.user_id = ""
+        self.expires = 0.0
+        self.checked = 0.0
+        self.state.disconnect()
+
+
 STATE: AppState
+AUTH: AdminSession
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1040,13 +1152,38 @@ class Handler(BaseHTTPRequestHandler):
     def allowed(self) -> bool:
         return self.headers.get("Host", "").split(":", 1)[0].strip("[]").lower() in {"127.0.0.1", "localhost", "::1"}
 
-    def send_json(self, value: Any, status: int = 200) -> None:
+    def session_cookie(self) -> str:
+        try:
+            cookies = http.cookies.SimpleCookie()
+            cookies.load(self.headers.get("Cookie", ""))
+            item = cookies.get(SESSION_COOKIE)
+            return item.value if item else ""
+        except http.cookies.CookieError:
+            return ""
+
+    def same_origin(self) -> bool:
+        origin = self.headers.get("Origin", "")
+        host = self.headers.get("Host", "")
+        scheme = "https" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else "http"
+        return (origin == f"{scheme}://{host}"
+                and self.headers.get("Sec-Fetch-Site", "same-origin") == "same-origin")
+
+    def redirect(self, location: str) -> None:
+        self.send_response(303)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def send_json(self, value: Any, status: int = 200, cookie: str | None = None) -> None:
         body = json.dumps(value, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if cookie is not None:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
 
@@ -1078,6 +1215,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", kind + ("; charset=utf-8" if kind.startswith("text/") else ""))
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
@@ -1098,9 +1236,24 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
         try:
+            if path == "/login":
+                if AUTH.authorized(self.session_cookie()):
+                    self.redirect("/")
+                else:
+                    self.static("login.html")
+                return
+            if path in {"/styles.css", "/login.js"}:
+                self.static(path[1:])
+                return
+            if not AUTH.authorized(self.session_cookie()):
+                if path == "/" or path.rstrip("/") in PAGE_ROUTES:
+                    self.redirect("/login?next=" + urllib.parse.quote(path, safe="/"))
+                else:
+                    self.send_json({"error": "Sign in required"}, 401)
+                return
             if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                 self.static("index.html")
-            elif path in {"/app.js", "/merge.js", "/face-review.js", "/naming.js", "/investigate.js", "/pending.js", "/connection.js", "/browser-storage.js", "/styles.css"}:
+            elif path in {"/app.js", "/merge.js", "/face-review.js", "/naming.js", "/investigate.js", "/pending.js", "/browser-storage.js"}:
                 self.static(path[1:])
             elif path == "/api/state":
                 self.send_json(STATE.summary())
@@ -1184,12 +1337,28 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(403)
             return
         path = urllib.parse.urlparse(self.path).path
+        if not self.same_origin():
+            self.send_json({"error": "Invalid request origin"}, 403)
+            return
+        if path != "/api/login" and not AUTH.authorized(self.session_cookie()):
+            self.send_json({"error": "Sign in required"}, 401)
+            return
         try:
             payload = self.body()
-            if path == "/api/connect":
-                version = STATE.connect(str(payload.get("url", "")), str(payload.get("apiKey", "")), bool(payload.get("insecureTls")))
+            if path == "/api/login":
+                try:
+                    version, session_cookie = AUTH.login(str(payload.get("url", "")), str(payload.get("email", "")), str(payload.get("password", "")), bool(payload.get("insecureTls")))
+                except Exception as exc:
+                    message = str(exc) if str(exc).startswith(("Only Immich admins", "This local state", "Immich email")) else "Immich login failed"
+                    self.send_json({"error": message}, 403)
+                    return
                 threading.Thread(target=STATE.load, daemon=True).start()
-                self.send_json({"ok": True, "version": version}, 202)
+                secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else ""
+                cookie = f"{SESSION_COOKIE}={session_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}{secure}"
+                self.send_json({"ok": True, "version": version}, 200, cookie)
+            elif path == "/api/logout":
+                AUTH.logout(self.session_cookie())
+                self.send_json({"ok": True}, cookie=f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
             elif path == "/api/reload":
                 STATE.set_status("loading", "Reloading people from Immich")
                 threading.Thread(target=STATE.load, daemon=True).start()
@@ -1267,7 +1436,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    global STATE
+    global STATE, AUTH
     parser = argparse.ArgumentParser(description="Keyboard-first local Immich People Workbench")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
@@ -1278,11 +1447,12 @@ def main() -> int:
         parser.error("host must be localhost")
     state_dir = args.state_dir.expanduser().resolve()
     STATE = AppState(Store(state_dir / "state.sqlite3"), state_dir / "reports")
+    AUTH = AdminSession(STATE)
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://127.0.0.1:{server.server_port}/"
     print(f"Immich People Workbench: {url}")
     print(f"Local queue: {state_dir}")
-    print("The API key remains in memory and is never written to disk.")
+    print("Immich login tokens remain in memory and are never written to disk.")
     if not args.no_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:

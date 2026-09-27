@@ -18,6 +18,11 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; color: var(--text); background: var(--bg); }
+.login-page { display: grid; place-items: center; padding: 24px; }
+.login-card { width: min(440px, 100%); padding: 28px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 12px 40px rgba(0,0,0,.12); }
+.login-card h1 { margin: 0 0 8px; font-size: 1.5rem; }
+.login-card > p { margin: 0; color: var(--muted); line-height: 1.5; }
+.login-card .dialog-form { padding: 20px 0 0; }
 button, input, select { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }

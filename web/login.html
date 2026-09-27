@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- Copyright (C) 2026 Serkan Bekdemir
+     SPDX-License-Identifier: AGPL-3.0-only -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · People Workbench</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/login.js"></script>
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <h1>People Workbench</h1>
+    <p>Sign in with an Immich admin account. Workbench forwards your password to Immich and does not save it.</p>
+    <form id="login-form" class="dialog-form">
+      <label>Immich URL <input id="immich-url" type="url" value="http://localhost:2283" required autocomplete="url"></label>
+      <label>Email <input id="immich-email" type="email" required autocomplete="username"></label>
+      <label>Password <input id="immich-password" type="password" required autocomplete="current-password"></label>
+      <label class="check-row"><input id="insecure-tls" type="checkbox"> Allow an untrusted HTTPS certificate</label>
+      <p id="login-error" class="error-text" role="alert" hidden></p>
+      <button id="login-button" class="primary-button" type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>

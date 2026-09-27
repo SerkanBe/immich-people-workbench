@@ -2,16 +2,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
+import json
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import sys
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from people_workbench import AppState, Handler, Store, name_fragment_matches, paginate, sort_people
+import people_workbench as workbench
+from people_workbench import AdminSession, AppState, Handler, Immich, Store, ToolError, name_fragment_matches, paginate, sort_people
 
 
 class FakeImmich:
@@ -79,43 +83,176 @@ class PeopleWorkbenchTests(unittest.TestCase):
             def log_message(self, *_args):
                 pass
 
-        server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            base = f"http://127.0.0.1:{server.server_port}"
-            for route in ("/", "/unnamed", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"):
-                with self.subTest(route=route), urllib.request.urlopen(base + route) as response:
-                    self.assertEqual(response.status, 200)
-                    self.assertIn(b'nav aria-label="People sections"', response.read())
-            with urllib.request.urlopen(base + "/merge.js") as response:
+        with tempfile.TemporaryDirectory() as directory:
+            state = AppState(Store(Path(directory) / "state.sqlite3"), Path(directory) / "reports")
+            auth = AdminSession(state)
+            auth.cookie = "synthetic-session"
+            auth.expires = time.monotonic() + 1000
+            auth.checked = time.monotonic()
+            with mock.patch.object(workbench, "STATE", state, create=True), mock.patch.object(workbench, "AUTH", auth, create=True):
+                server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    self._check_section_routes(server.server_port)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join()
+
+    def _check_section_routes(self, port):
+        base = f"http://127.0.0.1:{port}"
+        opener = urllib.request.build_opener()
+        opener.addheaders = [("Cookie", "people_workbench_session=synthetic-session")]
+        for route in ("/", "/unnamed", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"):
+            with self.subTest(route=route), opener.open(base + route) as response:
                 self.assertEqual(response.status, 200)
-                self.assertIn(b"export function createMergeWorkbench", response.read())
-            with urllib.request.urlopen(base + "/face-review.js") as response:
+                self.assertIn(b'nav aria-label="People sections"', response.read())
+        for path, signature in (
+            ("/merge.js", b"export function createMergeWorkbench"),
+            ("/face-review.js", b"export function createFaceReview"),
+            ("/naming.js", b"export function createNaming"),
+            ("/investigate.js", b"export function createInvestigate"),
+            ("/pending.js", b"export function createPending"),
+            ("/browser-storage.js", b"export function readMergeCanvasState"),
+        ):
+            with self.subTest(path=path), opener.open(base + path) as response:
                 self.assertEqual(response.status, 200)
-                self.assertIn(b"export function createFaceReview", response.read())
-            with urllib.request.urlopen(base + "/naming.js") as response:
-                self.assertEqual(response.status, 200)
-                self.assertIn(b"export function createNaming", response.read())
-            with urllib.request.urlopen(base + "/investigate.js") as response:
-                self.assertEqual(response.status, 200)
-                self.assertIn(b"export function createInvestigate", response.read())
-            with urllib.request.urlopen(base + "/pending.js") as response:
-                self.assertEqual(response.status, 200)
-                self.assertIn(b"export function createPending", response.read())
-            with urllib.request.urlopen(base + "/connection.js") as response:
-                self.assertEqual(response.status, 200)
-                self.assertIn(b"export function createConnection", response.read())
-            with urllib.request.urlopen(base + "/browser-storage.js") as response:
-                self.assertEqual(response.status, 200)
-                self.assertIn(b"export function readMergeCanvasState", response.read())
-            with self.assertRaises(urllib.error.HTTPError) as error:
-                urllib.request.urlopen(base + "/not-a-section")
-            self.assertEqual(error.exception.code, 404)
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join()
+                self.assertIn(signature, response.read())
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            opener.open(base + "/not-a-section")
+        self.assertEqual(error.exception.code, 404)
+
+    def test_immich_login_requires_admin(self):
+        client = Immich("https://immich.example")
+        with mock.patch.object(client, "json", return_value={"isAdmin": False, "accessToken": "synthetic-token", "userId": "user-1"}):
+            with self.assertRaisesRegex(ToolError, "Only Immich admins"):
+                client.login("admin@example.test", "synthetic-password")
+        with mock.patch.object(client, "json", return_value={"isAdmin": "true", "accessToken": "synthetic-token", "userId": "user-1"}):
+            with self.assertRaisesRegex(ToolError, "Only Immich admins"):
+                client.login("admin@example.test", "synthetic-password")
+        with mock.patch.object(client, "json", return_value={"isAdmin": True, "accessToken": "synthetic-token", "userId": "user-1"}):
+            self.assertEqual(client.login("admin@example.test", "synthetic-password"), ("synthetic-token", "user-1"))
+
+    def test_immich_session_token_is_sent_as_user_token(self):
+        class FakeResponse:
+            headers = mock.Mock()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                pass
+
+            def read(self, _limit):
+                return b'{}'
+
+        FakeResponse.headers.get_content_type.return_value = "application/json"
+        client = Immich("https://immich.example", "synthetic-token", session=True)
+        with mock.patch.object(workbench.urllib.request, "urlopen", return_value=FakeResponse()) as opened:
+            client.request("GET", "/users/me")
+        request = opened.call_args.args[0]
+        self.assertEqual(request.get_header("X-immich-user-token"), "synthetic-token")
+        self.assertIsNone(request.get_header("X-api-key"))
+
+    def test_http_login_guards_pages_api_media_and_logout(self):
+        class QuietHandler(Handler):
+            def log_message(self, *_args):
+                pass
+
+        class FakeLoginImmich:
+            admin = True
+
+            def __init__(self, url, credential="", insecure=False, *, session=False):
+                self.base = url.rstrip("/") + "/api"
+                self.session = session
+
+            def login(self, email, password):
+                if not self.admin:
+                    raise ToolError("Only Immich admins can sign in to People Workbench")
+                return "synthetic-immich-token", "admin-1"
+
+            def current_admin(self):
+                if not self.admin:
+                    raise ToolError("Immich admin access is no longer available")
+                return "admin-1"
+
+            def version(self):
+                return "synthetic"
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = AppState(Store(Path(directory) / "state.sqlite3"), Path(directory) / "reports")
+            auth = AdminSession(state)
+            with mock.patch.object(workbench, "STATE", state, create=True), mock.patch.object(workbench, "AUTH", auth, create=True), mock.patch.object(workbench, "Immich", FakeLoginImmich), mock.patch.object(state, "load"):
+                server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    base = f"http://127.0.0.1:{server.server_port}"
+
+                    def post(path, data, cookie="", origin=True):
+                        headers = {"Content-Type": "application/json"}
+                        if origin:
+                            headers["Origin"] = base
+                        if cookie:
+                            headers["Cookie"] = cookie
+                        return urllib.request.urlopen(urllib.request.Request(base + path, json.dumps(data).encode(), headers, method="POST"))
+
+                    for path in ("/api/state", "/media/person/11111111-1111-4111-8111-111111111111", "/app.js"):
+                        with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as error:
+                            urllib.request.urlopen(base + path)
+                        self.assertEqual(error.exception.code, 401)
+                    with urllib.request.urlopen(base + "/merge") as response:
+                        self.assertEqual(response.geturl(), base + "/login?next=/merge")
+                        self.assertIn(b"Sign in", response.read())
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        post("/api/sync", {"confirmation": "SYNC"})
+                    self.assertEqual(error.exception.code, 401)
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        post("/api/login", {"url": "https://immich.example", "email": "admin@example.test", "password": "synthetic"}, origin=False)
+                    self.assertEqual(error.exception.code, 403)
+
+                    FakeLoginImmich.admin = False
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        post("/api/login", {"url": "https://immich.example", "email": "other@example.test", "password": "synthetic"})
+                    self.assertEqual(error.exception.code, 403)
+                    self.assertFalse(auth.cookie)
+
+                    FakeLoginImmich.admin = True
+                    with post("/api/login", {"url": "https://immich.example", "email": "admin@example.test", "password": "synthetic"}) as response:
+                        self.assertEqual(response.status, 200)
+                        cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+                        self.assertIn("HttpOnly", response.headers["Set-Cookie"])
+                        self.assertIn("SameSite=Strict", response.headers["Set-Cookie"])
+                    with urllib.request.urlopen(urllib.request.Request(base + "/merge", headers={"Cookie": cookie})) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertIn(b'nav aria-label="People sections"', response.read())
+                    with urllib.request.urlopen(urllib.request.Request(base + "/api/state", headers={"Cookie": cookie})) as response:
+                        self.assertEqual(response.status, 200)
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        post("/api/login", {"url": "https://other.example", "email": "admin@example.test", "password": "synthetic"})
+                    self.assertEqual(error.exception.code, 403)
+                    with urllib.request.urlopen(urllib.request.Request(base + "/api/state", headers={"Cookie": cookie})) as response:
+                        self.assertEqual(response.status, 200)
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        post("/api/sync", {"confirmation": "SYNC"}, cookie, origin=False)
+                    self.assertEqual(error.exception.code, 403)
+                    with post("/api/logout", {}, cookie) as response:
+                        self.assertEqual(response.status, 200)
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        urllib.request.urlopen(urllib.request.Request(base + "/api/state", headers={"Cookie": cookie}))
+                    self.assertEqual(error.exception.code, 401)
+                    with post("/api/login", {"url": "https://immich.example", "email": "admin@example.test", "password": "synthetic"}) as response:
+                        cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+                    auth.checked = time.monotonic() - workbench.ADMIN_CHECK_SECONDS - 1
+                    FakeLoginImmich.admin = False
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        urllib.request.urlopen(urllib.request.Request(base + "/api/state", headers={"Cookie": cookie}))
+                    self.assertEqual(error.exception.code, 401)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join()
 
     def test_name_matching_is_case_insensitive_fragment(self):
         self.assertTrue(name_fragment_matches("Lorem Ipsum", "OREM"))

@@ -33,7 +33,7 @@
         </select>
       </label>
       <button id="reload-button" class="quiet-button" hidden>Reload</button>
-      <button id="connect-button" class="primary-button">Connect</button>
+      <button id="logout-button" class="quiet-button">Log out</button>
     </div>
   </header>
 
@@ -192,18 +192,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-
-  <dialog id="connect-dialog">
-    <form id="connect-form" method="dialog" class="dialog-form">
-      <h2>Connection settings</h2>
-      <label>Immich URL <input id="immich-url" type="url" value="http://localhost:2283" required></label>
-      <label>API key <input id="immich-key" type="password" required autocomplete="off"></label>
-      <label class="check-row"><input id="insecure-tls" type="checkbox"> Allow an untrusted HTTPS certificate</label>
-      <label class="check-row"><input id="remember-connection" type="checkbox" checked> Save these settings in this browser and reconnect automatically</label>
-      <p class="privacy-note">When enabled, the API key is stored persistently and unencrypted in this browser profile for <code>127.0.0.1:8766</code>. Use this only in a trusted browser profile.</p>
-      <div class="dialog-actions settings-actions"><button id="forget-settings" type="button" class="danger-button">Forget saved settings</button><span></span><button type="button" class="quiet-button" data-close>Cancel</button><button class="primary-button" value="default">Save and connect</button></div>
-    </form>
-  </dialog>
 
   <dialog id="duplicate-dialog">
     <div class="dialog-form">

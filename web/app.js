@@ -5,7 +5,6 @@ import { createFaceReview } from "./face-review.js";
 import { createNaming } from "./naming.js";
 import { createInvestigate } from "./investigate.js";
 import { createPending } from "./pending.js";
-import { createConnection } from "./connection.js";
 import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM, readMergeCanvasState, readPageSize, savePageSize, saveMergeCanvasState } from "./browser-storage.js";
 
 "use strict";
@@ -19,7 +18,7 @@ function viewFromPath(path) {
 }
 
 const ui = {
-  connect: document.querySelector("#connect-dialog"), duplicate: document.querySelector("#duplicate-dialog"),
+  duplicate: document.querySelector("#duplicate-dialog"),
   detail: document.querySelector("#detail-dialog"), toast: document.querySelector("#toast"),
   grid: document.querySelector("#unnamed-grid"), namedGrid: document.querySelector("#named-grid"),
   ignoredGrid: document.querySelector("#ignored-grid"), investigateGrid: document.querySelector("#investigate-grid"), pendingList: document.querySelector("#pending-list"),
@@ -50,6 +49,10 @@ async function api(path, options = {}) {
   }
   const response = await fetch(path, init);
   const data = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+    throw new Error("Sign in required");
+  }
   if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
   return data;
 }
@@ -113,7 +116,6 @@ async function refreshSummary() {
   state.sort = summary.sort || state.sort;
   document.querySelector("#sort-select").value = state.sort;
   document.querySelector("#connection-status").textContent = summary.connected ? `Immich ${summary.version} · local queue enabled` : "Not connected";
-  document.querySelector("#connect-button").textContent = summary.connected ? "Settings" : "Connect";
   document.querySelector("#reload-button").hidden = !summary.connected;
   for (const key of ["unnamed", "investigate", "faces", "pending", "named", "ignored"]) {
     document.querySelector(`#${key}-count`).textContent = summary.counts[key] ?? 0;
@@ -213,8 +215,6 @@ async function renderIgnored() {
   }
 }
 
-const { bindConnectionControls, restoreConnection } = createConnection({ api, showToast, ui, waitUntilReady });
-
 document.querySelector("#page-size-select").value = String(state.pageSize);
 document.querySelectorAll(".nav-button").forEach(button => button.addEventListener("click", event => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -224,6 +224,12 @@ window.addEventListener("popstate", () => switchView(viewFromPath(window.locatio
 document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => switchView(button.dataset.go)));
 document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
 document.querySelector("#reload-button").addEventListener("click", async () => { resetListPages(); await api("/api/reload", { method: "POST", body: {} }); await waitUntilReady(); });
+document.querySelector("#logout-button").addEventListener("click", async () => {
+  try {
+    await api("/api/logout", { method: "POST", body: {} });
+    window.location.assign("/login");
+  } catch (error) { showToast(error.message); }
+});
 document.querySelector("#page-size-select").addEventListener("change", event => {
   state.pageSize = Number(event.target.value) || 24; savePageSize(state.pageSize, showToast); resetListPages(); renderCurrentView(true).catch(error => showToast(error.message));
 });
@@ -236,10 +242,8 @@ bindNamingControls();
 bindFaceReviewControls();
 bindInvestigateControls();
 bindPendingControls();
-bindConnectionControls();
 switchView(state.view, false, false);
 refreshSummary().then(async summary => {
   state.sort = summary.sort || "most";
-  if (summary.connected) { await waitUntilReady(); return; }
-  await restoreConnection();
+  if (summary.connected) await waitUntilReady();
 }).catch(error => showToast(error.message));

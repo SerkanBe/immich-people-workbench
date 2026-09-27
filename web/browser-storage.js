@@ -1,10 +1,8 @@
 // Copyright (C) 2026 Serkan Bekdemir
 // SPDX-License-Identifier: AGPL-3.0-only
 
-const BROWSER_SETTINGS_KEY = "immichPeopleWorkbench.connection.v1";
 const MERGE_CANVAS_KEY = "immichPeopleWorkbench.mergeCanvas.v1";
 const PAGINATION_SETTINGS_KEY = "immichPeopleWorkbench.pagination.v1";
-const LEGACY_BROWSER_SETTINGS_KEY = "immichPeopleConsole.connection.v1";
 const LEGACY_MERGE_CANVAS_KEY = "immichPeopleConsole.mergeCanvas.v1";
 const LEGACY_PAGINATION_SETTINGS_KEY = "immichPeopleConsole.pagination.v1";
 
@@ -73,26 +71,4 @@ export function saveMergeCanvasState(state, showToast) {
     try { localStorage.setItem(MERGE_CANVAS_KEY, JSON.stringify(state.mergeCanvas)); }
     catch { showToast("The browser could not save the canvas layout."); }
   }, 120);
-}
-
-export function readBrowserSettings() {
-  try {
-    const raw = readStoredSetting(BROWSER_SETTINGS_KEY, LEGACY_BROWSER_SETTINGS_KEY);
-    if (!raw) return null;
-    const value = JSON.parse(raw);
-    if (!value || typeof value.url !== "string" || typeof value.apiKey !== "string") return null;
-    return { url: value.url, apiKey: value.apiKey, insecureTls: Boolean(value.insecureTls) };
-  } catch { return null; }
-}
-
-export function saveBrowserSettings(settings) {
-  try { localStorage.setItem(BROWSER_SETTINGS_KEY, JSON.stringify(settings)); return true; }
-  catch { return false; }
-}
-
-export function forgetBrowserSettings() {
-  try {
-    localStorage.removeItem(BROWSER_SETTINGS_KEY);
-    localStorage.removeItem(LEGACY_BROWSER_SETTINGS_KEY);
-  } catch { /* Storage may be disabled. */ }
 }
