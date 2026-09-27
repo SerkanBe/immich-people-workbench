@@ -292,9 +292,9 @@ async function renderCurrentView(focusFirst = false, refresh = true) {
   if (state.view === "ignored") await renderIgnored();
 }
 
-const { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid } = createNaming({ api, assetThumb, cleanName, loadNames, personThumb, refreshSummary, renderInvestigate: (...args) => renderInvestigate(...args), renderPagination, showToast, state, ui });
+const { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid, bindNamingControls } = createNaming({ api, assetThumb, cleanName, loadNames, personThumb, refreshSummary, renderInvestigate: (...args) => renderInvestigate(...args), renderPagination, showToast, state, ui });
 
-const { renderMergeWorkbench, clearMergeGroup, queueMergeGroup, openMergeGroupReview, confirmMergeReviewGroup, skipMergeReviewGroup, finishMergeGroupReview, initializeMergeCanvas } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState, showSlide, showToast, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
+const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState, showSlide, showToast, resetListPages, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
 
 function openAssetPreview(assetId, fileName = "Photo preview") {
   const dialog = document.querySelector("#asset-preview-dialog");
@@ -305,11 +305,11 @@ function openAssetPreview(assetId, fileName = "Photo preview") {
   dialog.showModal();
 }
 
-const { renderInvestigate } = createInvestigate({ api, assetThumb, attachNameBehavior, moveSlide, openAssetPreview, personThumb, refreshSummary, renderPagination, showSlide, showToast, state, ui });
+const { renderInvestigate, bindInvestigateControls } = createInvestigate({ api, assetThumb, attachNameBehavior, moveSlide, openAssetPreview, personThumb, refreshSummary, renderPagination, showSlide, showToast, state, ui });
 
-const { renderFaceReview, currentFaceReviewPerson, applyFaceReviewCapacity, loadFaceReviewPage, loadFaceReviewPeople, queueSelectedFacesForUnnamed } = createFaceReview({ api, assetThumb, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui });
+const { renderFaceReview, bindFaceReviewControls } = createFaceReview({ api, assetThumb, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui });
 
-const { renderPending, updateDetailSuggestions } = createPending({ api, assetThumb, drawFace, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, state, ui });
+const { renderPending, bindPendingControls } = createPending({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui, waitUntilReady });
 
 async function renderIgnored() {
   const data = await api(`/api/people?kind=ignored&sort=${encodeURIComponent(state.sort)}&page=${state.pages.ignored}&size=${state.pageSize}`);
@@ -361,91 +361,14 @@ document.querySelector("#page-size-select").addEventListener("change", event => 
   state.pageSize = Number(event.target.value) || 24; savePageSize(state.pageSize); resetListPages(); renderCurrentView(true).catch(error => showToast(error.message));
 });
 document.querySelector("#sort-select").addEventListener("change", event => { state.sort = event.target.value; resetListPages(); renderCurrentView(true, false).catch(error => showToast(error.message)); });
-document.querySelector("#merge-sort-select").addEventListener("change", event => { state.sort = event.target.value; resetListPages(); document.querySelector("#sort-select").value = state.sort; renderMergeWorkbench(true).catch(error => showToast(error.message)); });
-document.querySelector("#merge-clear").addEventListener("click", clearMergeGroup);
-document.querySelector("#merge-queue").addEventListener("click", () => queueMergeGroup());
-document.querySelector("#merge-review-groups").addEventListener("click", openMergeGroupReview);
-document.querySelector("#group-review-confirm").addEventListener("click", () => confirmMergeReviewGroup());
-document.querySelector("#group-review-skip").addEventListener("click", skipMergeReviewGroup);
-document.querySelector("#group-review-close").addEventListener("click", () => finishMergeGroupReview(true).catch(error => showToast(error.message)));
-document.querySelector("#group-review-dialog").addEventListener("cancel", event => {
-  event.preventDefault(); finishMergeGroupReview(true).catch(error => showToast(error.message));
-});
-document.querySelector("#group-review-dialog").addEventListener("keydown", event => {
-  if (event.repeat || state.mergeReviewBusy) return;
-  if (event.key === "ArrowRight" || event.key === "Enter") { event.preventDefault(); confirmMergeReviewGroup(); }
-  else if (event.key === "ArrowLeft") { event.preventDefault(); skipMergeReviewGroup(); }
-});
-let namedSearchTimer = null, faceSearchTimer = null;
-document.querySelector("#named-search").addEventListener("input", () => {
-  clearTimeout(namedSearchTimer); state.pages.named = 1;
-  namedSearchTimer = setTimeout(() => renderPeopleGrid("named", ui.namedGrid).catch(error => showToast(error.message)), 180);
-});
-document.querySelector("#face-person-search").addEventListener("input", () => {
-  clearTimeout(faceSearchTimer); state.pages.facePeople = 1;
-  faceSearchTimer = setTimeout(() => loadFaceReviewPeople().catch(error => showToast(error.message)), 180);
-});
-document.querySelector("#face-review-queue").addEventListener("click", () => queueSelectedFacesForUnnamed());
-window.addEventListener("resize", () => {
-  clearTimeout(state.faceReviewResizeTimer);
-  state.faceReviewResizeTimer = setTimeout(() => {
-    if (state.view !== "faces" || !currentFaceReviewPerson()) return;
-    const oldSize = state.faceReviewPageSize, firstIndex = (state.faceReviewPage - 1) * oldSize;
-    if (!applyFaceReviewCapacity()) return;
-    state.faceReviewPage = Math.floor(firstIndex / state.faceReviewPageSize) + 1;
-    loadFaceReviewPage(state.faceReviewPage).catch(error => showToast(error.message));
-  }, 180);
-});
 document.querySelector("#asset-preview-dialog").addEventListener("close", () => document.querySelector("#asset-preview-image").removeAttribute("src"));
-document.querySelector("#sync-button").addEventListener("click", async () => {
-  if (!confirm("Sync every checked pending change to Immich now?")) return;
-  try { const result = await api("/api/sync", { method: "POST", body: { confirmation: "SYNC" } }); showToast(`Sync finished: ${result.results.length - result.failed} succeeded, ${result.failed} failed`); await loadNames(); await refreshSummary(); await renderPending(); } catch (error) { showToast(error.message); }
-});
-document.querySelector("#reset-button").addEventListener("click", async () => {
-  const count = state.summary?.counts?.pending || 0;
-  if (!count) return;
-  if (!confirm(`Discard all ${count} unsynced local changes and reload the current names from Immich?\n\nAlready synced Immich changes are not affected.`)) return;
-  const button = document.querySelector("#reset-button"); button.disabled = true;
-  try {
-    const result = await api("/api/reset", { method: "POST", body: { confirmation: "DISCARD" } });
-    state.names = [];
-    showToast(`Discarded ${result.discarded} local changes. Reloading from Immich…`);
-    await waitUntilReady();
-  } catch (error) {
-    showToast(error.message);
-  } finally {
-    button.disabled = !(state.summary?.counts?.pending > 0);
-  }
-});
-document.querySelector("#investigate-return-all").addEventListener("click", async () => {
-  const count = state.summary?.counts?.investigate || 0;
-  if (!count) return;
-  if (!confirm(`Return all ${count} Investigate clusters to Unnamed?\n\nThis only changes the local queue; Immich is not modified.`)) return;
-  const button = document.querySelector("#investigate-return-all"); button.disabled = true;
-  try {
-    const result = await api("/api/investigate/clear", { method: "POST", body: { confirmation: "RETURN_ALL" } });
-    showToast(`Returned ${result.returned} clusters to Unnamed`);
-    await renderInvestigate();
-    await refreshSummary();
-  } catch (error) {
-    showToast(error.message);
-  } finally {
-    button.disabled = !(state.summary?.counts?.investigate > 0);
-  }
-});
-document.querySelector("#duplicate-confirm").addEventListener("click", async () => { ui.duplicate.close(); try { await state.duplicateAction?.(); } catch (error) { showToast(error.message); } finally { state.duplicateAction = null; } });
-document.querySelector("#duplicate-cancel").addEventListener("click", () => { ui.duplicate.close(); requestAnimationFrame(() => state.duplicateInput?.focus()); });
-ui.duplicate.addEventListener("cancel", event => { event.preventDefault(); ui.duplicate.close(); requestAnimationFrame(() => state.duplicateInput?.focus()); });
-ui.duplicate.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); document.querySelector("#duplicate-confirm").click(); } });
-document.querySelector("#detail-name").addEventListener("input", updateDetailSuggestions);
-document.querySelector("#detail-save").addEventListener("click", async () => {
-  const item = state.detailItem, name = cleanName(document.querySelector("#detail-name").value); if (!item || !name) return;
-  const body = state.detailTarget ? { personId: item.personId, operation: "merge", name: state.detailTarget.name, targetPersonId: state.detailTarget.id, targetName: state.detailTarget.name, featureAssetId: item.featureAssetId } : { personId: item.personId, operation: "rename", name, featureAssetId: item.featureAssetId };
-  try { await api("/api/queue", { method: "POST", body }); ui.detail.close(); await renderPending(); } catch (error) { showToast(error.message); }
-});
-document.querySelector("#return-button").addEventListener("click", async () => { if (!state.detailItem) return; await api("/api/pending/return", { method: "POST", body: { personId: state.detailItem.personId } }); ui.detail.close(); await renderPending(); await refreshSummary(); });
 
 initializeMergeCanvas();
+bindMergeControls();
+bindNamingControls();
+bindFaceReviewControls();
+bindInvestigateControls();
+bindPendingControls();
 switchView(state.view, false, false);
 const savedConnection = readBrowserSettings();
 fillConnectionForm(savedConnection);

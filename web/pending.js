@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Serkan Bekdemir
 // SPDX-License-Identifier: AGPL-3.0-only
 
-export function createPending({ api, assetThumb, drawFace, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, state, ui }) {
+export function createPending({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui, waitUntilReady }) {
   async function renderSampleStrip(container, personId, limit = 4) {
     container.replaceChildren();
     try {
@@ -89,5 +89,35 @@ export function createPending({ api, assetThumb, drawFace, matchingNames, openAs
     list.classList.toggle("open", matches.length > 0);
   }
 
-  return { renderPending, updateDetailSuggestions };
+  function bindPendingControls() {
+    document.querySelector("#sync-button").addEventListener("click", async () => {
+      if (!confirm("Sync every checked pending change to Immich now?")) return;
+      try { const result = await api("/api/sync", { method: "POST", body: { confirmation: "SYNC" } }); showToast(`Sync finished: ${result.results.length - result.failed} succeeded, ${result.failed} failed`); await loadNames(); await refreshSummary(); await renderPending(); } catch (error) { showToast(error.message); }
+    });
+    document.querySelector("#reset-button").addEventListener("click", async () => {
+      const count = state.summary?.counts?.pending || 0;
+      if (!count) return;
+      if (!confirm(`Discard all ${count} unsynced local changes and reload the current names from Immich?\n\nAlready synced Immich changes are not affected.`)) return;
+      const button = document.querySelector("#reset-button"); button.disabled = true;
+      try {
+        const result = await api("/api/reset", { method: "POST", body: { confirmation: "DISCARD" } });
+        state.names = [];
+        showToast(`Discarded ${result.discarded} local changes. Reloading from Immich…`);
+        await waitUntilReady();
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        button.disabled = !(state.summary?.counts?.pending > 0);
+      }
+    });
+    document.querySelector("#detail-name").addEventListener("input", updateDetailSuggestions);
+    document.querySelector("#detail-save").addEventListener("click", async () => {
+      const item = state.detailItem, name = cleanName(document.querySelector("#detail-name").value); if (!item || !name) return;
+      const body = state.detailTarget ? { personId: item.personId, operation: "merge", name: state.detailTarget.name, targetPersonId: state.detailTarget.id, targetName: state.detailTarget.name, featureAssetId: item.featureAssetId } : { personId: item.personId, operation: "rename", name, featureAssetId: item.featureAssetId };
+      try { await api("/api/queue", { method: "POST", body }); ui.detail.close(); await renderPending(); } catch (error) { showToast(error.message); }
+    });
+    document.querySelector("#return-button").addEventListener("click", async () => { if (!state.detailItem) return; await api("/api/pending/return", { method: "POST", body: { personId: state.detailItem.personId } }); ui.detail.close(); await renderPending(); await refreshSummary(); });
+  }
+
+  return { renderPending, bindPendingControls };
 }

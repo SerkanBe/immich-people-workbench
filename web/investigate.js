@@ -86,5 +86,24 @@ export function createInvestigate({ api, assetThumb, attachNameBehavior, moveSli
     if (focusFirst && people.length) requestAnimationFrame(() => ui.investigateGrid.querySelectorAll(".name-input")[Math.min(focusIndex, people.length - 1)]?.focus());
   }
 
-  return { renderInvestigate };
+  function bindInvestigateControls() {
+    document.querySelector("#investigate-return-all").addEventListener("click", async () => {
+      const count = state.summary?.counts?.investigate || 0;
+      if (!count) return;
+      if (!confirm(`Return all ${count} Investigate clusters to Unnamed?\n\nThis only changes the local queue; Immich is not modified.`)) return;
+      const button = document.querySelector("#investigate-return-all"); button.disabled = true;
+      try {
+        const result = await api("/api/investigate/clear", { method: "POST", body: { confirmation: "RETURN_ALL" } });
+        showToast(`Returned ${result.returned} clusters to Unnamed`);
+        await renderInvestigate();
+        await refreshSummary();
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        button.disabled = !(state.summary?.counts?.investigate > 0);
+      }
+    });
+  }
+
+  return { renderInvestigate, bindInvestigateControls };
 }

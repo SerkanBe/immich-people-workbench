@@ -195,5 +195,24 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
   }
 
-  return { renderFaceReview, currentFaceReviewPerson, applyFaceReviewCapacity, loadFaceReviewPage, loadFaceReviewPeople, queueSelectedFacesForUnnamed };
+  function bindFaceReviewControls() {
+    let faceSearchTimer = null;
+    document.querySelector("#face-person-search").addEventListener("input", () => {
+      clearTimeout(faceSearchTimer); state.pages.facePeople = 1;
+      faceSearchTimer = setTimeout(() => loadFaceReviewPeople().catch(error => showToast(error.message)), 180);
+    });
+    document.querySelector("#face-review-queue").addEventListener("click", () => queueSelectedFacesForUnnamed());
+    window.addEventListener("resize", () => {
+      clearTimeout(state.faceReviewResizeTimer);
+      state.faceReviewResizeTimer = setTimeout(() => {
+        if (state.view !== "faces" || !currentFaceReviewPerson()) return;
+        const oldSize = state.faceReviewPageSize, firstIndex = (state.faceReviewPage - 1) * oldSize;
+        if (!applyFaceReviewCapacity()) return;
+        state.faceReviewPage = Math.floor(firstIndex / state.faceReviewPageSize) + 1;
+        loadFaceReviewPage(state.faceReviewPage).catch(error => showToast(error.message));
+      }, 180);
+    });
+  }
+
+  return { renderFaceReview, currentFaceReviewPerson, applyFaceReviewCapacity, loadFaceReviewPage, loadFaceReviewPeople, bindFaceReviewControls };
 }

@@ -282,5 +282,17 @@ export function createNaming({ api, assetThumb, cleanName, loadNames, personThum
     if (focusFirst && people.length) requestAnimationFrame(() => target.querySelectorAll(".name-input")[Math.min(focusIndex, people.length - 1)]?.focus());
   }
 
-  return { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid };
+  function bindNamingControls() {
+    let namedSearchTimer = null;
+    document.querySelector("#named-search").addEventListener("input", () => {
+      clearTimeout(namedSearchTimer); state.pages.named = 1;
+      namedSearchTimer = setTimeout(() => renderPeopleGrid("named", ui.namedGrid).catch(error => showToast(error.message)), 180);
+    });
+    document.querySelector("#duplicate-confirm").addEventListener("click", async () => { ui.duplicate.close(); try { await state.duplicateAction?.(); } catch (error) { showToast(error.message); } finally { state.duplicateAction = null; } });
+    document.querySelector("#duplicate-cancel").addEventListener("click", () => { ui.duplicate.close(); requestAnimationFrame(() => state.duplicateInput?.focus()); });
+    ui.duplicate.addEventListener("cancel", event => { event.preventDefault(); ui.duplicate.close(); requestAnimationFrame(() => state.duplicateInput?.focus()); });
+    ui.duplicate.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); document.querySelector("#duplicate-confirm").click(); } });
+  }
+
+  return { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid, bindNamingControls };
 }
