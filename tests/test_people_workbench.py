@@ -103,6 +103,12 @@ class PeopleWorkbenchTests(unittest.TestCase):
             with urllib.request.urlopen(base + "/pending.js") as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn(b"export function createPending", response.read())
+            with urllib.request.urlopen(base + "/connection.js") as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"export function createConnection", response.read())
+            with urllib.request.urlopen(base + "/browser-storage.js") as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"export function readMergeCanvasState", response.read())
             with self.assertRaises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(base + "/not-a-section")
             self.assertEqual(error.exception.code, 404)

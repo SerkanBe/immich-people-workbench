@@ -5,78 +5,17 @@ import { createFaceReview } from "./face-review.js";
 import { createNaming } from "./naming.js";
 import { createInvestigate } from "./investigate.js";
 import { createPending } from "./pending.js";
+import { createConnection } from "./connection.js";
+import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM, readMergeCanvasState, readPageSize, savePageSize, saveMergeCanvasState } from "./browser-storage.js";
 
 "use strict";
 
-const BROWSER_SETTINGS_KEY = "immichPeopleWorkbench.connection.v1";
-const MERGE_CANVAS_KEY = "immichPeopleWorkbench.mergeCanvas.v1";
-const PAGINATION_SETTINGS_KEY = "immichPeopleWorkbench.pagination.v1";
-const LEGACY_BROWSER_SETTINGS_KEY = "immichPeopleConsole.connection.v1";
-const LEGACY_MERGE_CANVAS_KEY = "immichPeopleConsole.mergeCanvas.v1";
-const LEGACY_PAGINATION_SETTINGS_KEY = "immichPeopleConsole.pagination.v1";
+const MERGE_CARD_WIDTH = 220, MERGE_CARD_HEIGHT = 260;
 const VIEW_ROUTES = new Set(["unnamed", "merge", "investigate", "faces", "pending", "named", "ignored"]);
 
 function viewFromPath(path) {
   const view = path.replace(/^\/|\/$/g, "");
   return VIEW_ROUTES.has(view) ? view : "unnamed";
-}
-
-function readStoredSetting(key, legacyKey) {
-  const current = localStorage.getItem(key);
-  if (current !== null) return current;
-  const legacy = localStorage.getItem(legacyKey);
-  if (legacy !== null) localStorage.setItem(key, legacy);
-  return legacy;
-}
-const MERGE_MIN_WORLD_WIDTH = 12000, MERGE_MIN_WORLD_HEIGHT = 12000;
-const MERGE_CARD_WIDTH = 220, MERGE_CARD_HEIGHT = 260, MERGE_MIN_ZOOM = .005, MERGE_MAX_ZOOM = 4;
-
-function readMergeCanvasState() {
-  const fallback = { positions: {}, groups: {}, buckets: {}, bucketNames: {}, zoom: 1, scrollLeft: 0, scrollTop: 0, worldWidth: MERGE_MIN_WORLD_WIDTH, worldHeight: MERGE_MIN_WORLD_HEIGHT };
-  try {
-    const value = JSON.parse(readStoredSetting(MERGE_CANVAS_KEY, LEGACY_MERGE_CANVAS_KEY) || "null");
-    if (!value || typeof value.positions !== "object") return fallback;
-    const positions = {};
-    for (const [id, point] of Object.entries(value.positions)) {
-      const x = Number(point?.x), y = Number(point?.y);
-      if (Number.isFinite(x) && Number.isFinite(y)) positions[id] = { x, y };
-    }
-    const groups = {};
-    for (const [id, groupId] of Object.entries(value.groups || {})) {
-      if (typeof groupId === "string" && groupId) groups[id] = groupId;
-    }
-    const buckets = {};
-    for (const [id, bucketId] of Object.entries(value.buckets || {})) {
-      if (/^slot-[1-9]$/.test(bucketId)) buckets[id] = bucketId;
-    }
-    const bucketNames = {};
-    for (const [bucketId, name] of Object.entries(value.bucketNames || value.groupNames || {})) {
-      if (/^slot-[1-9]$/.test(bucketId) && typeof name === "string" && name.trim()) bucketNames[bucketId] = name.trim();
-    }
-    return {
-      positions,
-      groups,
-      buckets,
-      bucketNames,
-      zoom: Math.max(MERGE_MIN_ZOOM, Math.min(MERGE_MAX_ZOOM, Number(value.zoom) || 1)),
-      scrollLeft: Math.max(0, Number(value.scrollLeft) || 0),
-      scrollTop: Math.max(0, Number(value.scrollTop) || 0),
-      worldWidth: Math.max(MERGE_MIN_WORLD_WIDTH, Number(value.worldWidth) || MERGE_MIN_WORLD_WIDTH),
-      worldHeight: Math.max(MERGE_MIN_WORLD_HEIGHT, Number(value.worldHeight) || MERGE_MIN_WORLD_HEIGHT),
-    };
-  } catch { return fallback; }
-}
-
-function readPageSize() {
-  try {
-    const value = JSON.parse(readStoredSetting(PAGINATION_SETTINGS_KEY, LEGACY_PAGINATION_SETTINGS_KEY) || "null");
-    return [12, 24, 48, 60].includes(Number(value?.pageSize)) ? Number(value.pageSize) : 24;
-  } catch { return 24; }
-}
-
-function savePageSize(pageSize) {
-  try { localStorage.setItem(PAGINATION_SETTINGS_KEY, JSON.stringify({ pageSize })); }
-  catch { showToast("The browser could not save the pagination setting."); }
 }
 
 const ui = {
@@ -102,58 +41,6 @@ const state = {
   faceReviewPageSize: 20, faceReviewLayout: { columns: 5, rows: 4 }, faceReviewResult: null, faceReviewResizeTimer: null,
   faceReviewSelected: new Set(), faceReviewSelectedData: new Map(), faceReviewLoading: false,
 };
-
-function saveMergeCanvasState() {
-  clearTimeout(state.mergeSaveTimer);
-  state.mergeSaveTimer = setTimeout(() => {
-    try { localStorage.setItem(MERGE_CANVAS_KEY, JSON.stringify(state.mergeCanvas)); }
-    catch { showToast("The browser could not save the canvas layout."); }
-  }, 120);
-}
-
-function readBrowserSettings() {
-  try {
-    const raw = readStoredSetting(BROWSER_SETTINGS_KEY, LEGACY_BROWSER_SETTINGS_KEY);
-    if (!raw) return null;
-    const value = JSON.parse(raw);
-    if (!value || typeof value.url !== "string" || typeof value.apiKey !== "string") return null;
-    return { url: value.url, apiKey: value.apiKey, insecureTls: Boolean(value.insecureTls) };
-  } catch { return null; }
-}
-
-function saveBrowserSettings(settings) {
-  try { localStorage.setItem(BROWSER_SETTINGS_KEY, JSON.stringify(settings)); return true; }
-  catch { return false; }
-}
-
-function forgetBrowserSettings() {
-  try {
-    localStorage.removeItem(BROWSER_SETTINGS_KEY);
-    localStorage.removeItem(LEGACY_BROWSER_SETTINGS_KEY);
-  } catch { /* Storage may be disabled. */ }
-  document.querySelector("#forget-settings").disabled = true;
-}
-
-function fillConnectionForm(settings) {
-  if (!settings) return;
-  document.querySelector("#immich-url").value = settings.url;
-  document.querySelector("#immich-key").value = settings.apiKey;
-  document.querySelector("#insecure-tls").checked = settings.insecureTls;
-  document.querySelector("#remember-connection").checked = true;
-  document.querySelector("#forget-settings").disabled = false;
-}
-
-function connectionFormSettings() {
-  return {
-    url: document.querySelector("#immich-url").value.trim(),
-    apiKey: document.querySelector("#immich-key").value,
-    insecureTls: document.querySelector("#insecure-tls").checked,
-  };
-}
-
-async function connectWithSettings(settings) {
-  return api("/api/connect", { method: "POST", body: settings });
-}
 
 async function api(path, options = {}) {
   const init = { method: options.method || "GET", headers: {} };
@@ -294,7 +181,7 @@ async function renderCurrentView(focusFirst = false, refresh = true) {
 
 const { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid, bindNamingControls } = createNaming({ api, assetThumb, cleanName, loadNames, personThumb, refreshSummary, renderInvestigate: (...args) => renderInvestigate(...args), renderPagination, showToast, state, ui });
 
-const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState, showSlide, showToast, resetListPages, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
+const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState: () => saveMergeCanvasState(state, showToast), showSlide, showToast, resetListPages, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
 
 function openAssetPreview(assetId, fileName = "Photo preview") {
   const dialog = document.querySelector("#asset-preview-dialog");
@@ -326,6 +213,8 @@ async function renderIgnored() {
   }
 }
 
+const { bindConnectionControls, restoreConnection } = createConnection({ api, showToast, ui, waitUntilReady });
+
 document.querySelector("#page-size-select").value = String(state.pageSize);
 document.querySelectorAll(".nav-button").forEach(button => button.addEventListener("click", event => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -333,32 +222,10 @@ document.querySelectorAll(".nav-button").forEach(button => button.addEventListen
 }));
 window.addEventListener("popstate", () => switchView(viewFromPath(window.location.pathname), false));
 document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => switchView(button.dataset.go)));
-document.querySelector("#connect-button").addEventListener("click", () => ui.connect.showModal());
 document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
-document.querySelector("#connect-form").addEventListener("submit", async event => {
-  event.preventDefault();
-  const settings = connectionFormSettings();
-  const remember = document.querySelector("#remember-connection").checked;
-  try {
-    await connectWithSettings(settings);
-    let stored = true;
-    if (remember) stored = saveBrowserSettings(settings);
-    else forgetBrowserSettings();
-    document.querySelector("#forget-settings").disabled = !remember || !stored;
-    if (!remember) document.querySelector("#immich-key").value = "";
-    ui.connect.close(); await waitUntilReady();
-    if (remember && !stored) showToast("Connected, but this browser did not allow the settings to be saved.");
-  } catch (error) { showToast(error.message); }
-});
-document.querySelector("#forget-settings").addEventListener("click", () => {
-  forgetBrowserSettings();
-  document.querySelector("#remember-connection").checked = false;
-  document.querySelector("#immich-key").value = "";
-  showToast("Saved browser settings removed. The current server session remains connected until restart.");
-});
 document.querySelector("#reload-button").addEventListener("click", async () => { resetListPages(); await api("/api/reload", { method: "POST", body: {} }); await waitUntilReady(); });
 document.querySelector("#page-size-select").addEventListener("change", event => {
-  state.pageSize = Number(event.target.value) || 24; savePageSize(state.pageSize); resetListPages(); renderCurrentView(true).catch(error => showToast(error.message));
+  state.pageSize = Number(event.target.value) || 24; savePageSize(state.pageSize, showToast); resetListPages(); renderCurrentView(true).catch(error => showToast(error.message));
 });
 document.querySelector("#sort-select").addEventListener("change", event => { state.sort = event.target.value; resetListPages(); renderCurrentView(true, false).catch(error => showToast(error.message)); });
 document.querySelector("#asset-preview-dialog").addEventListener("close", () => document.querySelector("#asset-preview-image").removeAttribute("src"));
@@ -369,15 +236,10 @@ bindNamingControls();
 bindFaceReviewControls();
 bindInvestigateControls();
 bindPendingControls();
+bindConnectionControls();
 switchView(state.view, false, false);
-const savedConnection = readBrowserSettings();
-fillConnectionForm(savedConnection);
-document.querySelector("#forget-settings").disabled = !savedConnection;
 refreshSummary().then(async summary => {
   state.sort = summary.sort || "most";
   if (summary.connected) { await waitUntilReady(); return; }
-  if (savedConnection?.apiKey) {
-    try { await connectWithSettings(savedConnection); await waitUntilReady(); }
-    catch (error) { showToast(`Automatic connection failed: ${error.message}`); ui.connect.showModal(); }
-  } else ui.connect.showModal();
+  await restoreConnection();
 }).catch(error => showToast(error.message));
