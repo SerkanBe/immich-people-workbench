@@ -1100,7 +1100,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                 self.static("index.html")
-            elif path in {"/app.js", "/merge.js", "/face-review.js", "/naming.js", "/styles.css"}:
+            elif path in {"/app.js", "/merge.js", "/face-review.js", "/naming.js", "/investigate.js", "/styles.css"}:
                 self.static(path[1:])
             elif path == "/api/state":
                 self.send_json(STATE.summary())

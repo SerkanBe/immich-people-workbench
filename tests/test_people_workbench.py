@@ -97,6 +97,9 @@ class PeopleWorkbenchTests(unittest.TestCase):
             with urllib.request.urlopen(base + "/naming.js") as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn(b"export function createNaming", response.read())
+            with urllib.request.urlopen(base + "/investigate.js") as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn(b"export function createInvestigate", response.read())
             with self.assertRaises(urllib.error.HTTPError) as error:
                 urllib.request.urlopen(base + "/not-a-section")
             self.assertEqual(error.exception.code, 404)
