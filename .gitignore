@@ -1,0 +1,9 @@
+.people-workbench/
+.people-console/
+.idea/
+.agents/
+.codex/
+var/
+*.local.json
+__pycache__/
+*.py[cod]

@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Immich People Workbench</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>People Workbench</h1>
+      <p id="connection-status">Not connected</p>
+    </div>
+    <nav aria-label="People sections">
+      <button class="nav-button active" data-view="unnamed">Unnamed <span id="unnamed-count">0</span></button>
+      <button class="nav-button" data-view="merge">Merge <span id="merge-count">0</span></button>
+      <button class="nav-button" data-view="investigate">Investigate <span id="investigate-count">0</span></button>
+      <button class="nav-button" data-view="faces">Face review <span id="faces-count">0</span></button>
+      <button class="nav-button" data-view="pending">Pending <span id="pending-count">0</span></button>
+      <button class="nav-button" data-view="named">Named <span id="named-count">0</span></button>
+      <button class="nav-button" data-view="ignored">Ignored <span id="ignored-count">0</span></button>
+    </nav>
+    <div class="header-actions">
+      <label class="page-size-control">Per page
+        <select id="page-size-select" tabindex="-1">
+          <option value="12">12</option>
+          <option value="24" selected>24</option>
+          <option value="48">48</option>
+          <option value="60">60</option>
+        </select>
+      </label>
+      <button id="reload-button" class="quiet-button" hidden>Reload</button>
+      <button id="connect-button" class="primary-button">Connect</button>
+    </div>
+  </header>
+
+  <div id="progress-panel" class="progress-panel" hidden>
+    <div><strong id="progress-message">Loading</strong><span id="progress-numbers"></span></div>
+    <progress id="progress-bar"></progress>
+  </div>
+
+  <main>
+    <section id="unnamed-view" class="view active" aria-labelledby="unnamed-heading">
+      <div class="view-heading">
+        <div><h2 id="unnamed-heading">Unnamed people</h2><p>Name clusters quickly. Nothing changes in Immich until review and sync.</p></div>
+        <label>Order
+          <select id="sort-select">
+            <option value="most">Most photos first</option>
+            <option value="fewest">Fewest photos first</option>
+            <option value="updated-newest">Recently updated</option>
+            <option value="updated-oldest">Least recently updated</option>
+            <option value="random">Random</option>
+          </select>
+        </label>
+      </div>
+      <div id="round-banner" class="round-banner" hidden></div>
+      <div id="unnamed-grid" class="people-grid"></div>
+      <div id="unnamed-pagination" class="pagination" hidden></div>
+      <div id="unnamed-empty" class="empty-state" hidden>
+        <h2>All visible clusters are handled</h2>
+        <p>Review the pending changes before syncing them to Immich.</p>
+        <button class="primary-button" data-go="pending">Review pending changes</button>
+      </div>
+    </section>
+
+    <section id="merge-view" class="view" aria-labelledby="merge-heading">
+      <div class="view-heading">
+        <div><h2 id="merge-heading">Merge Workbench</h2><p>Build person groups, review their faces, and queue unnamed merges for the normal naming flow.</p></div>
+        <label>Order
+          <select id="merge-sort-select">
+            <option value="most">Most photos first</option>
+            <option value="fewest">Fewest photos first</option>
+            <option value="updated-newest">Recently updated</option>
+            <option value="updated-oldest">Least recently updated</option>
+            <option value="random">Random</option>
+          </select>
+        </label>
+      </div>
+      <div class="merge-workbench">
+        <div class="merge-wall">
+          <div class="merge-wall-heading">
+            <div><strong>Spatial face canvas</strong><span>Drag cards to build your own map. Positions stay in this browser.</span></div>
+            <div class="merge-canvas-actions">
+              <label>Similar <select id="merge-similar-count"><option>6</option><option selected>12</option><option>20</option></select></label>
+              <button id="merge-arrange-similar" class="quiet-button" type="button" disabled>Arrange similar [R]</button>
+              <button id="merge-similarity-map" class="quiet-button" type="button">Similarity map [M]</button>
+              <button id="merge-zoom-out" class="quiet-button canvas-icon-button" type="button" aria-label="Zoom out (-)" title="Zoom out [-]">−</button>
+              <button id="merge-zoom-reset" class="quiet-button" type="button">Fit [F]</button>
+              <button id="merge-zoom-in" class="quiet-button canvas-icon-button" type="button" aria-label="Zoom in (+)" title="Zoom in [+]">+</button>
+              <button id="merge-toggle-tray" class="quiet-button" type="button" aria-pressed="false">Hide tray [H]</button>
+              <button id="merge-zen" class="quiet-button" type="button" aria-pressed="false">Zen [Z]</button>
+              <button id="merge-help" class="quiet-button canvas-icon-button" type="button" aria-label="Show canvas keyboard shortcuts" title="Keyboard shortcuts">?</button>
+            </div>
+          </div>
+          <div id="merge-canvas-viewport" class="merge-canvas-viewport" tabindex="0" aria-label="Spatial canvas of unnamed face clusters">
+            <div id="merge-canvas-surface" class="merge-canvas-surface"><div id="merge-grid" class="merge-canvas-world" role="listbox" aria-label="Unnamed clusters available for merging"></div></div>
+          </div>
+          <div class="merge-canvas-help">Hover + <kbd>1–9</kbd> assigns a mental bucket · <kbd>0</kbd> removes it · <kbd>Shift</kbd> + drag marks · <kbd>P</kbd> packs marked faces · <kbd>G</kbd> creates a person group · press <kbd>?</kbd> for all shortcuts</div>
+          <div id="merge-empty" class="empty-state" hidden><h2>No clusters available</h2><p>Pending and Investigate clusters do not appear here.</p></div>
+        </div>
+        <aside class="merge-tray" aria-labelledby="merge-tray-heading">
+          <section class="canvas-groups-overview" aria-label="Canvas organization">
+            <div class="merge-organizer-tabs" role="tablist" aria-label="Canvas collections">
+              <button id="merge-groups-tab" class="merge-organizer-tab active" type="button" role="tab" aria-selected="true" aria-controls="merge-groups-panel">Person groups <span id="merge-person-group-count">0</span></button>
+              <button id="merge-buckets-tab" class="merge-organizer-tab" type="button" role="tab" aria-selected="false" aria-controls="merge-buckets-panel">Buckets <span id="merge-bucket-count">0</span></button>
+            </div>
+            <div id="merge-groups-panel" role="tabpanel" aria-labelledby="merge-groups-tab">
+              <div class="merge-list-toolbar"><button id="merge-review-groups" class="primary-button" type="button" disabled>Review person groups [V]</button></div>
+              <div id="merge-person-groups" class="canvas-groups-list"><p class="muted">Select faces and press G to create a person group.</p></div>
+            </div>
+            <div id="merge-buckets-panel" role="tabpanel" aria-labelledby="merge-buckets-tab" hidden>
+              <div id="merge-canvas-buckets" class="canvas-groups-list"><p class="muted">Hover a face and press 1–9 to create a bucket.</p></div>
+            </div>
+          </section>
+          <section class="merge-selection-panel" aria-labelledby="merge-tray-heading">
+            <div class="merge-tray-heading"><div><p id="merge-selection-kicker" class="merge-kicker">LOOSE SELECTION</p><h3 id="merge-tray-heading">Selected faces <span id="merge-selected-count">0</span></h3></div><button id="merge-clear" class="quiet-button" type="button">Clear [C]</button></div>
+            <div id="merge-selected" class="merge-selected"><p class="muted">Mark faces on the canvas or select a collection above.</p></div>
+          </section>
+          <div id="merge-operation-panel" class="merge-operation-panel">
+            <div id="merge-target" class="merge-target muted">The largest cluster survives. The merged person remains unnamed.</div>
+            <button id="merge-queue" class="primary-button" type="button" disabled>Queue merge</button>
+            <p class="merge-note">This adds merge operations to Pending without assigning a name. Immich changes only when you sync.</p>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="investigate-view" class="view" aria-labelledby="investigate-heading">
+      <div class="view-heading">
+        <div><h2 id="investigate-heading">Investigate difficult clusters</h2><p>Use Immich filenames and photo previews for more context before naming a person.</p></div>
+        <div class="pending-heading-actions"><button id="investigate-return-all" class="quiet-button" disabled>Return all to Unnamed</button></div>
+      </div>
+      <div id="investigate-grid" class="investigate-grid"></div>
+      <div id="investigate-pagination" class="pagination" hidden></div>
+      <div id="investigate-empty" class="empty-state" hidden><h2>No difficult cases</h2><p>Press <kbd>Alt+D</kbd> on an unnamed cluster to move it here.</p></div>
+    </section>
+
+    <section id="faces-view" class="view" aria-labelledby="faces-heading">
+      <div class="view-heading">
+        <div><h2 id="faces-heading">Review faces inside people</h2><p>Check correct faces as Reviewed, or focus a tile and press <kbd>R</kbd>. Queue incorrect matches to become separate unnamed clusters.</p></div>
+      </div>
+      <div class="face-review-layout">
+        <aside class="face-person-panel">
+          <label>Find person <input id="face-person-search" type="search" autocomplete="off" placeholder="Name or unnamed"></label>
+          <div id="face-person-list" class="face-person-list" aria-label="People available for face review"></div>
+          <div id="face-person-pagination" class="pagination compact" hidden></div>
+        </aside>
+        <section class="face-review-main" aria-live="polite">
+          <div id="face-review-placeholder" class="face-review-placeholder"><h3>Select a person</h3><p>Their assigned face crops will appear here. Nothing changes in Immich until Pending is synced.</p></div>
+          <div id="face-review-content" hidden>
+            <div class="face-review-toolbar">
+              <div><h3 id="face-review-name"></h3><p id="face-review-meta" class="muted"></p></div>
+              <button id="face-review-queue" class="danger-button" type="button" disabled>Queue selected for Unnamed</button>
+            </div>
+            <div id="face-review-grid" class="face-review-grid"></div>
+            <div id="face-review-pagination" class="pagination" hidden></div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="pending-view" class="view" aria-labelledby="pending-heading">
+      <div class="view-heading">
+        <div><h2 id="pending-heading">Pending changes</h2><p>Excluded items remain here for later. Sync only applies checked items.</p></div>
+        <div class="pending-heading-actions">
+          <button id="reset-button" class="danger-button">Discard all local changes and reload</button>
+          <button id="sync-button" class="primary-button">Sync checked changes to Immich</button>
+        </div>
+      </div>
+      <div id="pending-list" class="pending-list"></div>
+      <div id="pending-pagination" class="pagination" hidden></div>
+      <div id="pending-empty" class="empty-state" hidden><h2>No pending changes</h2><p>Accepted names, merges and ignored clusters will appear here.</p></div>
+    </section>
+
+    <section id="named-view" class="view" aria-labelledby="named-heading">
+      <div class="view-heading">
+        <div><h2 id="named-heading">Named people</h2><p>Search, rename, or merge existing Immich people.</p></div>
+        <label>Search <input id="named-search" type="search" autocomplete="off" placeholder="Name"></label>
+      </div>
+      <div id="named-grid" class="people-grid"></div>
+      <div id="named-pagination" class="pagination" hidden></div>
+    </section>
+
+    <section id="ignored-view" class="view" aria-labelledby="ignored-heading">
+      <div class="view-heading"><div><h2 id="ignored-heading">Ignored people</h2><p>These clusters are hidden in Immich and can be restored.</p></div></div>
+      <div id="ignored-grid" class="people-grid"></div>
+      <div id="ignored-pagination" class="pagination" hidden></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="connect-dialog">
+    <form id="connect-form" method="dialog" class="dialog-form">
+      <h2>Connection settings</h2>
+      <label>Immich URL <input id="immich-url" type="url" value="http://localhost:2283" required></label>
+      <label>API key <input id="immich-key" type="password" required autocomplete="off"></label>
+      <label class="check-row"><input id="insecure-tls" type="checkbox"> Allow an untrusted HTTPS certificate</label>
+      <label class="check-row"><input id="remember-connection" type="checkbox" checked> Save these settings in this browser and reconnect automatically</label>
+      <p class="privacy-note">When enabled, the API key is stored persistently and unencrypted in this browser profile for <code>127.0.0.1:8766</code>. Use this only in a trusted browser profile.</p>
+      <div class="dialog-actions settings-actions"><button id="forget-settings" type="button" class="danger-button">Forget saved settings</button><span></span><button type="button" class="quiet-button" data-close>Cancel</button><button class="primary-button" value="default">Save and connect</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="duplicate-dialog">
+    <div class="dialog-form">
+      <h2>This name already exists</h2>
+      <p>You typed this name manually rather than choosing autocomplete. Are these intentionally different people?</p>
+      <div class="duplicate-compare"><div><img id="duplicate-source" alt="Current cluster"><strong>Current cluster</strong></div><div><img id="duplicate-target" alt="Existing person"><strong id="duplicate-name"></strong></div></div>
+      <p><kbd>Enter</kbd> creates another person with this name. <kbd>Esc</kbd> returns to the field.</p>
+      <div class="dialog-actions"><button id="duplicate-cancel" class="quiet-button">Back to name</button><button id="duplicate-confirm" class="primary-button">Create separate person</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="detail-dialog" class="detail-dialog">
+    <div class="dialog-form">
+      <div class="detail-heading"><div><h2>Inspect pending cluster</h2><p id="detail-kind"></p></div><button class="icon-button" data-close aria-label="Close">×</button></div>
+      <div id="detail-galleries" class="detail-galleries"></div>
+      <label>Name or existing person
+        <div class="autocomplete-wrap"><input id="detail-name" autocomplete="off"><div id="detail-suggestions" class="suggestions"></div></div>
+      </label>
+      <div class="dialog-actions split"><button id="return-button" class="danger-button">Return to naming queue</button><span></span><button class="quiet-button" data-close>Close</button><button id="detail-save" class="primary-button">Save correction</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="asset-preview-dialog" class="asset-preview-dialog">
+    <div class="dialog-form">
+      <div class="detail-heading"><div><h2 id="asset-preview-title">Photo preview</h2><p id="asset-preview-caption" class="muted"></p></div><button class="icon-button" data-close aria-label="Close">×</button></div>
+      <img id="asset-preview-image" alt="Photo preview">
+      <div class="dialog-actions"><button class="quiet-button" data-close>Close</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="group-review-dialog" class="group-review-dialog">
+    <div class="dialog-form">
+      <div class="detail-heading"><div><h2>Review person groups</h2><p id="group-review-progress">Group 1 of 1</p></div><button id="group-review-close" class="icon-button" type="button" tabindex="-1" aria-label="Close review">×</button></div>
+      <div id="group-review-faces" class="group-review-faces" aria-live="polite"></div>
+      <p class="group-review-note">Confirm only when every face belongs to the same person. Skipping leaves the group unchanged for manual correction.</p>
+      <div id="group-review-status" class="group-review-status" role="status" hidden></div>
+      <div class="group-review-actions">
+        <button id="group-review-skip" class="quiet-button" type="button">← Skip</button>
+        <button id="group-review-confirm" class="primary-button" type="button">Queue merge →</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="merge-help-dialog">
+    <div class="dialog-form merge-help-dialog">
+      <div class="detail-heading"><div><h2>Canvas shortcuts</h2><p>Mental buckets, person groups, and temporary markings are separate layers.</p></div><button class="icon-button" data-close aria-label="Close">×</button></div>
+      <dl class="shortcut-list">
+        <div><dt><kbd>1–9</kbd></dt><dd>Toggle the hovered face in that numbered canvas bucket; another number moves it</dd></div>
+        <div><dt><kbd>0</kbd></dt><dd>Remove the hovered face from its bucket</dd></div>
+        <div><dt><kbd>Shift</kbd> + drag</dt><dd>Draw a temporary selection rectangle</dd></div>
+        <div><dt><kbd>A</kbd></dt><dd>Toggle persistent area-select mode</dd></div>
+        <div><dt><kbd>P</kbd></dt><dd>Pack the marked faces into a compact grid</dd></div>
+        <div><dt><kbd>G</kbd></dt><dd>Create and select a persistent person group from the marked faces</dd></div>
+        <div><dt><kbd>V</kbd></dt><dd>Review all person groups and queue confirmed unnamed merges</dd></div>
+        <div><dt><kbd>U</kbd></dt><dd>Remove marked faces from their person groups</dd></div>
+        <div><dt><kbd>C</kbd></dt><dd>Clear the current marking or selected collection</dd></div>
+        <div><dt><kbd>R</kbd></dt><dd>Arrange similar faces around the focused card</dd></div>
+        <div><dt><kbd>M</kbd></dt><dd>Build the global similarity map</dd></div>
+        <div><dt><kbd>L</kbd></dt><dd>Return unbucketed faces to the initial grid</dd></div>
+        <div><dt><kbd>F</kbd></dt><dd>Fit the complete canvas</dd></div>
+        <div><dt><kbd>H</kbd></dt><dd>Hide or show the tray</dd></div>
+        <div><dt><kbd>Z</kbd></dt><dd>Toggle Zen mode</dd></div>
+        <div><dt><kbd>+</kbd> / <kbd>−</kbd></dt><dd>Zoom the canvas</dd></div>
+      </dl>
+    </div>
+  </dialog>
+
+  <template id="person-card-template">
+    <article class="person-card">
+      <div class="portrait-wrap">
+        <img class="portrait person-thumb" alt="Person thumbnail">
+        <canvas class="portrait sample-thumb" width="640" height="640" hidden></canvas>
+        <button class="carousel-button previous" type="button" aria-label="Previous face">‹</button>
+        <button class="carousel-button next" type="button" aria-label="Next face">›</button>
+        <span class="carousel-count"></span>
+      </div>
+      <div class="person-meta"><span class="photo-count"></span><span class="round-count"></span></div>
+      <div class="autocomplete-wrap name-wrap">
+        <div class="ghost" aria-hidden="true"></div>
+        <input class="name-input" autocomplete="off" spellcheck="false" aria-label="Person name">
+        <div class="suggestions" role="listbox"></div>
+      </div>
+      <div class="card-actions"><span class="hotkey-hint">Alt+S skip · Alt+I ignore · Alt+D investigate</span><button class="investigate-button quiet-button" type="button" tabindex="-1" title="Move to Investigate">Investigate</button></div>
+    </article>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>
