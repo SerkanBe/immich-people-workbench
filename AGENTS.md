@@ -39,9 +39,12 @@
   Add or adjust synthetic tests for changed behavior, especially Pending and
   Sync boundaries, persistence, and failure or retry paths.
 - For JavaScript changes, run `node --check` on each changed `web/*.js` file.
-  Check affected browser interactions and shortcuts with synthetic data when
-  practical; syntax checks alone do not verify behavior. State any checks that
-  could not be run in the handoff.
+  Check affected browser behavior with synthetic data when practical. For
+  changes to a review flow, check queueing, Pending review, and the explicit
+  Sync boundary. For canvas or settings changes, check save and reload; for
+  keyboard changes, check the affected shortcuts and focus behavior. Syntax
+  checks alone do not verify these interactions. State any checks that could
+  not be run in the handoff.
 - For documentation-only changes, `git diff --check` and review of the rendered
   instructions are sufficient. Before finishing any task, review the diff and
   `git status` for private state and unrelated edits.
@@ -55,6 +58,16 @@
 - Document important limitations or manual verification gaps in the final
   handoff. Avoid copying private examples into documentation.
 
+## Review checklist
+
+- For each affected path, check that no Immich write occurs before explicit
+  Pending review and Sync.
+- Check that no real names, photos, API keys, or local state enter code, tests,
+  logs, documentation, or the staged diff.
+- If browser storage or Merge state changed, check compatibility with legacy
+  `immichPeopleConsole.*` keys. If interaction code changed, check relevant
+  shortcuts and preserved local state.
+
 ## Working with other agents
 
 - When multiple agents are assigned, agree on file ownership before editing
@@ -65,11 +78,12 @@
 
 ## Git changes
 
-- At a coherent, reviewable milestone, stop before the diff grows across
-  unrelated tasks. Summarize the changed files, behavior, and checks; propose
-  a commit message; and explicitly ask the user to review and authorize the
-  commit. Keep the work uncommitted until the user approves. Do not fold new,
-  unrelated work into a change awaiting review.
+- Finish the agreed scope and relevant verification before asking for commit
+  review. At a coherent milestone, before the diff grows across unrelated
+  tasks, summarize the changed files, behavior, and checks; propose a commit
+  message; and explicitly ask the user to review and authorize the commit.
+  Keep the work uncommitted until the user approves. Do not fold new, unrelated
+  work into a change awaiting review.
 - Keep each commit focused on one task. Stage explicit files or hunks, then
   inspect the staged diff and status before committing. Exclude private state,
   `var/`, and unrelated working-tree changes.
