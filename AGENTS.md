@@ -2,8 +2,9 @@
 
 ## Start here
 
-- Read `README.md` before changing a workflow. If `var/backlog.md` exists, read it
-  for local plans and open work. `var/` is intentionally ignored by Git.
+- Read `README.md` and the relevant files in `docs/` before changing a workflow.
+  If `var/backlog.md` exists, read it for local plans and open work. `var/` is
+  intentionally ignored by Git.
 - Check `git status` before editing. Preserve unrelated work already in the tree.
 - Keep agent plans, backlogs, handoffs, and scratch files in `var/`.
 
@@ -51,8 +52,9 @@
 
 ## Documentation
 
-- Update `README.md` when user-facing behavior, setup, permissions, storage, or
-  shortcuts change. Keep it aligned with the behavior that ships.
+- Keep `README.md` focused as the public entry page. Update the relevant file in
+  `docs/` when setup, permissions, storage, workflow, or shortcuts change, and
+  adjust the README overview when the project's scope changes.
 - Put durable agent workflow rules in this file. Put temporary plans and
   handoffs in ignored `var/`; do not turn them into public documentation.
 - Document important limitations or manual verification gaps in the final
