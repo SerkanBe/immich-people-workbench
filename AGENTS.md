@@ -80,14 +80,19 @@
 
 ## Git changes
 
-- Finish the agreed scope and relevant verification before asking for commit
-  review. At a coherent milestone, before the diff grows across unrelated
-  tasks, summarize the changed files, behavior, and checks; propose a commit
-  message; and explicitly ask the user to review and authorize the commit.
-  Keep the work uncommitted until the user approves. Do not fold new, unrelated
-  work into a change awaiting review.
+- Work on a separate task branch, preferably in an isolated worktree. Start
+  from the latest available `main`, fetching `origin/main` when it exists.
+  Preserve the user's checkout and any unrelated changes. Never commit to or
+  push `main`.
 - Keep each commit focused on one task. Stage explicit files or hunks, then
   inspect the staged diff and status before committing. Exclude private state,
   `var/`, and unrelated working-tree changes.
+- Complete the agreed scope and relevant checks, then push the task branch and
+  open a pull request against `main`. Describe the behavior, changed files,
+  checks, and any material limitations in the PR. The pull request is the
+  user's review point; separate approval before each task-branch commit is not
+  required. Leave PR review and merging to the user.
+- If branch push or PR creation is unavailable, keep the work on the task
+  branch and report what is needed. Do not put the changes on `main` instead.
 - Do not amend, reset, rebase, force-push, or discard another person's work
   unless the user specifically asks for that operation.
