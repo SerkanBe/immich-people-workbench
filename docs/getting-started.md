@@ -6,7 +6,8 @@ or newer and has no third-party Python dependencies.
 ## Run locally
 
 ```bash
-cd people-workbench
+git clone https://github.com/SerkanBe/immich-people-workbench.git
+cd immich-people-workbench
 python3 people_workbench.py
 ```
 

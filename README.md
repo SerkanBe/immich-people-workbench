@@ -39,11 +39,28 @@ Future plans:
 - Allow other immich accounts to login and do their naming
 - Fix the issues/experimentals mentioned above... at some point, if people want that.
 
+## Getting started
+
+You need Python 3.10 or newer and an Immich admin account. No extra Python
+packages are required.
+
+```bash
+git clone https://github.com/SerkanBe/immich-people-workbench.git
+cd immich-people-workbench
+python3 people_workbench.py
+```
+
+If the browser does not open automatically, go to `http://127.0.0.1:8766/`.
+Enter your Immich URL and sign in with your admin account. For local state and
+remote-access details, see the [getting-started guide](docs/getting-started.md).
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — run locally, sign in, and understand local state.
 - [User guide](docs/user-guide.md) — naming, Merge, Investigate, Face review, and Pending.
 - [Development](docs/development.md) — source layout and tests.
+
+Project repository: [github.com/SerkanBe/immich-people-workbench](https://github.com/SerkanBe/immich-people-workbench).
 
 
 ## AI Disclaimer
