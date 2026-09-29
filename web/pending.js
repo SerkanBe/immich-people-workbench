@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 export function createPending({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui, waitUntilReady }) {
+  let syncing = false;
+
   async function renderSampleStrip(container, personId, limit = 4) {
     container.replaceChildren();
     try {
@@ -22,7 +24,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
     state.pages.pending = data.page;
     ui.pendingList.replaceChildren();
     document.querySelector("#pending-empty").hidden = data.total > 0;
-    document.querySelector("#sync-button").disabled = !(state.summary?.counts?.included > 0);
+    document.querySelector("#sync-button").disabled = syncing || !(state.summary?.counts?.included > 0);
     renderPagination("pending-pagination", data, page => { state.pages.pending = page; return renderPending(); });
     for (const item of pending) {
       const row = document.createElement("article"); row.className = "pending-item" + (item.included ? "" : " excluded");
@@ -90,9 +92,26 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
   }
 
   function bindPendingControls() {
-    document.querySelector("#sync-button").addEventListener("click", async () => {
+    const syncButton = document.querySelector("#sync-button");
+    syncButton.addEventListener("click", async () => {
+      if (syncing) return;
       if (!confirm("Sync every checked pending change to Immich now?")) return;
-      try { const result = await api("/api/sync", { method: "POST", body: { confirmation: "SYNC" } }); showToast(`Sync finished: ${result.results.length - result.failed} succeeded, ${result.failed} failed`); await loadNames(); await refreshSummary(); await renderPending(); } catch (error) { showToast(error.message); }
+      syncing = true;
+      syncButton.disabled = true;
+      syncButton.textContent = "Syncing to Immich…";
+      syncButton.setAttribute("aria-busy", "true");
+      try {
+        const result = await api("/api/sync", { method: "POST", body: { confirmation: "SYNC" } });
+        showToast(`Sync finished: ${result.results.length - result.failed} succeeded, ${result.failed} failed`);
+        await loadNames(); await refreshSummary(); await renderPending();
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        syncing = false;
+        syncButton.textContent = "Sync checked changes to Immich";
+        syncButton.removeAttribute("aria-busy");
+        syncButton.disabled = !(state.summary?.counts?.included > 0);
+      }
     });
     document.querySelector("#reset-button").addEventListener("click", async () => {
       const count = state.summary?.counts?.pending || 0;
