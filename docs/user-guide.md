@@ -26,7 +26,9 @@ returns to the field. Choosing the autocomplete entry queues a merge instead.
 
 No action changes Immich immediately. Pending operations survive restarts and
 are applied only from the Pending page with the sync button. Unchecked pending
-items remain in the queue.
+items remain in the queue. While Sync runs, the button shows that it is busy
+and cannot start another Sync. A concurrent Sync request is rejected; failed
+items stay Pending for review and retry.
 
 ## Merge Workbench
 

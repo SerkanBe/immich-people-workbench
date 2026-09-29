@@ -47,6 +47,10 @@ class ToolError(RuntimeError):
     pass
 
 
+class SyncInProgress(ToolError):
+    pass
+
+
 def now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -507,6 +511,7 @@ class AppState:
         self.store = store
         self.reports = reports
         self.lock = threading.RLock()
+        self.sync_lock = threading.Lock()
         self.client: Immich | None = None
         self.version = ""
         self.people: dict[str, dict[str, Any]] = {}
@@ -1000,6 +1005,14 @@ class AppState:
         return dict(result)
 
     def sync(self) -> dict[str, Any]:
+        if not self.sync_lock.acquire(blocking=False):
+            raise SyncInProgress("Sync already in progress")
+        try:
+            return self._sync()
+        finally:
+            self.sync_lock.release()
+
+    def _sync(self) -> dict[str, Any]:
         client = self.require_client()
         all_pending = self.store.pending()
         all_face_pending = self.store.face_detaches()
@@ -1431,6 +1444,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(STATE.sync())
             else:
                 self.send_error(404)
+        except SyncInProgress as exc:
+            self.send_json({"error": str(exc)}, 409)
         except Exception as exc:
             self.send_json({"error": str(exc)}, 400)
 

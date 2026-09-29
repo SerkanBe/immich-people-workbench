@@ -574,6 +574,85 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertEqual(store.face_detaches(), [])
             self.assertNotIn(face_id, store.reviewed_face_ids(source))
 
+    def test_concurrent_sync_rejects_second_request_and_detaches_once(self):
+        class BlockingImmich(FakeImmich):
+            def __init__(self):
+                super().__init__()
+                self.creating = threading.Event()
+                self.continue_creating = threading.Event()
+
+            def create_person(self):
+                self.creating.set()
+                if not self.continue_creating.wait(5):
+                    raise RuntimeError("Synthetic create-person timeout")
+                return super().create_person()
+
+        class QuietHandler(Handler):
+            def log_message(self, *_args):
+                pass
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(root / "state.sqlite3")
+            app = AppState(store, root / "reports")
+            fake = BlockingImmich()
+            app.client = fake
+            app.people = {row["id"]: dict(row, assetCount=7) for row in fake.rows}
+            face_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            app.queue_face_detach({
+                "personId": fake.rows[0]["id"], "faceId": face_id,
+                "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            })
+            auth = AdminSession(app)
+            auth.cookie = "synthetic-session"
+            auth.expires = time.monotonic() + 1000
+            auth.checked = time.monotonic()
+            with mock.patch.object(workbench, "STATE", app, create=True), mock.patch.object(workbench, "AUTH", auth, create=True):
+                server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+                serving = threading.Thread(target=server.serve_forever, daemon=True)
+                serving.start()
+                base = f"http://127.0.0.1:{server.server_port}"
+
+                def post_sync():
+                    request = urllib.request.Request(
+                        base + "/api/sync", data=b'{"confirmation":"SYNC"}', method="POST",
+                        headers={"Content-Type": "application/json", "Origin": base,
+                                 "Cookie": "people_workbench_session=synthetic-session"},
+                    )
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        return json.load(response)
+
+                first_result = []
+                first_error = []
+
+                def run_first():
+                    try:
+                        first_result.append(post_sync())
+                    except Exception as exc:
+                        first_error.append(exc)
+
+                first = threading.Thread(target=run_first)
+                first.start()
+                try:
+                    self.assertTrue(fake.creating.wait(5))
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        post_sync()
+                    self.assertEqual(error.exception.code, 409)
+                    self.assertEqual(json.load(error.exception)["error"], "Sync already in progress")
+                finally:
+                    fake.continue_creating.set()
+                    first.join(5)
+                    server.shutdown()
+                    server.server_close()
+                    serving.join(5)
+
+                self.assertFalse(first.is_alive())
+                self.assertFalse(first_error)
+                self.assertEqual(first_result[0]["failed"], 0)
+                self.assertEqual(len([call for call in fake.calls if call[0] == "create-person"]), 1)
+                self.assertEqual(len([call for call in fake.calls if call[0] == "reassign-face"]), 1)
+                self.assertEqual(store.face_detaches(), [])
+
     def test_failed_face_detach_reuses_the_created_unnamed_person_on_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
