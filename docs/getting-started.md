@@ -36,4 +36,5 @@ directory is excluded from Git. It contains private data and should not be
 inspected, reset, or published casually. The browser also stores canvas
 positions. The server binds to localhost by default.
 
-For the review workflow and shortcuts, see the [User guide](user-guide.md).
+For a walkthrough of the main views, see the [Visual tour](visual-tour.md).
+For the full workflow and shortcuts, see the [User guide](user-guide.md).

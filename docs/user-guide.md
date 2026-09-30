@@ -1,5 +1,7 @@
 # User guide
 
+For an illustrated walkthrough of each main view, see the [Visual tour](visual-tour.md).
+
 Start with [Getting started](getting-started.md). The usual flow is to review
 unnamed people, use Merge or Investigate for difficult cases, check faces, and
 then review Pending before Sync. Every Immich change requires that explicit
