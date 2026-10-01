@@ -146,20 +146,34 @@ The filenames and previews in this view come from the current Immich API.
 
 The Face review page lists visible named and unnamed Immich people that are not
 currently excluded by pending changes. Select
-one to load its assigned faces. The page size is calculated separately from the
-available grid width and viewport height (with a 5×4 fallback), so complete rows
-fit without body scrolling. The grid reserves the calculated height, keeping the
-pagination controls in the same place even on a short final page. Each tile is cropped to the face;
-the **Photo** button opens the surrounding Immich preview for context. Mark one
-or more wrong matches and choose **Queue selected for Unnamed**.
+one to load its assigned faces into a continuous, ordered grid. More faces load
+as you scroll or choose **Load more faces**; keyboard users can use that button
+to focus the next batch. Only nearby tiles are rendered. Each tile is cropped to the
+face. Hovering or focusing **Photo** shows a small surrounding-image preview;
+clicking **Photo** opens the larger Immich preview. `P` opens it for the focused
+tile too.
 
-Correct faces can be checked as **Reviewed** or toggled with `R` while their tile
-has focus. This status is stored only in the local SQLite state. The person list
+Click a wrong face, or use `Enter` or `Space` on its focused tile, to select it.
+`Shift`+click selects a range. `Shift`+drag selects an area, or turn on **Area
+select** (`A`) to drag without holding Shift. Selection has a blue border;
+Reviewed faces have a green status and border. Choose **Queue selected for
+Unnamed** (`Q`) to put selected wrong matches into Pending.
+
+Use the tile's Reviewed status button or press `R` on its focused tile to toggle
+one correct face. **Mark selected Reviewed** (`M`) handles a selection together.
+This status is stored only in local SQLite state. The person list
 shows reviewed progress, and when the number of reviewed faces reaches Immich's
 current photo count for that cluster the whole person is marked Reviewed. Newly
 added Immich photos increase the total and therefore reopen the person for
 review. Faces queued for Unnamed count as handled while pending; after a
 successful reassignment their old review marker is removed.
+
+**Hide selected** (`H`) removes selected faces from this view without losing the
+selection; **Show hidden** (`Shift+H`) restores them. The queue button includes
+the number of hidden selected faces so they cannot be queued unnoticed. **Clear
+selection** (`C`) deselects all faces. Hidden faces and the selection are
+session-only and clear when you choose another person or reload. The **Shortcuts
+?** button, or `?`, shows the full key reference.
 
 This action is local first. The face appears on Pending as `detach-face`, where
 it can be excluded, previewed, or removed from the queue. During an explicit
@@ -180,10 +194,9 @@ changes that were already synced to Immich.
 Unnamed, Investigate, Pending, Named, Ignored, and the Face Review person list
 use server-side pagination. The header's **Per page** selector offers 12, 24,
 48, or 60 entries and stores the choice in this browser. The selected person's
-face grid has its own viewport-calculated page size. Search filtering is applied
-before pagination, and out-of-range pages are clamped after queue operations
-remove entries. Face selections remain marked while moving between that
-person's face pages.
+face grid loads sequential server batches as you scroll. Search filtering is
+applied before person-list pagination, and out-of-range pages are clamped after
+queue operations remove entries.
 
 The Merge Workbench intentionally remains unpaginated: it is one persistent
 spatial canvas, so hiding most cards behind pages would break saved positions,
