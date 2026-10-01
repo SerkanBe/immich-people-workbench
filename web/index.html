@@ -108,21 +108,24 @@
               <button id="merge-buckets-tab" class="merge-organizer-tab" type="button" role="tab" aria-selected="false" aria-controls="merge-buckets-panel">Buckets <span id="merge-bucket-count">0</span></button>
             </div>
             <div id="merge-groups-panel" role="tabpanel" aria-labelledby="merge-groups-tab">
-              <div class="merge-list-toolbar"><button id="merge-review-groups" class="primary-button" type="button" disabled>Review person groups [V]</button></div>
+              <p class="merge-collection-note">Person groups are saved in this browser. Review them together or select one to queue it below.</p>
+              <div class="merge-list-toolbar"><button id="merge-review-groups" class="primary-button" type="button" disabled>Review all person groups [V]</button></div>
               <div id="merge-person-groups" class="canvas-groups-list"><p class="muted">Select faces and press G to create a person group.</p></div>
             </div>
             <div id="merge-buckets-panel" role="tabpanel" aria-labelledby="merge-buckets-tab" hidden>
+              <p class="merge-collection-note">Buckets are local sorting labels. Selecting one never queues a merge.</p>
               <div id="merge-canvas-buckets" class="canvas-groups-list"><p class="muted">Hover a face and press 1–9 to create a bucket.</p></div>
             </div>
           </section>
           <section class="merge-selection-panel" aria-labelledby="merge-tray-heading">
             <div class="merge-tray-heading"><div><p id="merge-selection-kicker" class="merge-kicker">LOOSE SELECTION</p><h3 id="merge-tray-heading">Selected faces <span id="merge-selected-count">0</span></h3></div><button id="merge-clear" class="quiet-button" type="button">Clear [C]</button></div>
+            <p id="merge-selection-explainer" class="merge-selection-explainer">Temporary markings. Press G to save two or more faces as a person group.</p>
             <div id="merge-selected" class="merge-selected"><p class="muted">Mark faces on the canvas or select a collection above.</p></div>
           </section>
           <div id="merge-operation-panel" class="merge-operation-panel">
             <div id="merge-target" class="merge-target muted">The largest cluster survives. The merged person remains unnamed.</div>
-            <button id="merge-queue" class="primary-button" type="button" disabled>Queue merge</button>
-            <p class="merge-note">This adds merge operations to Pending without assigning a name. Immich changes only when you sync.</p>
+            <button id="merge-queue" class="primary-button" type="button" disabled>Queue this group to Pending</button>
+            <p class="merge-note">Queuing keeps the result unnamed. Review it in Pending; Immich changes only when you Sync.</p>
           </div>
         </aside>
       </div>
@@ -224,13 +227,13 @@
 
   <dialog id="group-review-dialog" class="group-review-dialog">
     <div class="dialog-form">
-      <div class="detail-heading"><div><h2>Review person groups</h2><p id="group-review-progress">Group 1 of 1</p></div><button id="group-review-close" class="icon-button" type="button" tabindex="-1" aria-label="Close review">×</button></div>
+      <div class="detail-heading"><div><h2>Review all person groups</h2><p id="group-review-progress">Group 1 of 1</p></div><button id="group-review-close" class="icon-button" type="button" tabindex="-1" aria-label="Close review">×</button></div>
       <div id="group-review-faces" class="group-review-faces" aria-live="polite"></div>
-      <p class="group-review-note">Confirm only when every face belongs to the same person. Skipping leaves the group unchanged for manual correction.</p>
+      <p class="group-review-note">The highlighted cluster has the most photos and survives unnamed. Confirm only when every face belongs to the same person; this queues the merge in Pending for an explicit Sync. Skipping leaves the group unchanged.</p>
       <div id="group-review-status" class="group-review-status" role="status" hidden></div>
       <div class="group-review-actions">
         <button id="group-review-skip" class="quiet-button" type="button">← Skip</button>
-        <button id="group-review-confirm" class="primary-button" type="button">Queue merge →</button>
+        <button id="group-review-confirm" class="primary-button" type="button">Queue this group to Pending →</button>
       </div>
     </div>
   </dialog>

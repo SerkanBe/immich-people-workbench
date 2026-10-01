@@ -285,6 +285,11 @@ export function createMergeWorkbench({ api, cleanName, moveSlide, personThumb, r
     document.querySelector("#merge-selection-kicker").textContent = bucketMode
       ? `BUCKET ${mergeBucketLabel(bucketId)}${bucketName ? ` · ${bucketName}` : ""}`
       : groupMode ? `PERSON GROUP G${groupNumber}` : "LOOSE SELECTION";
+    document.querySelector("#merge-selection-explainer").textContent = bucketMode
+      ? "Local sorting only. Move or pack these faces; × removes a face from this bucket."
+      : groupMode
+        ? "Saved in this browser. × removes a face from this group; queue it below when ready."
+        : "Temporary markings. Press G to save two or more faces as a person group; × unmarks a face.";
     document.querySelector("#merge-operation-panel").hidden = !groupMode;
     document.querySelector("#merge-selected-count").textContent = people.length;
     ui.mergeSelected.replaceChildren();
@@ -296,7 +301,7 @@ export function createMergeWorkbench({ api, cleanName, moveSlide, personThumb, r
     } else {
       for (const person of people) {
         const row = document.createElement("div"); row.className = "merge-selected-person";
-        if (person.id === survivor?.id && people.length >= 2) row.classList.add("survivor");
+        if (groupMode && person.id === survivor?.id && people.length >= 2) row.classList.add("survivor");
         const image = document.createElement("img"); image.src = personThumb(person.id); image.alt = "";
         const text = document.createElement("div");
         const strong = document.createElement("strong");
@@ -313,12 +318,21 @@ export function createMergeWorkbench({ api, cleanName, moveSlide, personThumb, r
 
     const targetBox = document.querySelector("#merge-target");
     targetBox.className = "merge-target muted";
-    targetBox.textContent = people.length >= 2
-      ? `The largest cluster (${survivor?.assetCount ?? "?"} photos) survives unnamed; ${people.length - 1} ${people.length === 2 ? "cluster is" : "clusters are"} merged into it.`
-      : "A person group needs at least two clusters.";
+    targetBox.replaceChildren();
+    if (groupMode && people.length >= 2 && survivor) {
+      const target = document.createElement("div"); target.className = "merge-target-person";
+      const image = document.createElement("img"); image.src = personThumb(survivor.id); image.alt = "Surviving cluster";
+      const description = document.createElement("div");
+      const heading = document.createElement("strong"); heading.textContent = `Survives unnamed · ${survivor.assetCount ?? "?"} photos`;
+      const detail = document.createElement("small");
+      detail.textContent = `${people.length - 1} ${people.length === 2 ? "cluster" : "clusters"} will merge into this one after Sync.`;
+      description.append(heading, detail); target.append(image, description); targetBox.append(target);
+    } else {
+      targetBox.textContent = "A person group needs at least two clusters.";
+    }
     const canQueue = groupMode && people.length >= 2;
     const queue = document.querySelector("#merge-queue"); queue.disabled = !canQueue;
-    queue.textContent = `Queue merge · ${Math.max(0, people.length - 1)} ${people.length === 2 ? "merge" : "merges"}`;
+    queue.textContent = "Queue this group to Pending";
     renderMergeOrganizerLists();
   }
 

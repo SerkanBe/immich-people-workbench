@@ -74,8 +74,14 @@ canvas layout, but never become Immich operations themselves.
 
 The collection tabs and their lists stay at the top of the tray. The faces in
 the current loose selection, bucket, or person group appear below them. The
+tray explains what each selection means: loose markings are temporary, buckets
+are local sorting labels, and person groups are saved in this browser. The
 unnamed merge action forms the final section and remains visible only for a
-selected person group.
+selected person group. It shows the surviving cluster beside **Queue this group
+to Pending**. Queueing does not assign a name or change Immich; review the
+operation in Pending before an explicit Sync. The `×` next to a selected face
+unmarks it, removes it from the bucket, or removes it from the person group,
+depending on the active selection.
 
 The main canvas actions have direct hotkeys whenever focus is not inside an
 input, select, or dialog: `A` toggles area selection, `G` groups the selection,
@@ -119,7 +125,7 @@ into it. No name is assigned. The survivor is kept out of the naming queue while
 those merge operations are Pending. After sync reloads Immich, the merged
 unnamed person returns to the established naming flow.
 
-**Review person groups** (or `V`) opens a keyboard-first modal and shows every
+**Review all person groups** (or `V`) opens a keyboard-first modal and shows every
 cluster thumbnail in one group. `Right` or `Enter` confirms the group and queues
 its unnamed merge, then advances immediately. `Left` skips the group without
 changing it, so it remains available for manual correction on the canvas.
