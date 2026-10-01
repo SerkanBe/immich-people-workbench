@@ -8,7 +8,7 @@ Sync.
 ## Naming and keyboard flow
 
 - Type a name: autocomplete searches normal fragments of existing names.
-- `Tab`: accept the grey autocomplete completion when one is visible;
+- `Tab`: accept the visible autocomplete completion when one is shown;
   otherwise move normally to the next name field.
 - `Up` / `Down`: navigate suggestions. Moving above the first suggestion
   restores the unfinished text.
@@ -19,6 +19,9 @@ Sync.
 - `Alt+S`: skip the current cluster and move it into the next round.
 - `Alt+I`: queue the current cluster as ignored.
 - `Alt+D`: move the current cluster into the persistent Investigate view.
+
+The hint below each name field shows the main completion and submission keys.
+Suggestion rows wrap long names and show their photo count underneath.
 
 Typing an existing full name manually opens a confirmation dialog. `Enter`
 confirms that a separate person with the same name is intentional; `Escape`
