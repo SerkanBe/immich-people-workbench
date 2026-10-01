@@ -205,6 +205,10 @@ export function createNaming({ api, assetThumb, cleanName, loadNames, personThum
 
   function attachNameBehavior(model) {
     const { input } = model;
+    const hint = document.createElement("p");
+    hint.className = "name-keyboard-hint";
+    hint.textContent = "Tab complete or next · ↑/↓ choose · Enter submit";
+    input.closest(".name-wrap").append(hint);
     input.addEventListener("focus", () => updateSuggestions(model));
     input.addEventListener("input", () => updateSuggestions(model));
     input.addEventListener("blur", () => setTimeout(() => model.list.classList.remove("open"), 120));
