@@ -479,6 +479,21 @@ class Store:
             else:
                 db.execute("DELETE FROM face_reviews WHERE face_id=? AND person_id=?", (face_id, person_id))
 
+    def set_faces_reviewed(self, face_ids: list[str], person_id: str, reviewed: bool) -> None:
+        with self.connect() as db:
+            if reviewed:
+                db.executemany(
+                    """INSERT INTO face_reviews(face_id, person_id, reviewed_at) VALUES(?,?,?)
+                       ON CONFLICT(face_id) DO UPDATE SET person_id=excluded.person_id,
+                           reviewed_at=excluded.reviewed_at""",
+                    [(face_id, person_id, now()) for face_id in face_ids],
+                )
+            else:
+                db.executemany(
+                    "DELETE FROM face_reviews WHERE face_id=? AND person_id=?",
+                    [(face_id, person_id) for face_id in face_ids],
+                )
+
     def remove_face_review(self, face_id: str) -> None:
         with self.connect() as db:
             db.execute("DELETE FROM face_reviews WHERE face_id=?", (face_id,))
@@ -871,9 +886,27 @@ class AppState:
         if not person or person.get("isHidden"):
             raise ToolError("Person is no longer available for face review")
         self.store.set_face_reviewed(face_id, person_id, bool(payload.get("reviewed")))
+        return self.face_review_progress(person_id, person)
+
+    def face_review_progress(self, person_id: str, person: dict[str, Any]) -> dict[str, Any]:
         total = max(0, int(person.get("assetCount") or 0))
-        count = min(total, len(self.store.reviewed_face_ids(person_id))) if total else 0
+        queued = {row["face_id"] for row in self.store.face_detaches() if row["source_person_id"] == person_id}
+        count = min(total, len(self.store.reviewed_face_ids(person_id) | queued)) if total else 0
         return {"reviewedCount": count, "reviewTotal": total, "personReviewed": total > 0 and count >= total}
+
+    def set_faces_reviewed(self, payload: dict[str, Any]) -> dict[str, Any]:
+        person_id = str(payload.get("personId", ""))
+        face_ids = payload.get("faceIds")
+        if (not UUID_RE.fullmatch(person_id) or not isinstance(face_ids, list)
+                or not 1 <= len(face_ids) <= 500 or any(not isinstance(face_id, str) or not UUID_RE.fullmatch(face_id) for face_id in face_ids)
+                or len(set(face_ids)) != len(face_ids)):
+            raise ToolError("Invalid face review items")
+        with self.lock:
+            person = self.people.get(person_id)
+        if not person or person.get("isHidden"):
+            raise ToolError("Person is no longer available for face review")
+        self.store.set_faces_reviewed(face_ids, person_id, bool(payload.get("reviewed")))
+        return self.face_review_progress(person_id, person)
 
     def queue_face_detach(self, payload: dict[str, Any]) -> None:
         person_id = str(payload.get("personId", ""))
@@ -1406,6 +1439,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             elif path == "/api/face-review/reviewed":
                 self.send_json({"ok": True, **STATE.set_face_reviewed(payload)})
+            elif path == "/api/face-review/reviewed/bulk":
+                self.send_json({"ok": True, **STATE.set_faces_reviewed(payload)})
             elif path == "/api/face-detach/include":
                 face_id = str(payload.get("faceId", ""))
                 if not UUID_RE.fullmatch(face_id):

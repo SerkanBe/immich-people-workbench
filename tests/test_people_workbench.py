@@ -548,6 +548,51 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertTrue(reviewed_person["reviewed"])
             self.assertEqual(reviewed_person["reviewedCount"], 2)
 
+    def test_bulk_review_saves_locally_and_rejects_invalid_batches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(root / "state.sqlite3")
+            app = AppState(store, root / "reports")
+            fake = FakeImmich()
+            app.client = fake
+            app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
+            person_id = fake.rows[0]["id"]
+            ids = ["cccccccc-cccc-4ccc-8ccc-cccccccccccc", "dddddddd-dddd-4ddd-8ddd-dddddddddddd"]
+
+            with self.assertRaises(ToolError):
+                app.set_faces_reviewed({"personId": person_id, "faceIds": ids + ["invalid"], "reviewed": True})
+            self.assertEqual(store.reviewed_face_ids(person_id), set())
+            with self.assertRaises(ToolError):
+                app.set_faces_reviewed({"personId": person_id, "faceIds": [ids[0], ids[0]], "reviewed": True})
+            self.assertEqual(store.reviewed_face_ids(person_id), set())
+
+            result = app.set_faces_reviewed({"personId": person_id, "faceIds": ids, "reviewed": True})
+            self.assertTrue(result["personReviewed"])
+            self.assertEqual(store.reviewed_face_ids(person_id), set(ids))
+            self.assertEqual(fake.calls, [])
+            self.assertFalse(store.face_detaches())
+
+            app.set_faces_reviewed({"personId": person_id, "faceIds": [ids[0]], "reviewed": False})
+            self.assertEqual(store.reviewed_face_ids(person_id), {ids[1]})
+
+    def test_bulk_review_progress_counts_pending_detaches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(root / "state.sqlite3")
+            app = AppState(store, root / "reports")
+            fake = FakeImmich()
+            app.client = fake
+            app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
+            person_id = fake.rows[0]["id"]
+            first = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            second = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            store.queue_face_detach(first, person_id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "synthetic.jpg")
+
+            result = app.set_faces_reviewed({"personId": person_id, "faceIds": [second], "reviewed": True})
+            self.assertEqual(result["reviewedCount"], 2)
+            self.assertTrue(result["personReviewed"])
+            self.assertEqual(fake.calls, [])
+
     def test_face_detach_is_queued_locally_then_synced_to_new_unnamed_person(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

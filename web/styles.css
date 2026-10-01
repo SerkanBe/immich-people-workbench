@@ -236,23 +236,43 @@ body.merge-zen .merge-tray { position: static; height: 100vh; overflow-y: auto; 
 .face-person-button small { margin-top: 3px; color: var(--muted); }
 .face-review-main { min-height: 440px; padding: 16px; }
 .face-review-placeholder { max-width: 500px; margin: 100px auto; color: var(--muted); text-align: center; }
-.face-review-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 15px; }
+.face-review-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 12px; }
 .face-review-toolbar h3, .face-review-toolbar p { margin: 0; }
-.face-review-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); align-content: start; gap: 12px; }
-.face-review-card { min-width: 0; padding: 7px; border: 3px solid transparent; border-radius: 11px; background: var(--surface-2); cursor: pointer; }
+.face-review-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 8px; }
+.face-review-actions button { min-height: 34px; padding: 6px 9px; }
+.face-review-actions button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.face-review-actions kbd { margin-left: 3px; }
+.face-review-shortcuts { padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: .78rem; line-height: 1.7; }
+.face-review-grid { position: relative; height: clamp(460px, 68vh, 900px); overflow-y: auto; overflow-x: hidden; border: 1px solid var(--border); border-radius: 9px; overscroll-behavior: contain; }
+.face-review-grid.area-mode { cursor: crosshair; user-select: none; }
+.face-review-virtual { position: relative; width: calc(100% - 16px); min-height: 1px; margin: 8px; }
+.face-review-card { position: absolute; min-width: 0; overflow: visible; padding: 7px; border: 3px solid transparent; border-radius: 11px; background: var(--surface-2); cursor: pointer; }
 .face-review-card:hover { border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
 .face-review-card.reviewed { border-color: color-mix(in srgb, #2d9d63 68%, transparent); background: color-mix(in srgb, #2d9d63 8%, var(--surface-2)); }
-.face-review-card.selected { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, var(--surface-2)); }
+.face-review-card.selected { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--surface), 0 0 0 2px var(--accent); background: var(--accent-soft); }
 .face-review-card.queued { opacity: .55; cursor: default; }
 .face-review-card canvas, .face-review-card > img { display: block; width: 100%; aspect-ratio: 1; border-radius: 7px; object-fit: cover; background: var(--surface); }
 .face-review-card-meta { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; padding-top: 7px; }
 .face-review-card-meta code { grid-column: 1 / -1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .face-review-status { color: var(--muted); font-size: .75rem; }
-.face-review-card.selected .face-review-status { color: var(--danger); }
+.face-review-card.selected .face-review-status { color: var(--accent); font-weight: 700; }
 .face-review-card-meta button { min-height: 30px; padding: 4px 8px; }
-.face-reviewed-check { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; color: var(--muted); cursor: pointer; font-size: .78rem; }
-.face-reviewed-check input { width: 17px; height: 17px; min-height: 0; margin: 0; padding: 0; }
+.face-review-reviewed { grid-column: 1 / -1; text-align: left; border: 0; border-radius: 5px; color: var(--muted); background: transparent; font-size: .78rem; }
+.face-review-card.reviewed .face-review-reviewed { color: #2d9d63; font-weight: 700; }
+.face-review-peek { display: none; position: fixed; z-index: 1000; width: 220px; padding: 5px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 22px color-mix(in srgb, #000 25%, transparent); pointer-events: none; }
+.face-review-peek.shown { display: block; }
+.face-review-peek img { display: block; width: 100%; max-height: 180px; object-fit: contain; }
+.face-review-selection-box { position: absolute; z-index: 40; border: 2px solid var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 20%, transparent); pointer-events: none; }
+.face-review-empty { position: absolute; top: 20px; left: 20px; }
+.face-review-load-row { display: flex; align-items: center; justify-content: space-between; min-height: 30px; margin-top: 6px; font-size: .78rem; }
 .person-reviewed .face-review-toolbar h3::after { content: "  ✓"; color: #2d9d63; }
+
+@media (max-width: 620px) {
+  .face-review-toolbar { align-items: stretch; }
+  .face-review-actions button { flex: 1 1 auto; }
+  .face-review-grid { height: 65vh; }
+  .face-review-peek { width: 170px; }
+}
 .pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px; margin: 20px 0 4px; }
 .pagination[hidden] { display: none; }
 .pagination.compact { margin: 2px 0 0; padding-top: 9px; border-top: 1px solid var(--border); }
