@@ -57,6 +57,7 @@ remote-access details, see the [getting-started guide](docs/getting-started.md).
 ## Documentation
 
 - [Getting started](docs/getting-started.md) — run locally, sign in, and understand local state.
+- [Visual tour](docs/visual-tour.md) — illustrated walkthrough of the main views and workflows.
 - [User guide](docs/user-guide.md) — naming, Merge, Investigate, Face review, and Pending.
 - [Development](docs/development.md) — source layout and tests.
 
