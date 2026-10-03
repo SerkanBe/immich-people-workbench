@@ -316,6 +316,15 @@ class Store:
                     reviewed_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS face_reviews_person_idx ON face_reviews(person_id);
+                CREATE TABLE IF NOT EXISTS face_review_drafts (
+                    face_id TEXT PRIMARY KEY,
+                    person_id TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    file_name TEXT NOT NULL DEFAULT '',
+                    verdict TEXT NOT NULL CHECK(verdict IN ('correct', 'wrong', 'unreviewed')),
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS face_review_drafts_person_idx ON face_review_drafts(person_id);
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -442,6 +451,68 @@ class Store:
             rows = db.execute("SELECT * FROM face_detach_pending ORDER BY created_at, face_id").fetchall()
         return [dict(row) for row in rows]
 
+    def face_review_drafts(self, person_id: str | None = None) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            if person_id is None:
+                rows = db.execute("SELECT * FROM face_review_drafts ORDER BY updated_at, face_id").fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT * FROM face_review_drafts WHERE person_id=? ORDER BY updated_at, face_id", (person_id,)
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_face_review_drafts(self, person_id: str, items: list[dict[str, str]]) -> None:
+        stamp = now()
+        with self.connect() as db:
+            for item in items:
+                if item["verdict"] == "clear":
+                    db.execute("DELETE FROM face_review_drafts WHERE face_id=? AND person_id=?", (item["faceId"], person_id))
+                else:
+                    db.execute(
+                        """INSERT INTO face_review_drafts(face_id,person_id,asset_id,file_name,verdict,updated_at)
+                           VALUES(?,?,?,?,?,?) ON CONFLICT(face_id) DO UPDATE SET person_id=excluded.person_id,
+                           asset_id=excluded.asset_id,file_name=excluded.file_name,verdict=excluded.verdict,
+                           updated_at=excluded.updated_at""",
+                        (item["faceId"], person_id, item["assetId"], item["fileName"], item["verdict"], stamp),
+                    )
+
+    def submit_face_review(self, person_id: str, expected: list[dict[str, Any]]) -> dict[str, int]:
+        counts = {"correct": 0, "wrong": 0, "unreviewed": 0}
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            drafts = db.execute("SELECT * FROM face_review_drafts WHERE person_id=?", (person_id,)).fetchall()
+            identity = lambda rows: sorted((row["face_id"], row["asset_id"], row["verdict"]) for row in rows)
+            if identity(drafts) != identity(expected):
+                raise ToolError("Review decisions changed in another tab; reload before submitting")
+            if any(db.execute("SELECT 1 FROM face_detach_pending WHERE face_id=?", (row["face_id"],)).fetchone()
+                   for row in drafts):
+                raise ToolError("A selected face is already in Pending; reload before submitting")
+            stamp = now()
+            for row in drafts:
+                verdict = row["verdict"]
+                counts[verdict] += 1
+                if verdict == "correct":
+                    db.execute(
+                        """INSERT INTO face_reviews(face_id,person_id,reviewed_at) VALUES(?,?,?)
+                           ON CONFLICT(face_id) DO UPDATE SET person_id=excluded.person_id,
+                           reviewed_at=excluded.reviewed_at""",
+                        (row["face_id"], person_id, stamp),
+                    )
+                else:
+                    db.execute("DELETE FROM face_reviews WHERE face_id=?", (row["face_id"],))
+                if verdict == "wrong":
+                    db.execute(
+                        """INSERT INTO face_detach_pending(face_id,source_person_id,asset_id,file_name,
+                           target_person_id,included,last_error,created_at,updated_at)
+                           VALUES(?,?,?,?,NULL,1,'',?,?)
+                           ON CONFLICT(face_id) DO UPDATE SET source_person_id=excluded.source_person_id,
+                           asset_id=excluded.asset_id,file_name=excluded.file_name,included=1,
+                           last_error='',updated_at=excluded.updated_at""",
+                        (row["face_id"], person_id, row["asset_id"], row["file_name"], stamp, stamp),
+                    )
+            db.execute("DELETE FROM face_review_drafts WHERE person_id=?", (person_id,))
+        return counts
+
     def set_face_detach_included(self, face_id: str, included: bool) -> None:
         with self.connect() as db:
             db.execute(
@@ -466,6 +537,7 @@ class Store:
     def remove_face_detach(self, face_id: str) -> None:
         with self.connect() as db:
             db.execute("DELETE FROM face_detach_pending WHERE face_id=?", (face_id,))
+            db.execute("DELETE FROM face_reviews WHERE face_id=?", (face_id,))
 
     def set_face_reviewed(self, face_id: str, person_id: str, reviewed: bool) -> None:
         with self.connect() as db:
@@ -505,7 +577,19 @@ class Store:
 
     def face_review_counts(self) -> dict[str, int]:
         with self.connect() as db:
-            rows = db.execute("SELECT person_id, COUNT(*) AS count FROM face_reviews GROUP BY person_id").fetchall()
+            rows = db.execute(
+                """SELECT person_id,COUNT(*) AS count FROM (
+                     SELECT person_id,face_id FROM face_reviews
+                       WHERE face_id NOT IN (SELECT face_id FROM face_review_drafts WHERE verdict='unreviewed')
+                     UNION SELECT source_person_id,face_id FROM face_detach_pending
+                     UNION SELECT person_id,face_id FROM face_review_drafts WHERE verdict IN ('correct','wrong')
+                   ) GROUP BY person_id"""
+            ).fetchall()
+        return {row["person_id"]: int(row["count"]) for row in rows}
+
+    def face_review_draft_counts(self) -> dict[str, int]:
+        with self.connect() as db:
+            rows = db.execute("SELECT person_id,COUNT(*) AS count FROM face_review_drafts GROUP BY person_id").fetchall()
         return {row["person_id"]: int(row["count"]) for row in rows}
 
     def setting(self, key: str, default: str = "") -> str:
@@ -660,19 +744,28 @@ class AppState:
         elif kind == "ignored":
             people = [p for p in people if p.get("isHidden") and p["id"] not in pending_ids]
         elif kind == "review":
-            people = [p for p in people if not p.get("isHidden") and p["id"] not in pending_ids and p["id"] not in pending_merge_targets]
+            people = [p for p in people if not p.get("isHidden")]
         else:
             raise ToolError("Unknown people list")
         for person in people:
             person["skipCount"] = skips.get(person["id"], 0)
         if kind == "review":
             review_counts = self.store.face_review_counts()
+            draft_counts = self.store.face_review_draft_counts()
+            pending_by_id = {item["person_id"]: item for item in pending}
             for person in people:
                 total = max(0, int(person.get("assetCount") or 0))
                 reviewed = min(total, review_counts.get(person["id"], 0)) if total else 0
                 person["reviewedCount"] = reviewed
                 person["reviewTotal"] = total
-                person["reviewed"] = total > 0 and reviewed >= total
+                person["reviewed"] = total > 0 and reviewed >= total and not draft_counts.get(person["id"])
+                person["draftCount"] = draft_counts.get(person["id"], 0)
+                queued = pending_by_id.get(person["id"])
+                if queued:
+                    person["pendingOperation"] = queued["operation"]
+                    person["pendingName"] = queued.get("target_name") or queued.get("name") or ""
+                elif person["id"] in pending_merge_targets:
+                    person["pendingOperation"] = "merge-target"
         people = sort_people(people, order)
         if kind == "unnamed":
             people.sort(key=lambda p: p["skipCount"])
@@ -863,17 +956,19 @@ class AppState:
                     faces.extend(rows)
         queued = {row["face_id"] for row in self.store.face_detaches()}
         reviewed = self.store.reviewed_face_ids(person_id)
+        drafts = {row["face_id"]: row for row in self.store.face_review_drafts(person_id)}
         for face in faces:
             face["queued"] = face["faceId"] in queued
-            face["reviewed"] = face["faceId"] in reviewed or face["queued"]
-        reviewed_count = min(total, len(reviewed | queued)) if total else 0
+            face["reviewed"] = face["faceId"] in reviewed
+            face["draftVerdict"] = drafts[face["faceId"]]["verdict"] if face["faceId"] in drafts else None
+        counts = self.face_review_progress(person_id, person)
         pages = max(1, (total + size - 1) // size)
         return {
             "faces": faces, "page": page, "size": size, "pages": pages,
             "hasPrevious": page > 1, "hasNext": has_more, "hasMore": has_more,
             "from": (page - 1) * size + 1 if total else 0,
             "to": min(page * size, total), "total": total, "totalAssets": total,
-            "reviewedCount": reviewed_count, "personReviewed": total > 0 and reviewed_count >= total,
+            **counts,
         }
 
     def set_face_reviewed(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -891,8 +986,81 @@ class AppState:
     def face_review_progress(self, person_id: str, person: dict[str, Any]) -> dict[str, Any]:
         total = max(0, int(person.get("assetCount") or 0))
         queued = {row["face_id"] for row in self.store.face_detaches() if row["source_person_id"] == person_id}
-        count = min(total, len(self.store.reviewed_face_ids(person_id) | queued)) if total else 0
-        return {"reviewedCount": count, "reviewTotal": total, "personReviewed": total > 0 and count >= total}
+        drafts = self.store.face_review_drafts(person_id)
+        draft_correct = {row["face_id"] for row in drafts if row["verdict"] == "correct"}
+        draft_wrong = {row["face_id"] for row in drafts if row["verdict"] == "wrong"}
+        draft_unreviewed = {row["face_id"] for row in drafts if row["verdict"] == "unreviewed"}
+        correct = (self.store.reviewed_face_ids(person_id) | draft_correct) - draft_wrong - draft_unreviewed - queued
+        handled = correct | draft_wrong | queued
+        count = min(total, len(handled)) if total else 0
+        return {
+            "reviewedCount": count, "reviewTotal": total,
+            "correctCount": len(correct), "wrongDraftCount": len(draft_wrong),
+            "queuedFaceCount": len(queued), "draftCount": len(drafts),
+            "untouchedCount": max(0, total - len(handled)),
+            "personReviewed": total > 0 and count >= total and not drafts,
+        }
+
+    def set_face_review_drafts(self, payload: dict[str, Any]) -> dict[str, Any]:
+        person_id = str(payload.get("personId", ""))
+        items = payload.get("items")
+        if not UUID_RE.fullmatch(person_id) or not isinstance(items, list) or not 1 <= len(items) <= 500:
+            raise ToolError("Invalid face review draft")
+        with self.lock:
+            person = self.people.get(person_id)
+        if not person or person.get("isHidden"):
+            raise ToolError("Person is no longer available for face review")
+        normalized = []
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                raise ToolError("Invalid face review draft")
+            face_id, asset_id = item.get("faceId"), item.get("assetId")
+            verdict = item.get("verdict")
+            if (not isinstance(face_id, str) or not UUID_RE.fullmatch(face_id) or face_id in seen
+                    or not isinstance(asset_id, str) or not UUID_RE.fullmatch(asset_id)
+                    or verdict not in {"correct", "wrong", "unreviewed", "clear"}):
+                raise ToolError("Invalid face review draft")
+            seen.add(face_id)
+            normalized.append({"faceId": face_id, "assetId": asset_id,
+                               "fileName": normalized_name(item.get("fileName")), "verdict": verdict})
+        queued = {row["face_id"] for row in self.store.face_detaches()}
+        if seen & queued:
+            raise ToolError("A selected face is already in Pending")
+        self.store.set_face_review_drafts(person_id, normalized)
+        return self.face_review_progress(person_id, person)
+
+    def submit_face_review(self, payload: dict[str, Any]) -> dict[str, Any]:
+        person_id = str(payload.get("personId", ""))
+        if not UUID_RE.fullmatch(person_id):
+            raise ToolError("Invalid person ID")
+        with self.lock:
+            person = self.people.get(person_id)
+        if not person or person.get("isHidden"):
+            raise ToolError("Person is no longer available for face review")
+        drafts = self.store.face_review_drafts(person_id)
+        if not drafts:
+            raise ToolError("No review decisions to submit")
+        wrong = [row for row in drafts if row["verdict"] == "wrong"]
+        faces_by_asset: dict[str, list[dict[str, Any]]] = {}
+        client = self.require_client() if wrong else None
+        for row in wrong:
+            asset_id = row["asset_id"]
+            if asset_id not in faces_by_asset:
+                faces_by_asset[asset_id] = client.faces(asset_id)
+            matching = False
+            for face in faces_by_asset[asset_id]:
+                if not isinstance(face, dict):
+                    continue
+                linked = face.get("person") if isinstance(face.get("person"), dict) else {}
+                if face.get("id") == row["face_id"] and (linked.get("id") or face.get("personId")) == person_id:
+                    matching = True
+                    break
+            if not matching:
+                raise ToolError("A wrong face is no longer assigned to this person; reload before submitting")
+        submitted = self.store.submit_face_review(person_id, drafts)
+        decisions = [{"faceId": row["face_id"], "verdict": row["verdict"]} for row in drafts]
+        return {"submitted": submitted, "submittedFaces": decisions, **self.face_review_progress(person_id, person)}
 
     def set_faces_reviewed(self, payload: dict[str, Any]) -> dict[str, Any]:
         person_id = str(payload.get("personId", ""))
@@ -927,7 +1095,7 @@ class AppState:
         if not matching:
             raise ToolError("This face is no longer assigned to that person")
         self.store.queue_face_detach(face_id, person_id, asset_id, str(payload.get("fileName") or ""))
-        self.store.set_face_reviewed(face_id, person_id, True)
+        self.store.set_face_reviewed(face_id, person_id, False)
 
     def discard_pending(self) -> int:
         discarded = self.store.clear_pending()
@@ -1049,9 +1217,11 @@ class AppState:
         client = self.require_client()
         all_pending = self.store.pending()
         all_face_pending = self.store.face_detaches()
+        draft_people = {row["person_id"] for row in self.store.face_review_drafts()}
         pending_by_id = {row["person_id"]: row for row in all_pending}
         rows = [row for row in all_pending if row["included"]]
         face_rows = [row for row in all_face_pending if row["included"]]
+        unresolved_faces = {row["source_person_id"] for row in all_face_pending if not row["included"]}
         priority = {"rename": 0, "unhide": 0, "hide": 0, "merge": 1}
         rows.sort(key=lambda row: (priority.get(row["operation"], 9), row["created_at"], row["person_id"]))
         results = []
@@ -1071,6 +1241,7 @@ class AppState:
                     "operation": "detach-face", "result": "synced", "targetPersonId": target_id,
                 })
             except Exception as exc:
+                unresolved_faces.add(row["source_person_id"])
                 self.store.set_face_detach_error(face_id, str(exc))
                 results.append({
                     "faceId": face_id, "personId": row["source_person_id"],
@@ -1080,6 +1251,11 @@ class AppState:
             person_id = row["person_id"]
             try:
                 operation = row["operation"]
+                target_id = row.get("target_person_id") if operation == "merge" else None
+                if person_id in draft_people or target_id in draft_people:
+                    raise ToolError("Submit Face Review decisions before syncing this person")
+                if person_id in unresolved_faces or target_id in unresolved_faces:
+                    raise ToolError("A wrong-face correction must sync before this person change")
                 if operation == "rename":
                     body: dict[str, Any] = {"name": row["name"]}
                     if row.get("feature_asset_id"):
@@ -1441,6 +1617,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, **STATE.set_face_reviewed(payload)})
             elif path == "/api/face-review/reviewed/bulk":
                 self.send_json({"ok": True, **STATE.set_faces_reviewed(payload)})
+            elif path == "/api/face-review/draft":
+                self.send_json({"ok": True, **STATE.set_face_review_drafts(payload)})
+            elif path == "/api/face-review/submit":
+                self.send_json({"ok": True, **STATE.submit_face_review(payload)})
             elif path == "/api/face-detach/include":
                 face_id = str(payload.get("faceId", ""))
                 if not UUID_RE.fullmatch(face_id):

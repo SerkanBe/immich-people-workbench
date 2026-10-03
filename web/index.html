@@ -143,7 +143,7 @@
 
     <section id="faces-view" class="view" aria-labelledby="faces-heading">
       <div class="view-heading">
-        <div><h2 id="faces-heading">Review faces inside people</h2><p>Mark correct faces Reviewed. Select wrong matches to queue them for Unnamed; nothing changes in Immich until Pending is synced.</p></div>
+        <div><h2 id="faces-heading">Review faces inside people</h2><p>Check a person's faces, submit your decisions to Workbench, then review Pending before syncing any Immich changes.</p></div>
       </div>
       <div class="face-review-layout">
         <aside class="face-person-panel">
@@ -156,22 +156,28 @@
           <div id="face-review-content" hidden>
             <div class="face-review-toolbar">
               <div><h3 id="face-review-name"></h3><p id="face-review-meta" class="muted"></p></div>
-              <button id="face-review-help" class="quiet-button" type="button" aria-expanded="false" aria-controls="face-review-shortcuts">Shortcuts ?</button>
+              <div class="face-review-toolbar-options">
+                <div class="face-review-mode" role="group" aria-label="Face tile size"><button id="face-review-compact" class="quiet-button" type="button" aria-pressed="true">Compact</button><button id="face-review-detail" class="quiet-button" type="button" aria-pressed="false">Detail</button></div>
+                <label>Show <select id="face-review-filter"><option value="all">All faces</option><option value="untouched">Untouched only</option></select></label>
+                <button id="face-review-help" class="quiet-button" type="button" aria-expanded="false" aria-controls="face-review-shortcuts">Shortcuts <kbd>?</kbd></button>
+              </div>
             </div>
             <div class="face-review-actions">
-              <button id="face-review-area" class="quiet-button" type="button" aria-pressed="false">Area select <kbd>A</kbd></button>
-              <button id="face-review-mark" class="quiet-button" type="button" disabled>Mark selected Reviewed</button>
-              <button id="face-review-hide" class="quiet-button" type="button" disabled>Hide selected</button>
-              <button id="face-review-show" class="quiet-button" type="button" disabled>Show hidden</button>
-              <button id="face-review-clear" class="quiet-button" type="button" disabled>Clear selection</button>
-              <button id="face-review-queue" class="danger-button" type="button" disabled>Queue selected for Unnamed</button>
+              <button id="face-review-mark" class="quiet-button" type="button" disabled>Correct person <kbd>M</kbd></button>
+              <button id="face-review-queue" class="danger-button" type="button" disabled>Wrong person <kbd>W</kbd>/<kbd>Q</kbd></button>
+              <button id="face-review-reset" class="quiet-button" type="button" disabled>Reset marks <kbd>U</kbd></button>
+              <button id="face-review-hide" class="quiet-button" type="button" disabled>Hide selected <kbd>H</kbd></button>
+              <button id="face-review-show" class="quiet-button" type="button" disabled><span id="face-review-show-label">Show hidden</span> <kbd>Shift+H</kbd></button>
+              <button id="face-review-clear" class="quiet-button" type="button" disabled>Clear selection <kbd>C</kbd></button>
             </div>
-            <div id="face-review-shortcuts" class="face-review-shortcuts" hidden>Click, <kbd>Enter</kbd>, or <kbd>Space</kbd> selects a face · <kbd>Shift</kbd>+click selects a range · <kbd>Shift</kbd>+drag or <kbd>A</kbd> selects an area · <kbd>R</kbd> toggles Reviewed on the focused face · <kbd>M</kbd> marks selected Reviewed · <kbd>P</kbd> opens Photo · <kbd>H</kbd> hides selected · <kbd>Shift</kbd>+<kbd>H</kbd> shows hidden · <kbd>C</kbd> clears selection · <kbd>Q</kbd> queues selected to Pending · <kbd>?</kbd> toggles this help</div>
+            <div id="face-review-shortcuts" class="face-review-shortcuts" hidden>Click, <kbd>Enter</kbd>, or <kbd>Space</kbd> selects a face · <kbd>Shift</kbd>+click selects a range · <kbd>R</kbd> toggles Correct person on the focused face · <kbd>M</kbd> marks selected faces Correct person · <kbd>W</kbd> or <kbd>Q</kbd> marks selected faces Wrong person · <kbd>U</kbd> resets selected marks · <kbd>P</kbd> opens the photo · <kbd>H</kbd> hides selected · <kbd>Shift+H</kbd> shows hidden · <kbd>C</kbd> clears selection · <kbd>?</kbd> toggles this help</div>
             <div id="face-review-grid" class="face-review-grid" role="listbox" aria-multiselectable="true" aria-label="Assigned face crops" tabindex="0"></div>
             <div class="face-review-load-row"><span id="face-review-load-status" class="muted" aria-live="polite"></span><button id="face-review-load-more" class="quiet-button" type="button" hidden>Retry loading</button></div>
+            <div class="face-review-submit-bar"><div><strong>Submit this review</strong><small>Correct faces are saved locally. Wrong faces leave this grid and enter Pending; Immich changes only after Sync.</small></div><button id="face-review-submit" class="primary-button" type="button" disabled>Review &amp; submit</button></div>
           </div>
         </section>
       </div>
+      <dialog id="face-review-submit-dialog" aria-labelledby="face-review-submit-heading"><h2 id="face-review-submit-heading">Review face decisions</h2><p id="face-review-submit-summary"></p><div class="dialog-actions"><button id="face-review-cancel-submit" class="quiet-button" type="button">Back to review</button><button id="face-review-confirm-submit" class="primary-button" type="button">Submit review</button></div></dialog>
     </section>
 
     <section id="pending-view" class="view" aria-labelledby="pending-heading">

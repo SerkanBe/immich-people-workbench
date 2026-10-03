@@ -2,25 +2,28 @@
 
 [Visual tour](../visual-tour.md) · [User guide](../user-guide.md)
 
-**Face review** checks individual faces already assigned to a person. Select
-someone in the left list to see their face crops. Use **Photo** on a tile to
-view more of its Immich photo before deciding.
+**Face review** checks the faces assigned to a person in Immich. People with
+unsynced names or merges remain available here, so you can correct an obvious
+mistake before sending the person change to Immich.
 
-Check **Reviewed** on a correct face, or focus its tile and press `R`. This
-progress is local Workbench state; it does not change Immich. In the synthetic
-example, one correct face is Reviewed and a different person's face has been
-selected for removal from Mira Solis.
+Compact mode shows many face crops at once. Click one, or Shift-click a range,
+then mark **Correct person** (`M`) or **Wrong person** (`W`). Detail mode gives
+each crop more room and a **Photo** action (`P`) for context. The green and red
+borders are local review drafts, saved across reloads; they do not enter Pending
+or change Immich yet.
 
-![Face review with one Reviewed face and one misassigned face selected for Unnamed](../images/visual-tour/face-review.png)
+![Synthetic faces in compact Face review, with correct and wrong markings](../images/visual-tour/face-review.png)
 
-Click a wrong face's tile, then choose **Queue selected for Unnamed**. The
-face appears as a separate item in Pending, where it can still be excluded,
-previewed, or removed from the queue.
+Choose **Submit review** to confirm the marked faces. Correct faces remain
+green. Wrong faces leave this person's grid and become face-correction requests
+in Pending, where you can inspect, exclude, or remove them. Removing a request
+returns its face to Face review.
 
-![Pending face detach from Mira Solis with a fictional filename](../images/visual-tour/face-pending.png)
+![Face review after Submit, with a wrong face awaiting Sync](../images/visual-tour/face-review-submitted.png)
 
-Only an explicit Pending Sync creates the new unnamed person and reassigns
-that face in Immich. It then enters the usual naming flow. If Sync fails,
-the item remains available for review and retry.
+Only an explicit Pending Sync moves a wrong face to a new unnamed person in
+Immich. When a rename or merge depends on that correction, Sync applies the
+face correction first. If it fails or is excluded, the dependent person change
+stays in Pending instead of being applied prematurely.
 
-Next: [Pending and Sync](pending.md) to review the queued face.
+Next: [Pending and Sync](pending.md) to review those requests.

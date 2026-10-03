@@ -23,6 +23,12 @@ checked items first; unchecked items stay queued. If an operation fails,
 Workbench keeps it in Pending with an error so you can review and retry it.
 The local state directory also keeps Sync reports.
 
+If a person has face-review corrections waiting in Pending, Sync applies those
+before that person's rename or merge. An excluded or failed correction blocks
+the dependent person change, which remains available for a later Sync. Review
+drafts that have not been submitted also block that change until you submit or
+clear them in Face review.
+
 **Discard all local changes and reload** removes unsynced Pending actions
 after confirmation. It does not undo changes already synced to Immich or
 erase local skip rounds and settings. See [Getting started](../getting-started.md)

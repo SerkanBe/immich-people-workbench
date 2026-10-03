@@ -3,7 +3,7 @@
 
 export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui }) {
   const pageSize = 60;
-  const gap = 12;
+  let gap = 8;
   let faces = [];
   let hidden = new Set();
   let mounted = new Map();
@@ -15,23 +15,25 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   let busy = false;
   let generation = 0;
   let anchorId = null;
-  let areaMode = false;
-  let areaDrag = null;
-  let suppressClick = false;
   let previewBubble = null;
-  let layout = { columns: 1, width: 180, height: 270, stride: 282 };
+  let layout = { columns: 1, width: 104, height: 104, stride: 112 };
+  const modeKey = "peopleWorkbench.faceReviewMode";
+  let mode = "compact";
+  try { if (localStorage.getItem(modeKey) === "detail") mode = "detail"; } catch { /* Private browsing may block storage. */ }
+  let filter = "all";
 
   const element = id => document.getElementById(id);
   const currentFaceReviewPerson = () => state.faceReviewCurrentPerson;
-  const visibleFaces = () => faces.filter(face => !hidden.has(face.faceId));
+  const statusOf = face => face.draftVerdict === "wrong" ? "wrong" : face.draftVerdict === "unreviewed" ? "untouched" : face.draftVerdict === "correct" || face.reviewed ? "correct" : "untouched";
+  const visibleFaces = () => faces.filter(face => !face.queued && !hidden.has(face.faceId) && (filter === "all" || statusOf(face) === "untouched"));
 
-  function showPhotoPeek(face, button) {
+  function showPhotoPeek(face, card) {
     if (!previewBubble) {
       previewBubble = document.createElement("div"); previewBubble.className = "face-review-peek";
       previewBubble.append(document.createElement("img")); document.body.append(previewBubble);
     }
     const image = previewBubble.querySelector("img"); image.src = assetThumb(face.assetId);
-    const box = button.getBoundingClientRect();
+    const box = card.getBoundingClientRect();
     previewBubble.style.left = `${Math.max(8, Math.min(window.innerWidth - 228, box.right - 220))}px`;
     previewBubble.style.top = `${box.top > 210 ? box.top - 194 : box.bottom + 6}px`;
     previewBubble.classList.add("shown");
@@ -49,9 +51,15 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       const name = document.createElement("strong"); name.textContent = person.name || "Unnamed person";
       const count = document.createElement("small");
       const total = person.reviewTotal ?? person.assetCount ?? 0;
-      count.textContent = person.reviewed ? `✓ Reviewed · ${person.assetCount ?? "?"} photos` : `${person.assetCount ?? "?"} photos · ${person.reviewedCount || 0}/${total} reviewed`;
+      count.textContent = person.reviewed ? `✓ Checked · ${person.assetCount ?? "?"} photos` : `${person.reviewedCount || 0}/${total} checked${person.draftCount ? ` · ${person.draftCount} to submit` : ""}`;
       button.classList.toggle("reviewed", Boolean(person.reviewed));
-      text.append(name, count); button.append(image, text);
+      text.append(name, count);
+      if (person.pendingOperation) {
+        const badge = document.createElement("em"); badge.className = "face-person-pending";
+        badge.textContent = `Pending ${person.pendingOperation === "merge-target" ? "merge target" : person.pendingOperation}`;
+        text.append(badge);
+      }
+      button.append(image, text);
       button.addEventListener("click", () => selectFaceReviewPerson(person.id));
       ui.facePersonList.append(button);
     }
@@ -77,10 +85,11 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     person.reviewedCount = result.reviewedCount || 0;
     person.reviewTotal = result.totalAssets ?? result.reviewTotal ?? person.assetCount ?? 0;
     person.reviewed = Boolean(result.personReviewed);
+    person.draftCount = result.draftCount || 0;
     const pagePerson = state.faceReviewPeople.find(item => item.id === person.id);
-    if (pagePerson && pagePerson !== person) Object.assign(pagePerson, { reviewedCount: person.reviewedCount, reviewTotal: person.reviewTotal, reviewed: person.reviewed });
-    const reviewed = person.reviewed ? `✓ Reviewed · ${person.reviewedCount}/${person.reviewTotal}` : `${person.reviewedCount}/${person.reviewTotal} reviewed`;
-    element("face-review-meta").textContent = `${faces.length} face crops loaded from ${result.totalAssets ?? "?"} photos · ${reviewed}`;
+    if (pagePerson && pagePerson !== person) Object.assign(pagePerson, { reviewedCount: person.reviewedCount, reviewTotal: person.reviewTotal, reviewed: person.reviewed, draftCount: person.draftCount });
+    const pending = person.pendingOperation ? ` · Pending ${person.pendingOperation}${person.pendingName ? ` → ${person.pendingName}` : ""}` : "";
+    element("face-review-meta").textContent = `${result.correctCount || 0} correct · ${result.wrongDraftCount || 0} wrong to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${result.untouchedCount ?? "?"} untouched${pending}`;
     element("face-review-content").classList.toggle("person-reviewed", person.reviewed);
     renderFacePersonList();
   }
@@ -91,20 +100,23 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     const visibleSelected = selected - hiddenSelected;
     const disabled = busy || loading;
     element("face-review-mark").disabled = !selected || disabled;
+    element("face-review-reset").disabled = !selected || disabled;
     element("face-review-hide").disabled = !visibleSelected || disabled;
     element("face-review-show").disabled = !hidden.size || disabled;
-    element("face-review-show").textContent = hidden.size ? `Show hidden (${hidden.size})` : "Show hidden";
+    element("face-review-show-label").textContent = hidden.size ? `Show hidden (${hidden.size})` : "Show hidden";
     element("face-review-clear").disabled = !selected || disabled;
-    const queue = element("face-review-queue");
-    queue.disabled = !selected || disabled;
-    queue.textContent = selected ? `Queue ${selected} for Unnamed${hiddenSelected ? ` (${hiddenSelected} hidden)` : ""}` : "Queue selected for Unnamed";
-    element("face-review-area").setAttribute("aria-pressed", String(areaMode));
-    ui.faceReviewGrid.classList.toggle("area-mode", areaMode);
+    element("face-review-queue").disabled = !selected || disabled;
+    element("face-review-submit").disabled = disabled || !(state.faceReviewResult?.draftCount > 0);
+    element("face-review-submit").textContent = state.faceReviewResult?.draftCount ? `Review & submit (${state.faceReviewResult.draftCount})` : "Review & submit";
+    element("face-review-compact").setAttribute("aria-pressed", String(mode === "compact"));
+    element("face-review-detail").setAttribute("aria-pressed", String(mode === "detail"));
+    ui.faceReviewGrid.classList.toggle("compact", mode === "compact");
+    ui.faceReviewGrid.classList.toggle("detail", mode === "detail");
     const loadButton = element("face-review-load-more");
     loadButton.hidden = !hasMore && !loadError;
     loadButton.disabled = loading || busy;
     loadButton.textContent = loadError ? "Retry loading" : "Load more faces";
-    element("face-review-load-status").textContent = loading ? "Loading more faces…" : loadError ? "Loading failed" : hasMore ? `${faces.length} face crops loaded · scroll or use Load more` : `${faces.length} face crops loaded`;
+    element("face-review-load-status").textContent = loading ? "Loading more faces…" : loadError ? "Loading failed" : hasMore ? `${visibleFaces().length} of ${faces.length} loaded faces shown · scroll or use Load more` : `${visibleFaces().length} of ${faces.length} loaded faces shown`;
   }
 
   function updateMountedStates() {
@@ -113,58 +125,57 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       if (!face) continue;
       const selected = state.faceReviewSelected.has(id);
       card.classList.toggle("selected", selected);
-      card.classList.toggle("reviewed", Boolean(face.reviewed));
-      card.classList.toggle("queued", Boolean(face.queued));
+      const status = statusOf(face);
+      card.classList.toggle("correct", status === "correct");
+      card.classList.toggle("wrong", status === "wrong");
       card.setAttribute("aria-selected", String(selected));
-      const status = card.querySelector(".face-review-status");
-      status.textContent = face.queued ? "Queued for Unnamed" : selected ? "Selected" : "Select face";
-      const review = card.querySelector(".face-review-reviewed");
-      review.textContent = face.reviewed ? "✓ Reviewed" : "○ Mark Reviewed";
-      review.setAttribute("aria-pressed", String(Boolean(face.reviewed)));
-      review.disabled = Boolean(face.queued) || busy;
+      card.setAttribute("aria-label", `Face from ${face.fileName}, ${status} person${face.draftVerdict ? ", awaiting review submission" : ""}`);
+      card.querySelector(".face-review-badge").textContent = status === "correct" ? "✓" : status === "wrong" ? "×" : "";
     }
     updateControls();
   }
 
   function calculateLayout() {
-    const width = Math.max(180, ui.faceReviewGrid.clientWidth - 16);
-    const columns = Math.max(1, Math.floor((width + gap) / (180 + gap)));
+    const minimum = mode === "compact" ? 104 : 180;
+    gap = mode === "compact" ? 8 : 12;
+    const width = Math.max(minimum, ui.faceReviewGrid.clientWidth - 16);
+    const columns = Math.max(1, Math.floor((width + gap) / (minimum + gap)));
     const cardWidth = (width - (columns - 1) * gap) / columns;
-    const cardHeight = Math.ceil(cardWidth + 86);
+    const cardHeight = Math.ceil(cardWidth + (mode === "compact" ? 0 : 65));
     layout = { columns, width: cardWidth, height: cardHeight, stride: cardHeight + gap };
     state.faceReviewLayout = layout;
   }
 
   function createFaceReviewCard(face) {
     const card = document.createElement("article");
-    card.className = "face-review-card"; card.dataset.faceId = face.faceId; card.tabIndex = face.queued ? -1 : 0;
+    card.className = "face-review-card"; card.dataset.faceId = face.faceId; card.tabIndex = 0;
     card.setAttribute("role", "option");
-    card.setAttribute("aria-label", `Face from ${face.fileName}${face.reviewed ? ", Reviewed" : ""}${face.queued ? ", queued for Unnamed" : ""}`);
+    card.title = face.fileName;
     const crop = document.createElement("canvas"); crop.width = 280; crop.height = 280;
     drawFace(crop, face).catch(() => {
       if (crop.isConnected) crop.replaceWith(Object.assign(document.createElement("img"), { src: assetThumb(face.assetId), alt: "" }));
     });
     const meta = document.createElement("div"); meta.className = "face-review-card-meta";
     const filename = document.createElement("code"); filename.textContent = face.fileName; filename.title = face.fileName;
-    const status = document.createElement("span"); status.className = "face-review-status";
-    const photo = document.createElement("button"); photo.type = "button"; photo.className = "quiet-button face-review-photo"; photo.textContent = "Photo";
+    const photo = document.createElement("button"); photo.type = "button"; photo.className = "quiet-button face-review-photo"; photo.innerHTML = "Photo <kbd>P</kbd>";
     photo.addEventListener("click", event => { event.stopPropagation(); openAssetPreview(face.assetId, face.fileName); });
-    photo.addEventListener("mouseenter", () => showPhotoPeek(face, photo));
+    photo.addEventListener("mouseenter", () => showPhotoPeek(face, card));
     photo.addEventListener("mouseleave", hidePhotoPeek);
-    photo.addEventListener("focus", () => showPhotoPeek(face, photo));
+    photo.addEventListener("focus", () => showPhotoPeek(face, card));
     photo.addEventListener("blur", hidePhotoPeek);
-    const reviewed = document.createElement("button"); reviewed.type = "button"; reviewed.className = "face-review-reviewed";
-    reviewed.setAttribute("aria-label", `Toggle Reviewed for face from ${face.fileName}`);
-    reviewed.addEventListener("click", event => { event.stopPropagation(); toggleReviewed(face); });
-    meta.append(filename, status, photo, reviewed); card.append(crop, meta);
+    const badge = document.createElement("span"); badge.className = "face-review-badge"; badge.setAttribute("aria-hidden", "true");
+    meta.append(filename, photo); card.append(crop, badge, meta);
+    card.addEventListener("mouseenter", () => { if (mode === "compact") showPhotoPeek(face, card); });
+    card.addEventListener("mouseleave", hidePhotoPeek);
+    card.addEventListener("focus", () => { if (mode === "compact") showPhotoPeek(face, card); });
+    card.addEventListener("blur", hidePhotoPeek);
     card.addEventListener("click", event => {
-      if (suppressClick) { suppressClick = false; return; }
       if (!event.target.closest("button")) toggleSelection(face, event.shiftKey);
     });
     card.addEventListener("keydown", event => {
-      if (event.target !== card || face.queued) return;
+      if (event.target !== card) return;
       if (event.key === " " || event.key === "Enter") { event.preventDefault(); toggleSelection(face, event.shiftKey); }
-      else if (event.key.toLowerCase() === "r") { event.preventDefault(); event.stopPropagation(); toggleReviewed(face); }
+      else if (event.key.toLowerCase() === "r") { event.preventDefault(); event.stopPropagation(); toggleCorrect(face); }
       else if (event.key.toLowerCase() === "p") { event.preventDefault(); event.stopPropagation(); openAssetPreview(face.assetId, face.fileName); }
     });
     return card;
@@ -196,7 +207,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
     if (!available.length && !hasMore && !loadError && !loading) {
       const message = document.createElement("p"); message.className = "face-review-empty muted";
-      message.textContent = hidden.size ? "All loaded faces are hidden. Use Show hidden to see them." : "Immich returned no assigned faces for this person.";
+      message.textContent = hidden.size ? "All loaded faces are hidden. Use Show hidden to see them." : filter === "untouched" ? "No untouched faces remain in this view." : "No faces remain to review here. Wrong faces submitted to Pending are hidden from this grid.";
       surface.append(message);
     } else surface.querySelectorAll(".face-review-empty").forEach(node => node.remove());
     updateMountedStates();
@@ -260,71 +271,78 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     updateMountedStates();
   }
 
-  async function toggleReviewed(face) {
-    if (face.queued || busy) return;
-    const personId = currentFaceReviewPerson().id, requestGeneration = generation;
-    busy = true; updateControls();
-    const next = !face.reviewed;
-    try {
-      const result = await api("/api/face-review/reviewed", { method: "POST", body: { personId, faceId: face.faceId, reviewed: next } });
-      if (requestGeneration !== generation) return;
-      face.reviewed = next; applyProgress(result);
-      if (result.personReviewed) showToast(`${currentFaceReviewPerson().name || "This person"} is fully reviewed.`);
-    } catch (error) { if (requestGeneration === generation) showToast(`Could not save review state: ${error.message}`); }
-    finally { if (requestGeneration === generation) { busy = false; updateMountedStates(); } }
-  }
-
-  async function markSelectedReviewed() {
-    if (!state.faceReviewSelected.size || busy) return;
-    const selected = [...state.faceReviewSelectedData.values()].filter(face => !face.queued && !face.reviewed);
-    if (!selected.length) { showToast("Selected faces are already Reviewed."); return; }
-    const personId = currentFaceReviewPerson().id, requestGeneration = generation;
+  async function stageFaces(decisions) {
+    const person = currentFaceReviewPerson();
+    if (!person || !decisions.length || busy) return;
+    const requestGeneration = generation;
     busy = true; updateControls();
     let saved = 0;
     try {
-      for (let offset = 0; offset < selected.length; offset += 500) {
-        if (requestGeneration !== generation) break;
-        const chunk = selected.slice(offset, offset + 500);
-        const result = await api("/api/face-review/reviewed/bulk", { method: "POST", body: { personId, faceIds: chunk.map(face => face.faceId), reviewed: true } });
-        if (requestGeneration !== generation) break;
-        for (const face of chunk) face.reviewed = true;
-        saved += chunk.length; applyProgress(result);
+      for (let offset = 0; offset < decisions.length; offset += 500) {
+        const chunk = decisions.slice(offset, offset + 500);
+        const result = await api("/api/face-review/draft", {
+          method: "POST", body: { personId: person.id, items: chunk.map(({ face, verdict }) => ({
+            faceId: face.faceId, assetId: face.assetId, fileName: face.fileName, verdict,
+          })) },
+        });
+        saved += chunk.length;
+        if (requestGeneration !== generation) continue;
+        for (const { face, verdict } of chunk) face.draftVerdict = verdict === "clear" ? null : verdict;
+        applyProgress(result);
       }
-      if (requestGeneration === generation) showToast(`Marked ${saved} ${saved === 1 ? "face" : "faces"} Reviewed.`);
-    } catch (error) { if (requestGeneration === generation) showToast(`Marked ${saved}; could not finish: ${error.message}`); }
-    finally { if (requestGeneration === generation) { busy = false; updateMountedStates(); } }
+      if (requestGeneration === generation) {
+        clearSelection(); renderVisible(); maybeLoadMore();
+        showToast(`${saved} ${saved === 1 ? "decision" : "decisions"} saved locally. Submit review when ready.`);
+      }
+    } catch (error) {
+      if (requestGeneration === generation) showToast(`${saved} decisions saved; could not finish: ${error.message}`);
+    } finally {
+      if (requestGeneration === generation) { busy = false; updateMountedStates(); }
+    }
   }
 
-  async function queueSelectedFacesForUnnamed() {
+  function toggleCorrect(face) {
+    if (face.queued || busy) return;
+    const verdict = statusOf(face) === "correct" ? (face.reviewed ? "unreviewed" : "clear") : "correct";
+    stageFaces([{ face, verdict }]);
+  }
+
+  function stageSelected(verdict) {
+    const selected = [...state.faceReviewSelectedData.values()].filter(face => !face.queued);
+    if (!selected.length || busy) return;
+    if (selected.some(face => hidden.has(face.faceId))) {
+      showToast("Show hidden selected faces before marking them.");
+      return;
+    }
+    stageFaces(selected.map(face => ({ face, verdict: verdict === "reset" ? face.reviewed ? "unreviewed" : "clear" : verdict })));
+  }
+
+  async function submitReview() {
     const person = currentFaceReviewPerson();
-    if (!person || !state.faceReviewSelected.size || busy || loading) return;
+    if (!person || busy || !(state.faceReviewResult?.draftCount > 0)) return;
     const requestGeneration = generation;
-    const selected = [...state.faceReviewSelectedData.values()];
     busy = true; updateControls();
-    let queued = 0, newlyHandled = 0;
     try {
-      for (const face of selected) {
-        if (requestGeneration !== generation) break;
-        await api("/api/face-detach/queue", { method: "POST", body: { personId: person.id, faceId: face.faceId, assetId: face.assetId, fileName: face.fileName } });
-        queued += 1;
-        if (requestGeneration !== generation) break;
-        if (!face.reviewed) newlyHandled += 1;
-        face.queued = true; face.reviewed = true;
-        state.faceReviewSelected.delete(face.faceId); state.faceReviewSelectedData.delete(face.faceId);
+      const result = await api("/api/face-review/submit", { method: "POST", body: { personId: person.id } });
+      if (requestGeneration !== generation) return;
+      const submitted = new Map(result.submittedFaces.map(item => [item.faceId, item.verdict]));
+      for (const face of faces) {
+        const verdict = submitted.get(face.faceId);
+        if (verdict === "correct") face.reviewed = true;
+        else if (verdict === "wrong") { face.reviewed = false; face.queued = true; }
+        else if (verdict === "unreviewed") face.reviewed = false;
+        if (verdict) face.draftVerdict = null;
       }
-      if (requestGeneration === generation) showToast(`Queued ${queued} ${queued === 1 ? "face" : "faces"} for Unnamed in Pending.`);
-    } catch (error) { if (requestGeneration === generation) showToast(`Queued ${queued}; stopped because: ${error.message}`); }
-    finally {
-      if (requestGeneration === generation) busy = false;
-      if (queued) {
-        if (requestGeneration === generation) {
-          const result = state.faceReviewResult;
-          const reviewedCount = Math.min(result.totalAssets || 0, (result.reviewedCount || 0) + newlyHandled);
-          applyProgress({ reviewedCount, personReviewed: result.totalAssets > 0 && reviewedCount >= result.totalAssets });
-        }
-        await refreshSummary().catch(error => showToast(error.message));
-      }
-      if (requestGeneration === generation) updateMountedStates();
+      hidePhotoPeek();
+      clearSelection();
+      applyProgress(result);
+      renderVisible(); maybeLoadMore();
+      await refreshSummary().catch(error => showToast(error.message));
+      showToast(`Review submitted locally: ${result.submitted.correct} correct, ${result.submitted.wrong} wrong faces added to Pending. Immich is unchanged.`);
+    } catch (error) {
+      if (requestGeneration === generation) showToast(`Review was not submitted: ${error.message}`);
+    } finally {
+      if (requestGeneration === generation) { busy = false; updateMountedStates(); }
     }
   }
 
@@ -334,54 +352,15 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   }
   function showHidden() { hidden.clear(); renderVisible(); }
   function clearSelection() { state.faceReviewSelected.clear(); state.faceReviewSelectedData.clear(); anchorId = null; updateMountedStates(); }
-  function setAreaMode(next) { areaMode = next; updateControls(); }
+  function setMode(next) {
+    mode = next;
+    try { localStorage.setItem(modeKey, mode); } catch { /* Keep the current session mode. */ }
+    hidePhotoPeek(); renderVisible(); maybeLoadMore();
+  }
+  function setFilter(next) { filter = next; ui.faceReviewGrid.scrollTop = 0; renderVisible(); maybeLoadMore(); }
   function toggleShortcuts() {
     const panel = element("face-review-shortcuts"); panel.hidden = !panel.hidden;
     element("face-review-help").setAttribute("aria-expanded", String(!panel.hidden));
-  }
-
-  function startArea(event) {
-    if (event.button !== 0 || !(event.shiftKey || areaMode) || event.target.closest("button") || busy) return;
-    const rect = ui.faceReviewGrid.getBoundingClientRect();
-    const point = { x: event.clientX - rect.left, y: event.clientY - rect.top + ui.faceReviewGrid.scrollTop };
-    areaDrag = { start: point, end: point, moved: false, faceId: event.target.closest(".face-review-card")?.dataset.faceId || null };
-    const box = document.createElement("div"); box.className = "face-review-selection-box"; areaDrag.box = box; surface.append(box);
-    window.addEventListener("pointermove", moveArea);
-    window.addEventListener("pointerup", endArea, { once: true });
-  }
-  function moveArea(event) {
-    if (!areaDrag) return;
-    const rect = ui.faceReviewGrid.getBoundingClientRect();
-    const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
-    const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top)) + ui.faceReviewGrid.scrollTop;
-    areaDrag.end = { x, y };
-    areaDrag.moved ||= Math.hypot(x - areaDrag.start.x, y - areaDrag.start.y) > 5;
-    if (!areaDrag.moved) return;
-    const left = Math.min(areaDrag.start.x, x), top = Math.min(areaDrag.start.y, y);
-    Object.assign(areaDrag.box.style, { left: `${left}px`, top: `${top}px`, width: `${Math.abs(x - areaDrag.start.x)}px`, height: `${Math.abs(y - areaDrag.start.y)}px` });
-  }
-  function endArea(event) {
-    window.removeEventListener("pointermove", moveArea);
-    if (!areaDrag) return;
-    const drag = areaDrag; areaDrag = null; drag.box.remove();
-    suppressClick = true; setTimeout(() => { suppressClick = false; }, 0);
-    if (!drag.moved) {
-      const face = faces.find(item => item.faceId === drag.faceId);
-      if (face) toggleSelection(face, event.shiftKey);
-      return;
-    }
-    const left = Math.min(drag.start.x, drag.end.x), right = Math.max(drag.start.x, drag.end.x);
-    const top = Math.min(drag.start.y, drag.end.y), bottom = Math.max(drag.start.y, drag.end.y);
-    const available = visibleFaces();
-    for (let index = 0; index < available.length; index += 1) {
-      const face = available[index]; if (face.queued) continue;
-      const x = index % layout.columns * (layout.width + gap);
-      const y = Math.floor(index / layout.columns) * layout.stride;
-      if (x < right && x + layout.width > left && y < bottom && y + layout.height > top) {
-        state.faceReviewSelected.add(face.faceId); state.faceReviewSelectedData.set(face.faceId, face);
-      }
-    }
-    updateMountedStates();
   }
 
   async function selectFaceReviewPerson(personId) {
@@ -389,11 +368,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     if (!person) return;
     generation += 1;
     state.faceReviewPersonId = personId; state.faceReviewCurrentPerson = person;
+    state.faceReviewResult = null;
     state.faceReviewSelected.clear(); state.faceReviewSelectedData.clear();
     faces = []; hidden = new Set(); mounted = new Map(); nextPage = 1; hasMore = true; loadError = false; loading = false; busy = false; anchorId = null;
-    areaMode = false;
     hidePhotoPeek();
-    if (areaDrag) { areaDrag.box.remove(); areaDrag = null; window.removeEventListener("pointermove", moveArea); window.removeEventListener("pointerup", endArea); }
     renderFacePersonList();
     element("face-review-placeholder").hidden = true; element("face-review-content").hidden = false;
     element("face-review-name").textContent = person.name || "Unnamed person";
@@ -405,7 +383,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
 
   async function renderFaceReview() {
     await loadFaceReviewPeople();
-    if (state.faceReviewPersonId && surface && currentFaceReviewPerson()?.id === state.faceReviewPersonId) {
+    if (state.faceReviewNeedsRefresh) {
+      state.faceReviewNeedsRefresh = false;
+      if (state.faceReviewPersonId) await selectFaceReviewPerson(state.faceReviewPersonId);
+    } else if (state.faceReviewPersonId && surface && currentFaceReviewPerson()?.id === state.faceReviewPersonId) {
       renderVisible(); maybeLoadMore();
     } else if (state.faceReviewPersonId) await selectFaceReviewPerson(state.faceReviewPersonId);
     else { element("face-review-placeholder").hidden = false; element("face-review-content").hidden = true; }
@@ -417,12 +398,22 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       clearTimeout(searchTimer); state.pages.facePeople = 1;
       searchTimer = setTimeout(() => loadFaceReviewPeople().catch(error => showToast(error.message)), 180);
     });
-    element("face-review-queue").addEventListener("click", queueSelectedFacesForUnnamed);
-    element("face-review-mark").addEventListener("click", markSelectedReviewed);
+    element("face-review-queue").addEventListener("click", () => stageSelected("wrong"));
+    element("face-review-mark").addEventListener("click", () => stageSelected("correct"));
+    element("face-review-reset").addEventListener("click", () => stageSelected("reset"));
     element("face-review-hide").addEventListener("click", hideSelected);
     element("face-review-show").addEventListener("click", showHidden);
     element("face-review-clear").addEventListener("click", clearSelection);
-    element("face-review-area").addEventListener("click", () => setAreaMode(!areaMode));
+    element("face-review-compact").addEventListener("click", () => setMode("compact"));
+    element("face-review-detail").addEventListener("click", () => setMode("detail"));
+    element("face-review-filter").addEventListener("change", event => setFilter(event.target.value));
+    element("face-review-submit").addEventListener("click", () => {
+      const result = state.faceReviewResult;
+      element("face-review-submit-summary").textContent = `${result?.draftCount || 0} decisions: ${result?.wrongDraftCount || 0} wrong faces will leave this review grid and enter Pending; correct faces will be saved locally. Immich changes only after you review Pending and explicitly Sync.`;
+      element("face-review-submit-dialog").showModal();
+    });
+    element("face-review-cancel-submit").addEventListener("click", () => element("face-review-submit-dialog").close());
+    element("face-review-confirm-submit").addEventListener("click", async () => { element("face-review-submit-dialog").close(); await submitReview(); });
     element("face-review-help").addEventListener("click", toggleShortcuts);
     element("face-review-load-more").addEventListener("click", async event => {
       const keyboard = event.detail === 0, firstNewIndex = faces.length;
@@ -438,8 +429,6 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       }
     });
     ui.faceReviewGrid.addEventListener("scroll", () => { hidePhotoPeek(); renderVisible(); maybeLoadMore(); });
-    ui.faceReviewGrid.addEventListener("pointerdown", startArea);
-    ui.faceReviewGrid.addEventListener("click", event => { if (suppressClick) { event.stopPropagation(); suppressClick = false; } }, true);
     window.addEventListener("resize", () => {
       clearTimeout(state.faceReviewResizeTimer);
       state.faceReviewResizeTimer = setTimeout(() => { if (state.view === "faces" && surface) { renderVisible(); maybeLoadMore(); } }, 180);
@@ -447,13 +436,12 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     window.addEventListener("keydown", event => {
       if (state.view !== "faces" || !currentFaceReviewPerson() || event.altKey || event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
       const key = event.key.toLowerCase();
-      if (key === "a") { event.preventDefault(); setAreaMode(!areaMode); }
-      else if (key === "m") { event.preventDefault(); markSelectedReviewed(); }
+      if (key === "m") { event.preventDefault(); stageSelected("correct"); }
       else if (key === "h") { event.preventDefault(); event.shiftKey ? showHidden() : hideSelected(); }
       else if (key === "c") { event.preventDefault(); clearSelection(); }
-      else if (key === "q") { event.preventDefault(); queueSelectedFacesForUnnamed(); }
+      else if (key === "w" || key === "q") { event.preventDefault(); stageSelected("wrong"); }
+      else if (key === "u") { event.preventDefault(); stageSelected("reset"); }
       else if (key === "?") { event.preventDefault(); toggleShortcuts(); }
-      else if (key === "escape" && areaMode) { event.preventDefault(); setAreaMode(false); }
     });
   }
 
