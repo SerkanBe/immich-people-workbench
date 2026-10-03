@@ -245,8 +245,6 @@ body.merge-zen .merge-tray { position: static; height: 100vh; overflow-y: auto; 
 .face-review-toolbar { display: flex; justify-content: space-between; align-items: start; gap: 18px; margin-bottom: 12px; }
 .face-review-toolbar h3, .face-review-toolbar p { margin: 0; }
 .face-review-toolbar-options { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-.face-review-toolbar-options label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
-.face-review-toolbar-options select { min-height: 36px; padding: 5px 8px; }
 .face-review-mode { display: flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
 .face-review-mode button { min-height: 30px; padding: 4px 8px; border: 0; background: transparent; }
 .face-review-mode button[aria-pressed="true"] { color: var(--accent); background: var(--surface); box-shadow: 0 1px 5px color-mix(in srgb, #000 13%, transparent); font-weight: 700; }

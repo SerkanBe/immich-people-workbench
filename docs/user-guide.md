@@ -165,14 +165,14 @@ face. **Compact** shows small crops without tile text; **Detail** enlarges them
 and shows filenames and a **Photo** button. The chosen size is saved in this
 browser. Hovering or focusing a compact tile, or the detail view's **Photo**
 button, shows a small surrounding-image preview. Click **Photo**, or press `P`
-on a focused tile, to open the larger Immich preview. The **Show** filter can
-limit the grid to untouched faces.
+on a focused tile, to open the larger Immich preview.
 
-Click a tile, or use `Enter` or `Space` on its focused tile, to select it.
-`Shift`+click selects a range. Selection has a blue outline. **Correct person**
-(`M`) marks selected faces green; **Wrong person** (`W` or the older `Q` shortcut)
-marks them red. `R` toggles a focused face's Correct person mark. **Reset marks**
-(`U`) returns selected faces to untouched. These decisions are drafts saved in
+Use the arrow keys to move focus between face tiles. **Correct person** (`A`)
+marks the focused face green; **Wrong person** (`S`) marks it red, and **Reset
+decision** (`D`) returns it to untouched. You can also click tiles, use `Enter`
+or `Space` to select a focused tile, and `Shift`+click to select a range. The
+same actions apply to the selected faces when a selection exists; selection has
+a blue outline. These decisions are drafts saved in
 local SQLite so you can leave the page or reload without losing them. They do
 not change Immich or enter Pending until **Review & submit** opens the batch
 summary and you choose **Submit review**.
@@ -185,10 +185,13 @@ request brings the face back into Face review. The counts distinguish correct
 faces, wrong faces waiting for submission, changes awaiting Sync, and untouched
 faces. New Immich photos reopen a person for review.
 
-**Hide selected** (`H`) temporarily hides selected faces without discarding the
-selection; **Show hidden** (`Shift+H`) restores them. **Clear selection** (`C`)
-removes the blue outline. Hidden faces and selection are session-only; draft
-decisions are durable. The **Shortcuts** button, or `?`, shows the key reference.
+**Hide decided** (`F`) hides all currently visible green and red faces. It does
+not hide a face when you mark it: press `F` again when you are ready to hide
+new decisions. **Show hidden** (`Shift+F`) brings hidden faces back. These are
+view-only actions; they neither submit drafts nor change Immich. **Clear
+selection** removes the blue outline. Hidden faces and selection are
+session-only; draft decisions are durable. The **Shortcuts** button, or `?`,
+shows the key reference.
 
 At explicit Pending Sync, wrong faces are reassigned before a pending name or
 merge for their source person is applied. If a wrong-face correction fails, is

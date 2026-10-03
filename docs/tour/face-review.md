@@ -6,11 +6,16 @@
 unsynced names or merges remain available here, so you can correct an obvious
 mistake before sending the person change to Immich.
 
-Compact mode shows many face crops at once. Click one, or Shift-click a range,
-then mark **Correct person** (`M`) or **Wrong person** (`W`). Detail mode gives
+Compact mode shows many face crops at once. Use the arrow keys to move focus,
+then mark **Correct person** (`A`) or **Wrong person** (`S`). Click or Shift-click
+to select a group for the same actions. Detail mode gives
 each crop more room and a **Photo** action (`P`) for context. The green and red
 borders are local review drafts, saved across reloads; they do not enter Pending
 or change Immich yet.
+
+Press **Hide decided** (`F`) to hide the green and red faces marked so far.
+Marking another face leaves it visible until you press `F` again, giving you a
+chance to correct a mistake. **Show hidden** (`Shift+F`) brings them back.
 
 ![Synthetic faces in compact Face review, with correct and wrong markings](../images/visual-tour/face-review.png)
 

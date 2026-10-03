@@ -15,17 +15,17 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   let busy = false;
   let generation = 0;
   let anchorId = null;
+  let focusedFaceId = null;
   let previewBubble = null;
   let layout = { columns: 1, width: 104, height: 104, stride: 112 };
   const modeKey = "peopleWorkbench.faceReviewMode";
   let mode = "compact";
   try { if (localStorage.getItem(modeKey) === "detail") mode = "detail"; } catch { /* Private browsing may block storage. */ }
-  let filter = "all";
 
   const element = id => document.getElementById(id);
   const currentFaceReviewPerson = () => state.faceReviewCurrentPerson;
   const statusOf = face => face.draftVerdict === "wrong" ? "wrong" : face.draftVerdict === "unreviewed" ? "untouched" : face.draftVerdict === "correct" || face.reviewed ? "correct" : "untouched";
-  const visibleFaces = () => faces.filter(face => !face.queued && !hidden.has(face.faceId) && (filter === "all" || statusOf(face) === "untouched"));
+  const visibleFaces = () => faces.filter(face => !face.queued && !hidden.has(face.faceId));
 
   function showPhotoPeek(face, card) {
     if (!previewBubble) {
@@ -60,7 +60,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
         text.append(badge);
       }
       button.append(image, text);
-      button.addEventListener("click", () => selectFaceReviewPerson(person.id));
+      button.addEventListener("click", () => selectFaceReviewPerson(person.id, true));
       ui.facePersonList.append(button);
     }
     if (!state.faceReviewPeople.length) {
@@ -96,16 +96,16 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
 
   function updateControls() {
     const selected = state.faceReviewSelected.size;
-    const hiddenSelected = [...state.faceReviewSelected].filter(id => hidden.has(id)).length;
-    const visibleSelected = selected - hiddenSelected;
     const disabled = busy || loading;
-    element("face-review-mark").disabled = !selected || disabled;
-    element("face-review-reset").disabled = !selected || disabled;
-    element("face-review-hide").disabled = !visibleSelected || disabled;
+    const focused = visibleFaces().some(face => face.faceId === focusedFaceId);
+    const actionable = selected > 0 || focused;
+    element("face-review-mark").disabled = !actionable || disabled;
+    element("face-review-reset").disabled = !actionable || disabled;
+    element("face-review-hide").disabled = disabled || !visibleFaces().some(face => statusOf(face) !== "untouched");
     element("face-review-show").disabled = !hidden.size || disabled;
     element("face-review-show-label").textContent = hidden.size ? `Show hidden (${hidden.size})` : "Show hidden";
     element("face-review-clear").disabled = !selected || disabled;
-    element("face-review-queue").disabled = !selected || disabled;
+    element("face-review-queue").disabled = !actionable || disabled;
     element("face-review-submit").disabled = disabled || !(state.faceReviewResult?.draftCount > 0);
     element("face-review-submit").textContent = state.faceReviewResult?.draftCount ? `Review & submit (${state.faceReviewResult.draftCount})` : "Review & submit";
     element("face-review-compact").setAttribute("aria-pressed", String(mode === "compact"));
@@ -167,7 +167,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     meta.append(filename, photo); card.append(crop, badge, meta);
     card.addEventListener("mouseenter", () => { if (mode === "compact") showPhotoPeek(face, card); });
     card.addEventListener("mouseleave", hidePhotoPeek);
-    card.addEventListener("focus", () => { if (mode === "compact") showPhotoPeek(face, card); });
+    card.addEventListener("focus", () => { focusedFaceId = face.faceId; updateControls(); if (mode === "compact") showPhotoPeek(face, card); });
     card.addEventListener("blur", hidePhotoPeek);
     card.addEventListener("click", event => {
       if (!event.target.closest("button")) toggleSelection(face, event.shiftKey);
@@ -175,8 +175,9 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     card.addEventListener("keydown", event => {
       if (event.target !== card) return;
       if (event.key === " " || event.key === "Enter") { event.preventDefault(); toggleSelection(face, event.shiftKey); }
-      else if (event.key.toLowerCase() === "r") { event.preventDefault(); event.stopPropagation(); toggleCorrect(face); }
-      else if (event.key.toLowerCase() === "p") { event.preventDefault(); event.stopPropagation(); openAssetPreview(face.assetId, face.fileName); }
+      else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+        event.preventDefault(); navigateFaces(face.faceId, event.key).catch(error => showToast(error.message));
+      } else if (event.key.toLowerCase() === "p") { event.preventDefault(); event.stopPropagation(); openAssetPreview(face.assetId, face.fileName); }
     });
     return card;
   }
@@ -207,10 +208,35 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
     if (!available.length && !hasMore && !loadError && !loading) {
       const message = document.createElement("p"); message.className = "face-review-empty muted";
-      message.textContent = hidden.size ? "All loaded faces are hidden. Use Show hidden to see them." : filter === "untouched" ? "No untouched faces remain in this view." : "No faces remain to review here. Wrong faces submitted to Pending are hidden from this grid.";
+      message.textContent = hidden.size ? "Decided faces are hidden. Use Show hidden to see them." : "No faces remain to review here. Wrong faces submitted to Pending are hidden from this grid.";
       surface.append(message);
     } else surface.querySelectorAll(".face-review-empty").forEach(node => node.remove());
     updateMountedStates();
+  }
+
+  function focusVisibleFace(index) {
+    const available = visibleFaces();
+    const nextIndex = Math.max(0, Math.min(index, available.length - 1));
+    const face = available[nextIndex];
+    if (!face) { ui.faceReviewGrid.focus(); return; }
+    calculateLayout();
+    const top = Math.floor(nextIndex / layout.columns) * layout.stride;
+    if (top < ui.faceReviewGrid.scrollTop) ui.faceReviewGrid.scrollTop = top;
+    else if (top + layout.height > ui.faceReviewGrid.scrollTop + ui.faceReviewGrid.clientHeight)
+      ui.faceReviewGrid.scrollTop = top + layout.height - ui.faceReviewGrid.clientHeight;
+    renderVisible();
+    mounted.get(face.faceId)?.focus({ preventScroll: true });
+  }
+
+  async function navigateFaces(faceId, key) {
+    const available = visibleFaces();
+    const index = available.findIndex(face => face.faceId === faceId);
+    if (index < 0) return;
+    calculateLayout();
+    const delta = key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : key === "ArrowUp" ? -layout.columns : layout.columns;
+    const target = index + delta;
+    if (target >= available.length && hasMore) await loadNextPage();
+    focusVisibleFace(target);
   }
 
   function maybeLoadMore() {
@@ -301,14 +327,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
   }
 
-  function toggleCorrect(face) {
-    if (face.queued || busy) return;
-    const verdict = statusOf(face) === "correct" ? (face.reviewed ? "unreviewed" : "clear") : "correct";
-    stageFaces([{ face, verdict }]);
-  }
-
   function stageSelected(verdict) {
-    const selected = [...state.faceReviewSelectedData.values()].filter(face => !face.queued);
+    const selected = state.faceReviewSelectedData.size
+      ? [...state.faceReviewSelectedData.values()].filter(face => !face.queued)
+      : visibleFaces().filter(face => face.faceId === focusedFaceId);
     if (!selected.length || busy) return;
     if (selected.some(face => hidden.has(face.faceId))) {
       showToast("Show hidden selected faces before marking them.");
@@ -346,31 +368,33 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
   }
 
-  function hideSelected() {
-    for (const id of state.faceReviewSelected) hidden.add(id);
-    renderVisible(); maybeLoadMore();
+  function hideDecided() {
+    const available = visibleFaces();
+    const focusIndex = available.findIndex(face => face.faceId === focusedFaceId);
+    for (const face of available) if (statusOf(face) !== "untouched") hidden.add(face.faceId);
+    clearSelection(); hidePhotoPeek(); renderVisible(); maybeLoadMore();
+    if (focusIndex >= 0 && hidden.has(focusedFaceId)) focusVisibleFace(focusIndex);
   }
-  function showHidden() { hidden.clear(); renderVisible(); }
+  function showHidden() { hidden.clear(); renderVisible(); maybeLoadMore(); }
   function clearSelection() { state.faceReviewSelected.clear(); state.faceReviewSelectedData.clear(); anchorId = null; updateMountedStates(); }
   function setMode(next) {
     mode = next;
     try { localStorage.setItem(modeKey, mode); } catch { /* Keep the current session mode. */ }
     hidePhotoPeek(); renderVisible(); maybeLoadMore();
   }
-  function setFilter(next) { filter = next; ui.faceReviewGrid.scrollTop = 0; renderVisible(); maybeLoadMore(); }
   function toggleShortcuts() {
     const panel = element("face-review-shortcuts"); panel.hidden = !panel.hidden;
     element("face-review-help").setAttribute("aria-expanded", String(!panel.hidden));
   }
 
-  async function selectFaceReviewPerson(personId) {
+  async function selectFaceReviewPerson(personId, focusGrid = false) {
     const person = state.faceReviewPeople.find(item => item.id === personId) || (state.faceReviewPersonId === personId ? state.faceReviewCurrentPerson : null);
     if (!person) return;
     generation += 1;
     state.faceReviewPersonId = personId; state.faceReviewCurrentPerson = person;
     state.faceReviewResult = null;
     state.faceReviewSelected.clear(); state.faceReviewSelectedData.clear();
-    faces = []; hidden = new Set(); mounted = new Map(); nextPage = 1; hasMore = true; loadError = false; loading = false; busy = false; anchorId = null;
+    faces = []; hidden = new Set(); mounted = new Map(); nextPage = 1; hasMore = true; loadError = false; loading = false; busy = false; anchorId = null; focusedFaceId = null;
     hidePhotoPeek();
     renderFacePersonList();
     element("face-review-placeholder").hidden = true; element("face-review-content").hidden = false;
@@ -379,6 +403,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     ui.faceReviewGrid.replaceChildren(); ui.faceReviewGrid.scrollTop = 0;
     surface = document.createElement("div"); surface.className = "face-review-virtual"; ui.faceReviewGrid.append(surface);
     renderVisible(); await loadNextPage();
+    if (focusGrid && state.faceReviewPersonId === personId) focusVisibleFace(0);
   }
 
   async function renderFaceReview() {
@@ -401,12 +426,11 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     element("face-review-queue").addEventListener("click", () => stageSelected("wrong"));
     element("face-review-mark").addEventListener("click", () => stageSelected("correct"));
     element("face-review-reset").addEventListener("click", () => stageSelected("reset"));
-    element("face-review-hide").addEventListener("click", hideSelected);
+    element("face-review-hide").addEventListener("click", hideDecided);
     element("face-review-show").addEventListener("click", showHidden);
     element("face-review-clear").addEventListener("click", clearSelection);
     element("face-review-compact").addEventListener("click", () => setMode("compact"));
     element("face-review-detail").addEventListener("click", () => setMode("detail"));
-    element("face-review-filter").addEventListener("change", event => setFilter(event.target.value));
     element("face-review-submit").addEventListener("click", () => {
       const result = state.faceReviewResult;
       element("face-review-submit-summary").textContent = `${result?.draftCount || 0} decisions: ${result?.wrongDraftCount || 0} wrong faces will leave this review grid and enter Pending; correct faces will be saved locally. Immich changes only after you review Pending and explicitly Sync.`;
@@ -429,18 +453,21 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       }
     });
     ui.faceReviewGrid.addEventListener("scroll", () => { hidePhotoPeek(); renderVisible(); maybeLoadMore(); });
+    ui.faceReviewGrid.addEventListener("keydown", event => {
+      if (event.target !== ui.faceReviewGrid || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault(); focusVisibleFace(0);
+    });
     window.addEventListener("resize", () => {
       clearTimeout(state.faceReviewResizeTimer);
       state.faceReviewResizeTimer = setTimeout(() => { if (state.view === "faces" && surface) { renderVisible(); maybeLoadMore(); } }, 180);
     });
     window.addEventListener("keydown", event => {
-      if (state.view !== "faces" || !currentFaceReviewPerson() || event.altKey || event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
+      if (state.view !== "faces" || !currentFaceReviewPerson() || event.altKey || event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, button, [contenteditable]")) return;
       const key = event.key.toLowerCase();
-      if (key === "m") { event.preventDefault(); stageSelected("correct"); }
-      else if (key === "h") { event.preventDefault(); event.shiftKey ? showHidden() : hideSelected(); }
-      else if (key === "c") { event.preventDefault(); clearSelection(); }
-      else if (key === "w" || key === "q") { event.preventDefault(); stageSelected("wrong"); }
-      else if (key === "u") { event.preventDefault(); stageSelected("reset"); }
+      if (key === "a" && !event.shiftKey) { event.preventDefault(); stageSelected("correct"); }
+      else if (key === "s" && !event.shiftKey) { event.preventDefault(); stageSelected("wrong"); }
+      else if (key === "d" && !event.shiftKey) { event.preventDefault(); stageSelected("reset"); }
+      else if (key === "f") { event.preventDefault(); event.shiftKey ? showHidden() : hideDecided(); }
       else if (key === "?") { event.preventDefault(); toggleShortcuts(); }
     });
   }
