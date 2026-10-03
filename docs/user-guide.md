@@ -155,44 +155,49 @@ The filenames and previews in this view come from the current Immich API.
 
 ## Face review
 
-The Face review page lists visible named and unnamed Immich people that are not
-currently excluded by pending changes. Select
-one to load its assigned faces into a continuous, ordered grid. More faces load
+The Face review page lists visible named and unnamed Immich people, including
+people with a name or merge already waiting in Pending. A Pending label beside
+the person shows that context. Select one to load its currently assigned faces
+into a continuous, ordered grid. More faces load
 as you scroll or choose **Load more faces**; keyboard users can use that button
 to focus the next batch. Only nearby tiles are rendered. Each tile is cropped to the
-face. Hovering or focusing **Photo** shows a small surrounding-image preview;
-clicking **Photo** opens the larger Immich preview. `P` opens it for the focused
-tile too.
+face. **Compact** shows small crops without tile text; **Detail** enlarges them
+and shows filenames and a **Photo** button. The chosen size is saved in this
+browser. Hovering or focusing a compact tile, or the detail view's **Photo**
+button, shows a small surrounding-image preview. Click **Photo**, or press `P`
+on a focused tile, to open the larger Immich preview. The **Show** filter can
+limit the grid to untouched faces.
 
-Click a wrong face, or use `Enter` or `Space` on its focused tile, to select it.
-`Shift`+click selects a range. `Shift`+drag selects an area, or turn on **Area
-select** (`A`) to drag without holding Shift. Selection has a blue border;
-Reviewed faces have a green status and border. Choose **Queue selected for
-Unnamed** (`Q`) to put selected wrong matches into Pending.
+Click a tile, or use `Enter` or `Space` on its focused tile, to select it.
+`Shift`+click selects a range. Selection has a blue outline. **Correct person**
+(`M`) marks selected faces green; **Wrong person** (`W` or the older `Q` shortcut)
+marks them red. `R` toggles a focused face's Correct person mark. **Reset marks**
+(`U`) returns selected faces to untouched. These decisions are drafts saved in
+local SQLite so you can leave the page or reload without losing them. They do
+not change Immich or enter Pending until **Review & submit** opens the batch
+summary and you choose **Submit review**.
 
-Use the tile's Reviewed status button or press `R` on its focused tile to toggle
-one correct face. **Mark selected Reviewed** (`M`) handles a selection together.
-This status is stored only in local SQLite state. The person list
-shows reviewed progress, and when the number of reviewed faces reaches Immich's
-current photo count for that cluster the whole person is marked Reviewed. Newly
-added Immich photos increase the total and therefore reopen the person for
-review. Faces queued for Unnamed count as handled while pending; after a
-successful reassignment their old review marker is removed.
+Submission saves correct faces as locally reviewed and adds each wrong face's
+reassignment to Pending. Wrong faces then leave this person's Face review grid;
+the current assignment still exists in Immich until Sync. The Pending list holds
+the *change request*, where you can preview, exclude, or remove it. Removing the
+request brings the face back into Face review. The counts distinguish correct
+faces, wrong faces waiting for submission, changes awaiting Sync, and untouched
+faces. New Immich photos reopen a person for review.
 
-**Hide selected** (`H`) removes selected faces from this view without losing the
-selection; **Show hidden** (`Shift+H`) restores them. The queue button includes
-the number of hidden selected faces so they cannot be queued unnoticed. **Clear
-selection** (`C`) deselects all faces. Hidden faces and the selection are
-session-only and clear when you choose another person or reload. The **Shortcuts
-?** button, or `?`, shows the full key reference.
+**Hide selected** (`H`) temporarily hides selected faces without discarding the
+selection; **Show hidden** (`Shift+H`) restores them. **Clear selection** (`C`)
+removes the blue outline. Hidden faces and selection are session-only; draft
+decisions are durable. The **Shortcuts** button, or `?`, shows the key reference.
 
-This action is local first. The face appears on Pending as `detach-face`, where
-it can be excluded, previewed, or removed from the queue. During an explicit
-Pending sync the tool creates a new unnamed Immich person and reassigns that
-single face to it. The new cluster then enters the normal Unnamed naming flow.
-If creating the person succeeds but reassignment fails, the newly created
-person ID is retained in the queue so retrying sync reuses it instead of
-creating another empty person.
+At explicit Pending Sync, wrong faces are reassigned before a pending name or
+merge for their source person is applied. If a wrong-face correction fails, is
+excluded from Sync, or is still an unsubmitted draft, the dependent person
+change stays Pending rather than carrying the wrong face into its destination.
+Successful reassignment creates a new unnamed Immich person for that face, which
+then enters the usual Unnamed naming flow. If creation succeeds but reassignment
+fails, the new person ID is retained so a retry does not create another empty
+person.
 
 The Pending page also has **Discard all local changes and reload**. After an
 explicit confirmation it deletes every unsynced pending rename, merge, hide,

@@ -47,7 +47,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
       if (item.kind === "face") {
         const preview = document.createElement("button"); preview.className = "quiet-button"; preview.textContent = "Preview"; preview.addEventListener("click", () => openAssetPreview(item.assetId, item.fileName));
         const remove = document.createElement("button"); remove.className = "quiet-button"; remove.textContent = "Remove";
-        remove.addEventListener("click", async () => { await api("/api/face-detach/return", { method: "POST", body: { faceId: item.faceId } }); await refreshSummary(); await renderPending(); });
+        remove.addEventListener("click", async () => { await api("/api/face-detach/return", { method: "POST", body: { faceId: item.faceId } }); state.faceReviewNeedsRefresh = true; await refreshSummary(); await renderPending(); });
         actions.append(preview, remove);
       } else {
         const details = document.createElement("button"); details.className = "quiet-button"; details.textContent = "Inspect"; details.addEventListener("click", () => openDetails(item));
@@ -102,6 +102,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
       syncButton.setAttribute("aria-busy", "true");
       try {
         const result = await api("/api/sync", { method: "POST", body: { confirmation: "SYNC" } });
+        state.faceReviewNeedsRefresh = true;
         showToast(`Sync finished: ${result.results.length - result.failed} succeeded, ${result.failed} failed`);
         await loadNames(); await refreshSummary(); await renderPending();
       } catch (error) {
@@ -120,6 +121,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
       const button = document.querySelector("#reset-button"); button.disabled = true;
       try {
         const result = await api("/api/reset", { method: "POST", body: { confirmation: "DISCARD" } });
+        state.faceReviewNeedsRefresh = true;
         state.names = [];
         showToast(`Discarded ${result.discarded} local changes. Reloading from Immich…`);
         await waitUntilReady();

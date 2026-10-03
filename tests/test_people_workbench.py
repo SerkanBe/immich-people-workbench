@@ -519,13 +519,12 @@ class PeopleWorkbenchTests(unittest.TestCase):
             person_id = fake.rows[0]["id"]
             queued_face = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
             store.queue_face_detach(queued_face, person_id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "family-photo.jpg")
-            store.set_face_reviewed(queued_face, person_id, True)
 
             result = app.faces_for_person(person_id)
 
             self.assertEqual(len(result["faces"]), 2)
             self.assertTrue(next(face for face in result["faces"] if face["faceId"] == queued_face)["queued"])
-            self.assertTrue(next(face for face in result["faces"] if face["faceId"] == queued_face)["reviewed"])
+            self.assertFalse(next(face for face in result["faces"] if face["faceId"] == queued_face)["reviewed"])
             self.assertFalse(next(face for face in result["faces"] if face["faceId"] != queued_face)["queued"])
 
     def test_all_reviewed_faces_mark_the_person_reviewed(self):
@@ -607,7 +606,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
 
             app.queue_face_detach({"personId": source, "faceId": face_id, "assetId": asset_id, "fileName": "family-photo.jpg"})
             self.assertEqual(len(store.face_detaches()), 1)
-            self.assertIn(face_id, store.reviewed_face_ids(source))
+            self.assertNotIn(face_id, store.reviewed_face_ids(source))
             self.assertFalse(any(call[0] == "reassign-face" for call in fake.calls))
 
             result = app.sync()
@@ -618,6 +617,109 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertIn(("reassign-face", target, face_id), fake.calls)
             self.assertEqual(store.face_detaches(), [])
             self.assertNotIn(face_id, store.reviewed_face_ids(source))
+
+    def test_pending_person_can_be_reviewed_before_sync_and_drafts_survive_reopen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "state.sqlite3"
+            store = Store(path)
+            app = AppState(store, root / "reports")
+            fake = FakeImmich()
+            app.client = fake
+            app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
+            source, target = (row["id"] for row in fake.rows)
+            first = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            second = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            app.queue({"personId": source, "operation": "merge", "targetPersonId": target, "name": "Existing Person"})
+
+            review_person = next(person for person in app.list_people("review", "most") if person["id"] == source)
+            self.assertEqual(review_person["pendingOperation"], "merge")
+            app.set_face_review_drafts({"personId": source, "items": [
+                {"faceId": first, "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "fileName": "synthetic-a.jpg", "verdict": "wrong"},
+                {"faceId": second, "assetId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "fileName": "synthetic-b.jpg", "verdict": "correct"},
+            ]})
+
+            reopened = Store(path)
+            self.assertEqual({row["verdict"] for row in reopened.face_review_drafts(source)}, {"wrong", "correct"})
+            result = app.faces_for_person(source)
+            self.assertEqual({face["draftVerdict"] for face in result["faces"]}, {"wrong", "correct"})
+            self.assertEqual(result["draftCount"], 2)
+            self.assertEqual(fake.calls, [])
+
+            submitted = app.submit_face_review({"personId": source})
+            self.assertEqual(submitted["submitted"], {"correct": 1, "wrong": 1, "unreviewed": 0})
+            self.assertEqual(reopened.face_review_drafts(source), [])
+            self.assertEqual(reopened.reviewed_face_ids(source), {second})
+            self.assertEqual([row["face_id"] for row in reopened.face_detaches()], [first])
+            self.assertEqual({row["operation"] for row in app.pending_public()}, {"merge", "detach-face"})
+            self.assertEqual(fake.calls, [])
+
+    def test_failed_or_excluded_face_correction_blocks_dependent_merge(self):
+        for excluded in (False, True):
+            with self.subTest(excluded=excluded), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                store = Store(root / "state.sqlite3")
+                app = AppState(store, root / "reports")
+                fake = FakeImmich()
+                fake.reassign_fail = not excluded
+                app.client = fake
+                app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
+                source, target = (row["id"] for row in fake.rows)
+                face_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+                app.queue({"personId": source, "operation": "merge", "targetPersonId": target, "name": "Existing Person"})
+                app.set_face_review_drafts({"personId": source, "items": [{
+                    "faceId": face_id, "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "fileName": "synthetic.jpg", "verdict": "wrong",
+                }]})
+                app.submit_face_review({"personId": source})
+                if excluded:
+                    store.set_face_detach_included(face_id, False)
+
+                first = app.sync()
+                self.assertNotIn(("merge", target, source), fake.calls)
+                self.assertEqual(len(store.face_detaches()), 1)
+                self.assertEqual(len(store.pending()), 1)
+                self.assertTrue(any(row["operation"] == "merge" and row["result"] == "failed" for row in first["results"]))
+
+                fake.reassign_fail = False
+                store.set_face_detach_included(face_id, True)
+                second = app.sync()
+                self.assertEqual(second["failed"], 0)
+                self.assertLess(
+                    fake.calls.index(("reassign-face", "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", face_id)),
+                    fake.calls.index(("merge", target, source)),
+                )
+                self.assertEqual(store.face_detaches(), [])
+                self.assertEqual(store.pending(), [])
+
+    def test_unsubmitted_review_blocks_person_change_and_stale_face_stays_draft(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(root / "state.sqlite3")
+            app = AppState(store, root / "reports")
+            fake = FakeImmich()
+            app.client = fake
+            app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
+            source = fake.rows[0]["id"]
+            app.queue({"personId": source, "operation": "rename", "name": "Synthetic Person"})
+            app.set_face_review_drafts({"personId": source, "items": [{
+                "faceId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "fileName": "synthetic.jpg", "verdict": "wrong",
+            }]})
+            result = app.sync()
+            self.assertEqual(result["failed"], 1)
+            self.assertFalse(any(call[0] == "update" for call in fake.calls))
+
+            with mock.patch.object(fake, "faces", return_value=[]):
+                with self.assertRaisesRegex(ToolError, "no longer assigned"):
+                    app.submit_face_review({"personId": source})
+            self.assertEqual(len(store.face_review_drafts(source)), 1)
+            self.assertEqual(store.face_detaches(), [])
+
+            app.submit_face_review({"personId": source})
+            synced = app.sync()
+            self.assertEqual(synced["failed"], 0)
+            self.assertTrue(any(call[0] == "update" for call in fake.calls))
 
     def test_concurrent_sync_rejects_second_request_and_detaches_once(self):
         class BlockingImmich(FakeImmich):
