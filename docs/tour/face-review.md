@@ -16,8 +16,9 @@ borders are local review drafts, saved across reloads; they do not enter Pending
 or change Immich yet.
 
 In the photo preview, **Hide box** (`H`) removes the rectangle while you inspect
-the face. Use the zoom controls or `+`/`-` keys to enlarge or reduce the photo;
-scroll to pan when zoomed in.
+the face. Click the photo to zoom in or return to fit. Use Ctrl+mouse-wheel to
+adjust zoom around the pointer, then drag the enlarged photo to pan. The `+`
+and `-` keys also adjust zoom; `0` returns to 100%.
 
 Press **Hide decided** (`F`) to hide the green and red faces marked so far,
 including ones loaded on later pages. Marking another face leaves it visible

@@ -10,18 +10,26 @@ export function createAssetPreview({ assetThumb }) {
   const caption = document.querySelector("#asset-preview-caption");
   const toggleBox = document.querySelector("#asset-preview-toggle-box");
   const toggleLabel = document.querySelector("#asset-preview-toggle-label");
-  const zoomOut = document.querySelector("#asset-preview-zoom-out");
-  const zoomIn = document.querySelector("#asset-preview-zoom-in");
   const zoomLabel = document.querySelector("#asset-preview-zoom-level");
   const zoomLevels = [1, 1.5, 2, 3, 4];
   let activeFaceBox = null;
   let boxVisible = true;
   let zoomIndex = 0;
+  let wheelRemainder = 0;
+  let drag = null;
+  let suppressClick = false;
+  let suppressClickTimer = 0;
+  let ignoredTouchClickId = null;
+  let zoomFrame = 0;
 
-  function updateZoomControls() {
-    zoomOut.disabled = zoomIndex === 0;
-    zoomIn.disabled = zoomIndex === zoomLevels.length - 1;
+  function updateZoomState() {
     zoomLabel.textContent = `${Math.round(zoomLevels[zoomIndex] * 100)}%`;
+    viewport.classList.toggle("is-zoomed", zoomIndex > 0);
+    if (!zoomIndex) viewport.classList.remove("is-dragging");
+  }
+
+  function fittedHeight() {
+    return Math.max(180, Math.min(window.innerHeight * 0.68, window.innerHeight - 270));
   }
 
   function positionFaceBox() {
@@ -53,21 +61,28 @@ export function createAssetPreview({ assetThumb }) {
       : "Face rectangle hidden. Immich preview; original file not downloaded.";
   }
 
-  function setZoom(nextIndex) {
+  function setZoom(nextIndex, pointer = null) {
     const clamped = Math.max(0, Math.min(nextIndex, zoomLevels.length - 1));
     if (clamped === zoomIndex) return;
-    const centerX = (viewport.scrollLeft + viewport.clientWidth / 2) / Math.max(viewport.scrollWidth, 1);
-    const centerY = (viewport.scrollTop + viewport.clientHeight / 2) / Math.max(viewport.scrollHeight, 1);
+    const viewportRect = viewport.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    const x = pointer?.x ?? viewportRect.left + viewportRect.width / 2;
+    const y = pointer?.y ?? viewportRect.top + viewportRect.height / 2;
+    const offsetX = Math.max(0, Math.min(x - viewportRect.left, viewportRect.width));
+    const offsetY = Math.max(0, Math.min(y - viewportRect.top, viewportRect.height));
+    const fractionX = Math.max(0, Math.min((x - stageRect.left) / Math.max(stageRect.width, 1), 1));
+    const fractionY = Math.max(0, Math.min((y - stageRect.top) / Math.max(stageRect.height, 1), 1));
     zoomIndex = clamped;
     const zoom = zoomLevels[zoomIndex];
     marker.hidden = true;
     stage.style.width = zoomIndex ? `${zoom * 100}%` : "";
-    const fitHeight = Math.max(180, Math.min(window.innerHeight * 0.68, window.innerHeight - 210));
-    image.style.maxHeight = zoomIndex ? `${fitHeight * zoom}px` : "";
-    updateZoomControls();
-    requestAnimationFrame(() => {
-      viewport.scrollLeft = centerX * viewport.scrollWidth - viewport.clientWidth / 2;
-      viewport.scrollTop = centerY * viewport.scrollHeight - viewport.clientHeight / 2;
+    image.style.maxHeight = zoomIndex ? `${fittedHeight() * zoom}px` : "";
+    updateZoomState();
+    if (zoomFrame) cancelAnimationFrame(zoomFrame);
+    zoomFrame = requestAnimationFrame(() => {
+      zoomFrame = 0;
+      viewport.scrollLeft = fractionX * stage.clientWidth - offsetX;
+      viewport.scrollTop = fractionY * stage.clientHeight - offsetY;
       positionFaceBox();
     });
   }
@@ -76,6 +91,14 @@ export function createAssetPreview({ assetThumb }) {
     activeFaceBox = faceBox;
     boxVisible = true;
     zoomIndex = 0;
+    wheelRemainder = 0;
+    drag = null;
+    suppressClick = false;
+    clearTimeout(suppressClickTimer);
+    suppressClickTimer = 0;
+    ignoredTouchClickId = null;
+    if (zoomFrame) cancelAnimationFrame(zoomFrame);
+    zoomFrame = 0;
     stage.style.width = "";
     image.style.maxHeight = "";
     marker.hidden = true;
@@ -87,34 +110,87 @@ export function createAssetPreview({ assetThumb }) {
     dialog.showModal();
     viewport.scrollLeft = 0;
     viewport.scrollTop = 0;
-    updateZoomControls();
+    updateZoomState();
+    viewport.focus({ preventScroll: true });
     requestAnimationFrame(positionFaceBox);
   }
 
   toggleBox.addEventListener("click", () => { boxVisible = !boxVisible; positionFaceBox(); });
-  zoomOut.addEventListener("click", () => setZoom(zoomIndex - 1));
-  zoomIn.addEventListener("click", () => setZoom(zoomIndex + 1));
+  viewport.addEventListener("click", event => {
+    if (event.pointerId === ignoredTouchClickId) { ignoredTouchClickId = null; return; }
+    if (suppressClick) { suppressClick = false; return; }
+    setZoom(zoomIndex ? 0 : 2, event.detail ? { x: event.clientX, y: event.clientY } : null);
+  });
+  viewport.addEventListener("wheel", event => {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1);
+    if (!delta) return;
+    if (Math.sign(delta) !== Math.sign(wheelRemainder)) wheelRemainder = 0;
+    wheelRemainder += delta;
+    if (Math.abs(wheelRemainder) < 80) return;
+    wheelRemainder = 0;
+    setZoom(zoomIndex + (delta < 0 ? 1 : -1), { x: event.clientX, y: event.clientY });
+  }, { passive: false });
+  viewport.addEventListener("pointerdown", event => {
+    if (!zoomIndex || event.button !== 0) return;
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: viewport.scrollLeft, top: viewport.scrollTop, moved: false };
+  });
+  viewport.addEventListener("pointermove", event => {
+    if (!drag || drag.id !== event.pointerId) return;
+    const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) > 4) {
+      drag.moved = true;
+      viewport.setPointerCapture(event.pointerId);
+    }
+    if (!drag.moved) return;
+    viewport.classList.add("is-dragging");
+    viewport.scrollLeft = drag.left - dx;
+    viewport.scrollTop = drag.top - dy;
+  });
+  function finishDrag(event, canceled = false) {
+    if (!drag || drag.id !== event.pointerId) return;
+    const moved = drag.moved;
+    suppressClick = !canceled && event.pointerType === "mouse" && moved;
+    if (suppressClick) {
+      clearTimeout(suppressClickTimer);
+      suppressClickTimer = setTimeout(() => { suppressClick = false; suppressClickTimer = 0; }, 0);
+    }
+    if (event.pointerType !== "mouse") ignoredTouchClickId = event.pointerId;
+    drag = null;
+    viewport.classList.remove("is-dragging");
+    if (moved && viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+    if (!canceled && !moved && event.pointerType !== "mouse") setZoom(0, { x: event.clientX, y: event.clientY });
+  }
+  viewport.addEventListener("pointerup", finishDrag);
+  viewport.addEventListener("pointercancel", event => finishDrag(event, true));
   dialog.addEventListener("keydown", event => {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     const key = event.key.toLowerCase();
     if (key === "h" && !toggleBox.hidden) { event.preventDefault(); boxVisible = !boxVisible; positionFaceBox(); }
+    else if (event.target === viewport && (key === "enter" || key === " ")) { event.preventDefault(); setZoom(zoomIndex ? 0 : 2); }
     else if (key === "+" || key === "=") { event.preventDefault(); setZoom(zoomIndex + 1); }
     else if (key === "-" || key === "_") { event.preventDefault(); setZoom(zoomIndex - 1); }
     else if (key === "0") { event.preventDefault(); setZoom(0); }
   });
   image.addEventListener("load", positionFaceBox);
   window.addEventListener("resize", () => {
-    if (zoomIndex) {
-      const fitHeight = Math.max(180, Math.min(window.innerHeight * 0.68, window.innerHeight - 210));
-      image.style.maxHeight = `${fitHeight * zoomLevels[zoomIndex]}px`;
-    }
+    if (zoomIndex) image.style.maxHeight = `${fittedHeight() * zoomLevels[zoomIndex]}px`;
     positionFaceBox();
   });
   dialog.addEventListener("close", () => {
+    if (zoomFrame) cancelAnimationFrame(zoomFrame);
+    zoomFrame = 0;
+    clearTimeout(suppressClickTimer);
+    suppressClickTimer = 0;
+    suppressClick = false;
+    ignoredTouchClickId = null;
+    drag = null;
+    viewport.classList.remove("is-dragging");
     activeFaceBox = null;
     marker.hidden = true;
     image.removeAttribute("src");
   });
-  updateZoomControls();
+  updateZoomState();
   return openAssetPreview;
 }

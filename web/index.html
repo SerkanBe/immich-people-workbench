@@ -235,13 +235,9 @@
       <div class="detail-heading"><div><h2 id="asset-preview-title">Photo preview</h2><p id="asset-preview-caption" class="muted"></p></div><button class="icon-button" data-close aria-label="Close">×</button></div>
       <div class="asset-preview-tools">
         <button id="asset-preview-toggle-box" class="quiet-button" type="button" hidden><span id="asset-preview-toggle-label">Hide box</span> <kbd>H</kbd></button>
-        <div class="asset-preview-zoom" role="group" aria-label="Photo zoom">
-          <button id="asset-preview-zoom-out" class="quiet-button" type="button" aria-label="Zoom out">Zoom out <kbd>−</kbd></button>
-          <span id="asset-preview-zoom-level" aria-live="polite">100%</span>
-          <button id="asset-preview-zoom-in" class="quiet-button" type="button" aria-label="Zoom in">Zoom in <kbd>+</kbd></button>
-        </div>
+        <span id="asset-preview-zoom-level" aria-live="polite">100%</span>
       </div>
-      <div id="asset-preview-viewport" class="asset-preview-viewport"><div id="asset-preview-stage" class="asset-preview-stage"><img id="asset-preview-image" alt="Photo preview"><div id="asset-preview-face-box" aria-hidden="true" hidden></div></div></div>
+      <div id="asset-preview-viewport" class="asset-preview-viewport" role="button" tabindex="0" title="Click to zoom in or fit. Ctrl+wheel to adjust zoom; drag to pan." aria-label="Photo preview. Press Enter to zoom in or fit; use plus and minus keys to adjust zoom."><div id="asset-preview-stage" class="asset-preview-stage"><img id="asset-preview-image" alt="Photo preview" draggable="false"><div id="asset-preview-face-box" aria-hidden="true" hidden></div></div></div>
       <div class="dialog-actions"><button class="quiet-button" data-close>Close</button></div>
     </div>
   </dialog>

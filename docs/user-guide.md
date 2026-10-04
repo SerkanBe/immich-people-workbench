@@ -168,8 +168,9 @@ face crop to open the larger Immich preview. Press `Space` on a focused tile in
 either mode to open it. The rectangle in that preview marks the face assigned
 to this person; it is omitted when the preview and face-coordinate dimensions
 strongly disagree. Use **Hide box** (`H`) in the preview when it covers a small
-face, and **Zoom in** (`+`) or **Zoom out** (`-`) to inspect it. Scroll the enlarged
-preview to pan; `0` resets zoom to 100%.
+face. Click the photo to zoom in or return to fit, or use Ctrl+mouse-wheel to
+adjust zoom around the pointer. Drag the enlarged photo to pan. The `+` and `-`
+keys adjust zoom, and `0` resets it to 100%.
 
 Use the arrow keys to move focus between face tiles; moving focus clears any
 multi-face selection. Hold `Shift` with an arrow key to extend or shrink a
