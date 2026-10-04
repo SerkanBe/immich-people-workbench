@@ -94,7 +94,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     const person = currentFaceReviewPerson();
     if (!person || !result) return;
     person.reviewedCount = result.reviewedCount || 0;
-    person.reviewTotal = result.totalAssets ?? result.reviewTotal ?? person.assetCount ?? 0;
+    person.reviewTotal = result.reviewTotal ?? person.assetCount ?? result.totalAssets ?? 0;
     person.reviewed = Boolean(result.personReviewed);
     person.draftCount = result.draftCount || 0;
     const pagePerson = state.faceReviewPeople.find(item => item.id === person.id);
