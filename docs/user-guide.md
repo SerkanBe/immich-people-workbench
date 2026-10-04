@@ -162,16 +162,18 @@ into a continuous, ordered grid. More faces load
 as you scroll or choose **Load more faces**; keyboard users can use that button
 to focus the next batch. Only nearby tiles are rendered. Each tile is cropped to the
 face. **Compact** shows small crops without tile text; **Detail** enlarges them
-and shows filenames and a **Photo** button. The chosen size is saved in this
-browser. Hovering over a compact tile, or the detail view's **Photo**
-button, shows a small surrounding-image preview. Click **Photo**, or press `P`
-on a focused tile, to open the larger Immich preview.
+and shows filenames. The chosen size is saved in this browser. Hover over a
+compact tile for a small surrounding-image preview. In Detail mode, click the
+face crop to open the larger Immich preview. Press `Space` on a focused tile in
+either mode to open it. The rectangle in that preview marks the face assigned
+to this person; if the preview and face coordinates do not align reliably, the
+marker is omitted.
 
 Use the arrow keys to move focus between face tiles; moving focus clears any
 multi-face selection. Hold `Shift` with an arrow key to extend or shrink a
 selection from its starting face. **Correct person** (`A`) marks the focused
 face green; **Wrong person** (`S`) marks it red. Press the same decision again
-to reset it. You can also click tiles, use `Enter` or `Space` to select a
+to reset it. You can also click tiles or use `Enter` to select a
 focused tile, and `Shift`+click to select a range. The
 same actions apply to the selected faces when a selection exists; selection has
 a blue outline. Rapid key presses are saved in order, even if you choose another

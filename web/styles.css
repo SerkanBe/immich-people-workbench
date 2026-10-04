@@ -260,13 +260,13 @@ body.merge-zen .merge-tray { position: static; height: 100vh; overflow-y: auto; 
 .face-review-card.wrong { border-color: #c43c48; }
 .face-review-card.selected { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--surface), 0 0 0 2px var(--accent); background: var(--accent-soft); }
 .face-review-card canvas, .face-review-card > img { display: block; width: 100%; aspect-ratio: 1; border-radius: 7px; object-fit: cover; background: var(--surface); }
+.face-review-grid.detail .face-review-crop { cursor: zoom-in; }
 .face-review-badge { position: absolute; top: 7px; right: 7px; display: none; place-items: center; width: 21px; height: 21px; border-radius: 50%; background: var(--surface); font-size: .82rem; font-weight: 800; }
 .face-review-card.correct .face-review-badge, .face-review-card.wrong .face-review-badge { display: grid; }
 .face-review-card.correct .face-review-badge { color: #23834f; }
 .face-review-card.wrong .face-review-badge { color: #ad2d38; }
-.face-review-card-meta { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 5px; padding-top: 5px; }
-.face-review-card-meta code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; }
-.face-review-card-meta button { min-height: 30px; padding: 4px 8px; }
+.face-review-card-meta { padding-top: 5px; }
+.face-review-card-meta code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .72rem; }
 .face-review-grid.compact .face-review-card { padding: 2px; border-radius: 8px; }
 .face-review-grid.compact .face-review-card canvas, .face-review-grid.compact .face-review-card > img { border-radius: 4px; }
 .face-review-grid.compact .face-review-card-meta { display: none; }
@@ -335,7 +335,9 @@ dialog::backdrop { background: rgba(5,10,14,.66); backdrop-filter: blur(3px); }
 kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2); font: .8rem ui-monospace, monospace; }
 .detail-dialog { width: min(1050px, calc(100% - 28px)); }
 .asset-preview-dialog { width: min(1100px, calc(100% - 28px)); }
+.asset-preview-stage { position: relative; width: 100%; }
 .asset-preview-dialog img { display: block; width: 100%; max-height: 78vh; border-radius: 10px; object-fit: contain; background: #0a0d10; }
+#asset-preview-face-box { position: absolute; box-sizing: border-box; border: 3px solid #ffe45c; box-shadow: 0 0 0 2px #101820, 0 0 0 5px #ffe45c88; border-radius: 3px; pointer-events: none; }
 .detail-heading { display: flex; justify-content: space-between; align-items: start; }
 .detail-galleries { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .detail-gallery h3 { margin: 0 0 8px; }

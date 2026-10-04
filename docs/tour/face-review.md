@@ -9,8 +9,9 @@ mistake before sending the person change to Immich.
 Compact mode shows many face crops at once. Use the arrow keys to move focus,
 then mark **Correct person** (`A`) or **Wrong person** (`S`). Press the same key
 again to reset that decision. Click, Shift-click, or use Shift+Arrow to select
-a group for the same actions. Detail mode gives
-each crop more room and a **Photo** action (`P`) for context. The green and red
+a group for the same actions. Detail mode gives each crop more room; click
+its image, or press `Space` on a focused tile in either mode, to open the photo
+with the reviewed face marked by a rectangle. The green and red
 borders are local review drafts, saved across reloads; they do not enter Pending
 or change Immich yet.
 

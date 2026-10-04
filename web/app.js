@@ -185,13 +185,44 @@ const { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, rende
 
 const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState: () => saveMergeCanvasState(state, showToast), showSlide, showToast, resetListPages, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
 
-function openAssetPreview(assetId, fileName = "Photo preview") {
-  const dialog = document.querySelector("#asset-preview-dialog");
+const previewDialog = document.querySelector("#asset-preview-dialog");
+const previewImage = document.querySelector("#asset-preview-image");
+const previewFaceBox = document.querySelector("#asset-preview-face-box");
+const previewCaption = document.querySelector("#asset-preview-caption");
+let activePreviewFaceBox = null;
+
+function positionPreviewFaceBox() {
+  previewFaceBox.hidden = true;
+  previewCaption.textContent = "Immich preview — the original file is not downloaded.";
+  const box = activePreviewFaceBox;
+  if (!box || !previewImage.complete || !previewImage.naturalWidth || !previewImage.naturalHeight) return;
+  const [x1, y1, x2, y2, sourceWidth, sourceHeight] = [box.x1, box.y1, box.x2, box.y2, box.width, box.height].map(Number);
+  if (![x1, y1, x2, y2, sourceWidth, sourceHeight].every(Number.isFinite) ||
+      sourceWidth <= 0 || sourceHeight <= 0 || x1 < 0 || y1 < 0 || x2 > sourceWidth || y2 > sourceHeight || x2 <= x1 || y2 <= y1 ||
+      Math.abs((sourceWidth / sourceHeight) / (previewImage.naturalWidth / previewImage.naturalHeight) - 1) > 0.08) {
+    previewCaption.textContent = "Immich preview — face location unavailable for this image.";
+    return;
+  }
+  const frameWidth = previewImage.clientWidth, frameHeight = previewImage.clientHeight;
+  if (!frameWidth || !frameHeight) return;
+  const scale = Math.min(frameWidth / previewImage.naturalWidth, frameHeight / previewImage.naturalHeight);
+  const shownWidth = previewImage.naturalWidth * scale, shownHeight = previewImage.naturalHeight * scale;
+  previewFaceBox.style.left = `${(frameWidth - shownWidth) / 2 + x1 / sourceWidth * shownWidth}px`;
+  previewFaceBox.style.top = `${(frameHeight - shownHeight) / 2 + y1 / sourceHeight * shownHeight}px`;
+  previewFaceBox.style.width = `${(x2 - x1) / sourceWidth * shownWidth}px`;
+  previewFaceBox.style.height = `${(y2 - y1) / sourceHeight * shownHeight}px`;
+  previewFaceBox.hidden = false;
+  previewCaption.textContent = "Highlighted rectangle: the face assigned to this person. Immich preview; original file not downloaded.";
+}
+
+function openAssetPreview(assetId, fileName = "Photo preview", faceBox = null) {
+  activePreviewFaceBox = faceBox;
+  previewFaceBox.hidden = true;
+  previewCaption.textContent = "Immich preview — the original file is not downloaded.";
   document.querySelector("#asset-preview-title").textContent = fileName || "Photo preview";
-  document.querySelector("#asset-preview-caption").textContent = "Immich preview — the original file is not downloaded.";
-  const image = document.querySelector("#asset-preview-image");
-  image.src = assetThumb(assetId); image.alt = fileName || "Photo preview";
-  dialog.showModal();
+  previewImage.src = assetThumb(assetId); previewImage.alt = fileName || "Photo preview";
+  previewDialog.showModal();
+  requestAnimationFrame(positionPreviewFaceBox);
 }
 
 const { renderInvestigate, bindInvestigateControls } = createInvestigate({ api, assetThumb, attachNameBehavior, moveSlide, openAssetPreview, personThumb, refreshSummary, renderPagination, showSlide, showToast, state, ui });
@@ -234,7 +265,13 @@ document.querySelector("#page-size-select").addEventListener("change", event => 
   state.pageSize = Number(event.target.value) || 24; savePageSize(state.pageSize, showToast); resetListPages(); renderCurrentView(true).catch(error => showToast(error.message));
 });
 document.querySelector("#sort-select").addEventListener("change", event => { state.sort = event.target.value; resetListPages(); renderCurrentView(true, false).catch(error => showToast(error.message)); });
-document.querySelector("#asset-preview-dialog").addEventListener("close", () => document.querySelector("#asset-preview-image").removeAttribute("src"));
+previewImage.addEventListener("load", positionPreviewFaceBox);
+window.addEventListener("resize", positionPreviewFaceBox);
+previewDialog.addEventListener("close", () => {
+  activePreviewFaceBox = null;
+  previewFaceBox.hidden = true;
+  previewImage.removeAttribute("src");
+});
 
 initializeMergeCanvas();
 bindMergeControls();

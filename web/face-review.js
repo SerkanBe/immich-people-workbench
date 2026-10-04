@@ -151,7 +151,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     const width = Math.max(minimum, ui.faceReviewGrid.clientWidth - 16);
     const columns = Math.max(1, Math.floor((width + gap) / (minimum + gap)));
     const cardWidth = (width - (columns - 1) * gap) / columns;
-    const cardHeight = Math.ceil(cardWidth + (mode === "compact" ? 0 : 65));
+    const cardHeight = Math.ceil(cardWidth + (mode === "compact" ? 0 : 38));
     layout = { columns, width: cardWidth, height: cardHeight, stride: cardHeight + gap };
     state.faceReviewLayout = layout;
   }
@@ -161,31 +161,31 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     card.className = "face-review-card"; card.dataset.faceId = face.faceId; card.tabIndex = -1;
     card.setAttribute("role", "option");
     card.title = face.fileName;
-    const crop = document.createElement("canvas"); crop.width = 280; crop.height = 280;
+    const crop = document.createElement("canvas"); crop.className = "face-review-crop"; crop.width = 280; crop.height = 280;
     drawFace(crop, face).catch(() => {
-      if (crop.isConnected) crop.replaceWith(Object.assign(document.createElement("img"), { src: assetThumb(face.assetId), alt: "" }));
+      if (crop.isConnected) crop.replaceWith(Object.assign(document.createElement("img"), { className: "face-review-crop", src: assetThumb(face.assetId), alt: "" }));
     });
     const meta = document.createElement("div"); meta.className = "face-review-card-meta";
     const filename = document.createElement("code"); filename.textContent = face.fileName; filename.title = face.fileName;
-    const photo = document.createElement("button"); photo.type = "button"; photo.className = "quiet-button face-review-photo"; photo.innerHTML = "Photo <kbd>P</kbd>";
-    photo.addEventListener("click", event => { event.stopPropagation(); openAssetPreview(face.assetId, face.fileName); });
-    photo.addEventListener("mouseenter", () => showPhotoPeek(face, card));
-    photo.addEventListener("mouseleave", hidePhotoPeek);
     const badge = document.createElement("span"); badge.className = "face-review-badge"; badge.setAttribute("aria-hidden", "true");
-    meta.append(filename, photo); card.append(crop, badge, meta);
+    meta.append(filename); card.append(crop, badge, meta);
     card.addEventListener("mouseenter", () => { if (mode === "compact") showPhotoPeek(face, card); });
     card.addEventListener("mouseleave", hidePhotoPeek);
     card.addEventListener("focus", () => { focusedFaceId = face.faceId; updateControls(); });
     card.addEventListener("blur", hidePhotoPeek);
     card.addEventListener("click", event => {
-      if (!event.target.closest("button")) { card.focus({ preventScroll: true }); toggleSelection(face, event.shiftKey); }
+      if (mode === "detail" && !event.shiftKey && event.target.classList.contains("face-review-crop")) {
+        card.focus({ preventScroll: true }); openAssetPreview(face.assetId, face.fileName, face.box); return;
+      }
+      card.focus({ preventScroll: true }); toggleSelection(face, event.shiftKey);
     });
     card.addEventListener("keydown", event => {
       if (event.target !== card) return;
-      if (event.key === " " || event.key === "Enter") { event.preventDefault(); toggleSelection(face, event.shiftKey); }
+      if (event.key === "Enter") { event.preventDefault(); toggleSelection(face, event.shiftKey); }
+      else if (event.key === " ") { event.preventDefault(); openAssetPreview(face.assetId, face.fileName, face.box); }
       else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
         event.preventDefault(); navigateFaces(face.faceId, event.key, event.shiftKey).catch(error => showToast(error.message));
-      } else if (event.key.toLowerCase() === "p") { event.preventDefault(); event.stopPropagation(); openAssetPreview(face.assetId, face.fileName); }
+      }
     });
     return card;
   }

@@ -168,7 +168,7 @@
               <button id="face-review-show" class="quiet-button" type="button" disabled><span id="face-review-show-label">Show hidden</span> <kbd>Shift+F</kbd></button>
               <button id="face-review-clear" class="quiet-button" type="button" disabled>Clear selection</button>
             </div>
-            <div id="face-review-shortcuts" class="face-review-shortcuts" hidden><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> move between faces · <kbd>Shift</kbd>+arrow selects a range · <kbd>A</kbd> Correct person · <kbd>S</kbd> Wrong person · press the same decision again to reset · <kbd>F</kbd> hide decided faces, including later pages · <kbd>Shift+F</kbd> show hidden faces · <kbd>Enter</kbd> or <kbd>Space</kbd> selects a face · <kbd>Shift</kbd>+click selects a range · <kbd>P</kbd> opens the photo · <kbd>?</kbd> toggles this help</div>
+            <div id="face-review-shortcuts" class="face-review-shortcuts" hidden><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> move between faces · <kbd>Shift</kbd>+arrow selects a range · <kbd>A</kbd> Correct person · <kbd>S</kbd> Wrong person · press the same decision again to reset · <kbd>F</kbd> hide decided faces, including later pages · <kbd>Shift+F</kbd> show hidden faces · <kbd>Enter</kbd> selects a face · <kbd>Shift</kbd>+click selects a range · <kbd>Space</kbd> opens the photo · <kbd>?</kbd> toggles this help</div>
             <div id="face-review-grid" class="face-review-grid" role="listbox" aria-multiselectable="true" aria-label="Assigned face crops" tabindex="0"></div>
             <div class="face-review-load-row"><span id="face-review-load-status" class="muted" aria-live="polite"></span><button id="face-review-load-more" class="quiet-button" type="button" hidden>Retry loading</button></div>
             <div class="face-review-submit-bar"><div><strong>Submit this review</strong><small>Correct faces are saved locally. Wrong faces leave this grid and enter Pending; Immich changes only after Sync.</small></div><button id="face-review-submit" class="primary-button" type="button" disabled>Review &amp; submit</button></div>
@@ -233,7 +233,7 @@
   <dialog id="asset-preview-dialog" class="asset-preview-dialog">
     <div class="dialog-form">
       <div class="detail-heading"><div><h2 id="asset-preview-title">Photo preview</h2><p id="asset-preview-caption" class="muted"></p></div><button class="icon-button" data-close aria-label="Close">×</button></div>
-      <img id="asset-preview-image" alt="Photo preview">
+      <div class="asset-preview-stage"><img id="asset-preview-image" alt="Photo preview"><div id="asset-preview-face-box" aria-hidden="true" hidden></div></div>
       <div class="dialog-actions"><button class="quiet-button" data-close>Close</button></div>
     </div>
   </dialog>
