@@ -11,6 +11,7 @@ export function createAssetPreview({ assetThumb }) {
   const toggleBox = document.querySelector("#asset-preview-toggle-box");
   const toggleLabel = document.querySelector("#asset-preview-toggle-label");
   const zoomLabel = document.querySelector("#asset-preview-zoom-level");
+  const reviewControls = document.querySelector("#asset-preview-review");
   const zoomLevels = [1, 1.5, 2, 3, 4];
   let activeFaceBox = null;
   let boxVisible = true;
@@ -29,7 +30,8 @@ export function createAssetPreview({ assetThumb }) {
   }
 
   function fittedHeight() {
-    return Math.max(180, Math.min(window.innerHeight * 0.68, window.innerHeight - 270));
+    const review = dialog.classList.contains("has-review");
+    return Math.max(100, Math.min(window.innerHeight * (review ? 0.55 : 0.68), window.innerHeight - (review ? 400 : 270)));
   }
 
   function positionFaceBox() {
@@ -87,9 +89,10 @@ export function createAssetPreview({ assetThumb }) {
     });
   }
 
-  function openAssetPreview(assetId, fileName = "Photo preview", faceBox = null) {
+  function openAssetPreview(assetId, fileName = "Photo preview", faceBox = null, { review = false } = {}) {
+    const continueReview = review && dialog.open && dialog.classList.contains("has-review");
     activeFaceBox = faceBox;
-    boxVisible = true;
+    if (!continueReview) boxVisible = true;
     zoomIndex = 0;
     wheelRemainder = 0;
     drag = null;
@@ -103,11 +106,13 @@ export function createAssetPreview({ assetThumb }) {
     image.style.maxHeight = "";
     marker.hidden = true;
     toggleBox.hidden = true;
+    reviewControls.hidden = !review;
+    dialog.classList.toggle("has-review", review);
     caption.textContent = "Immich preview — the original file is not downloaded.";
     document.querySelector("#asset-preview-title").textContent = fileName || "Photo preview";
     image.src = assetThumb(assetId);
     image.alt = fileName || "Photo preview";
-    dialog.showModal();
+    if (!dialog.open) dialog.showModal();
     viewport.scrollLeft = 0;
     viewport.scrollTop = 0;
     updateZoomState();
@@ -188,6 +193,8 @@ export function createAssetPreview({ assetThumb }) {
     drag = null;
     viewport.classList.remove("is-dragging");
     activeFaceBox = null;
+    reviewControls.hidden = true;
+    dialog.classList.remove("has-review");
     marker.hidden = true;
     image.removeAttribute("src");
   });

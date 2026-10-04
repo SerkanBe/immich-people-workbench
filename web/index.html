@@ -162,16 +162,16 @@
               </div>
             </div>
             <div class="face-review-actions">
-              <button id="face-review-mark" class="quiet-button" type="button" disabled>Correct person <kbd>A</kbd></button>
-              <button id="face-review-queue" class="danger-button" type="button" disabled>Wrong person <kbd>S</kbd></button>
+              <button id="face-review-mark" class="quiet-button" type="button" disabled>Accept face <kbd>A</kbd></button>
+              <button id="face-review-queue" class="danger-button" type="button" disabled>Dismiss face <kbd>D</kbd></button>
               <button id="face-review-hide" class="quiet-button" type="button" disabled>Hide decided <kbd>F</kbd></button>
               <button id="face-review-show" class="quiet-button" type="button" disabled><span id="face-review-show-label">Show hidden</span> <kbd>Shift+F</kbd></button>
               <button id="face-review-clear" class="quiet-button" type="button" disabled>Clear selection</button>
             </div>
-            <div id="face-review-shortcuts" class="face-review-shortcuts" hidden><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> move between faces · <kbd>Shift</kbd>+arrow selects a range · <kbd>A</kbd> Correct person · <kbd>S</kbd> Wrong person · press the same decision again to reset · <kbd>F</kbd> hide decided faces, including later pages · <kbd>Shift+F</kbd> show hidden faces · <kbd>Enter</kbd> selects a face · <kbd>Shift</kbd>+click selects a range · <kbd>Space</kbd> opens the photo · <kbd>?</kbd> toggles this help</div>
+            <div id="face-review-shortcuts" class="face-review-shortcuts" hidden><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> move between faces · <kbd>Shift</kbd>+arrow selects a range · <kbd>A</kbd> Accept face · <kbd>D</kbd> Dismiss face · press the same decision again to reset · <kbd>F</kbd> hide decided faces, including later pages · <kbd>Shift+F</kbd> show hidden faces · <kbd>Enter</kbd> selects a face · <kbd>Shift</kbd>+click selects a range · <kbd>Space</kbd> opens the photo · in the photo: <kbd>←</kbd>/<kbd>→</kbd> move, <kbd>S</kbd> skip · <kbd>?</kbd> toggles this help</div>
             <div id="face-review-grid" class="face-review-grid" role="listbox" aria-multiselectable="true" aria-label="Assigned face crops" tabindex="0"></div>
             <div class="face-review-load-row"><span id="face-review-load-status" class="muted" aria-live="polite"></span><button id="face-review-load-more" class="quiet-button" type="button" hidden>Retry loading</button></div>
-            <div class="face-review-submit-bar"><div><strong>Submit this review</strong><small>Correct faces are saved locally. Wrong faces leave this grid and enter Pending; Immich changes only after Sync.</small></div><button id="face-review-submit" class="primary-button" type="button" disabled>Review &amp; submit</button></div>
+            <div class="face-review-submit-bar"><div><strong>Submit this review</strong><small>Accepted faces are saved locally. Dismissed faces leave this grid and enter Pending; Immich changes only after Sync.</small></div><button id="face-review-submit" class="primary-button" type="button" disabled>Review &amp; submit</button></div>
           </div>
         </section>
       </div>
@@ -238,6 +238,10 @@
         <span id="asset-preview-zoom-level" aria-live="polite">100%</span>
       </div>
       <div id="asset-preview-viewport" class="asset-preview-viewport" role="button" tabindex="0" title="Click to zoom in or fit. Ctrl+wheel to adjust zoom; drag to pan." aria-label="Photo preview. Press Enter to zoom in or fit; use plus and minus keys to adjust zoom."><div id="asset-preview-stage" class="asset-preview-stage"><img id="asset-preview-image" alt="Photo preview" draggable="false"><div id="asset-preview-face-box" aria-hidden="true" hidden></div></div></div>
+      <div id="asset-preview-review" class="asset-preview-review" hidden>
+        <div class="asset-preview-review-navigation"><button id="asset-preview-previous" class="quiet-button" type="button">Previous <kbd>←</kbd></button><span id="asset-preview-position" class="muted" aria-live="polite"></span><button id="asset-preview-next" class="quiet-button" type="button">Next <kbd>→</kbd></button></div>
+        <div class="asset-preview-review-decisions"><span id="asset-preview-review-status" class="asset-preview-review-status" aria-live="polite">Undecided</span><button id="asset-preview-accept" class="quiet-button" type="button" aria-pressed="false">Accept face <kbd>A</kbd></button><button id="asset-preview-dismiss" class="danger-button" type="button" aria-pressed="false">Dismiss face <kbd>D</kbd></button><button id="asset-preview-skip" class="quiet-button" type="button">Skip <kbd>S</kbd></button></div>
+      </div>
       <div class="dialog-actions"><button class="quiet-button" data-close>Close</button></div>
     </div>
   </dialog>

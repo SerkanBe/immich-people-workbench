@@ -172,10 +172,18 @@ face. Click the photo to zoom in or return to fit, or use Ctrl+mouse-wheel to
 adjust zoom around the pointer. Drag the enlarged photo to pan. The `+` and `-`
 keys adjust zoom, and `0` resets it to 100%.
 
+Inside that photo preview, **Accept face** (`A`) and **Dismiss face** (`D`)
+change only the current face's local draft decision. Press the same decision
+again to reset it. Left/Right moves through the currently visible faces; `S`
+skips to the next one without changing a decision. The lightbox fetches the
+next page as needed. If it cannot load that page, the current photo stays open
+and Right retries. Closing the lightbox returns grid focus to its current face.
+Hidden faces and faces already queued in Pending are outside this sequence.
+
 Use the arrow keys to move focus between face tiles; moving focus clears any
 multi-face selection. Hold `Shift` with an arrow key to extend or shrink a
-selection from its starting face. **Correct person** (`A`) marks the focused
-face green; **Wrong person** (`S`) marks it red. Press the same decision again
+selection from its starting face. **Accept face** (`A`) marks the focused
+face green; **Dismiss face** (`D`) marks it red. Press the same decision again
 to reset it. You can also click tiles or use `Enter` to select a
 focused tile, and `Shift`+click to select a range. The
 same actions apply to the selected faces when a selection exists; selection has
@@ -186,12 +194,12 @@ you can reload without losing them. They do
 not change Immich or enter Pending until **Review & submit** opens the batch
 summary and you choose **Submit review**.
 
-Submission saves correct faces as locally reviewed and adds each wrong face's
-reassignment to Pending. Wrong faces then leave this person's Face review grid;
+Submission saves accepted faces as locally reviewed and adds each dismissed face's
+reassignment to Pending. Dismissed faces then leave this person's Face review grid;
 the current assignment still exists in Immich until Sync. The Pending list holds
 the *change request*, where you can preview, exclude, or remove it. Removing the
-request brings the face back into Face review. The counts distinguish correct
-faces, wrong faces waiting for submission, changes awaiting Sync, and untouched
+request brings the face back into Face review. The counts distinguish accepted
+faces, dismissed faces waiting for submission, changes awaiting Sync, and untouched
 faces. New Immich photos reopen a person for review.
 
 **Hide decided** (`F`) hides green and red faces, including already decided
@@ -204,7 +212,7 @@ people and return, but reset on a page reload or after Pending changes refresh
 the face grid. Selection is session-only; draft decisions are durable. The
 **Shortcuts** button, or `?`, shows the key reference.
 
-At explicit Pending Sync, wrong faces are reassigned before a pending name or
+At explicit Pending Sync, dismissed faces are reassigned before a pending name or
 merge for their source person is applied. If a wrong-face correction fails, is
 excluded from Sync, or is still an unsubmitted draft, the dependent person
 change stays Pending rather than carrying the wrong face into its destination.

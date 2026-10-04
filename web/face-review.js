@@ -14,6 +14,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   let hasMore = false;
   let loadError = false;
   let loading = false;
+  let pageLoad = null;
   let busy = false;
   let draftSaving = false;
   let draftRevision = 0;
@@ -23,6 +24,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   let generation = 0;
   let anchorId = null;
   let focusedFaceId = null;
+  let lightboxFaceId = null;
+  let lightboxGeneration = null;
+  let lightboxMoving = false;
+  let lightboxMessage = "";
   let previewBubble = null;
   let layout = { columns: 1, width: 104, height: 104, stride: 112 };
   const modeKey = "peopleWorkbench.faceReviewMode";
@@ -100,7 +105,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     const pagePerson = state.faceReviewPeople.find(item => item.id === person.id);
     if (pagePerson && pagePerson !== person) Object.assign(pagePerson, { reviewedCount: person.reviewedCount, reviewTotal: person.reviewTotal, reviewed: person.reviewed, draftCount: person.draftCount });
     const pending = person.pendingOperation ? ` · Pending ${person.pendingOperation}${person.pendingName ? ` → ${person.pendingName}` : ""}` : "";
-    element("face-review-meta").textContent = `${result.correctCount || 0} correct · ${result.wrongDraftCount || 0} wrong to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${result.untouchedCount ?? "?"} untouched${pending}`;
+    element("face-review-meta").textContent = `${result.correctCount || 0} accepted · ${result.wrongDraftCount || 0} dismissed to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${result.untouchedCount ?? "?"} untouched${pending}`;
     element("face-review-content").classList.toggle("person-reviewed", person.reviewed);
     renderFacePersonList();
   }
@@ -139,7 +144,8 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       card.classList.toggle("correct", status === "correct");
       card.classList.toggle("wrong", status === "wrong");
       card.setAttribute("aria-selected", String(selected));
-      card.setAttribute("aria-label", `Face from ${face.fileName}, ${status} person${face.draftVerdict ? ", awaiting review submission" : ""}`);
+      const label = status === "correct" ? "accepted" : status === "wrong" ? "dismissed" : "undecided";
+      card.setAttribute("aria-label", `Face from ${face.fileName}, ${label}${face.draftVerdict ? ", awaiting review submission" : ""}`);
       card.querySelector(".face-review-badge").textContent = status === "correct" ? "✓" : status === "wrong" ? "×" : "";
     }
     updateControls();
@@ -175,14 +181,14 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     card.addEventListener("blur", hidePhotoPeek);
     card.addEventListener("click", event => {
       if (mode === "detail" && !event.shiftKey && event.target.classList.contains("face-review-crop")) {
-        card.focus({ preventScroll: true }); openAssetPreview(face.assetId, face.fileName, face.box); return;
+        card.focus({ preventScroll: true }); openReviewPhoto(face); return;
       }
       card.focus({ preventScroll: true }); toggleSelection(face, event.shiftKey);
     });
     card.addEventListener("keydown", event => {
       if (event.target !== card) return;
       if (event.key === "Enter") { event.preventDefault(); toggleSelection(face, event.shiftKey); }
-      else if (event.key === " ") { event.preventDefault(); openAssetPreview(face.assetId, face.fileName, face.box); }
+      else if (event.key === " ") { event.preventDefault(); openReviewPhoto(face); }
       else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
         event.preventDefault(); navigateFaces(face.faceId, event.key, event.shiftKey).catch(error => showToast(error.message));
       }
@@ -216,23 +222,29 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
     if (!available.length && !hasMore && !loadError && !loading) {
       const message = document.createElement("p"); message.className = "face-review-empty muted";
-      message.textContent = hidden.size ? "Decided faces are hidden. Use Show hidden to see them." : "No faces remain to review here. Wrong faces submitted to Pending are hidden from this grid.";
+      message.textContent = hidden.size ? "Decided faces are hidden. Use Show hidden to see them." : "No faces remain to review here. Dismissed faces submitted to Pending are hidden from this grid.";
       surface.append(message);
     } else surface.querySelectorAll(".face-review-empty").forEach(node => node.remove());
     updateMountedStates();
   }
 
-  function focusVisibleFace(index) {
+  function revealVisibleFace(index) {
     const available = visibleFaces();
     const nextIndex = Math.max(0, Math.min(index, available.length - 1));
     const face = available[nextIndex];
-    if (!face) { ui.faceReviewGrid.focus(); return; }
+    if (!face) return null;
     calculateLayout();
     const top = Math.floor(nextIndex / layout.columns) * layout.stride;
     if (top < ui.faceReviewGrid.scrollTop) ui.faceReviewGrid.scrollTop = top;
     else if (top + layout.height > ui.faceReviewGrid.scrollTop + ui.faceReviewGrid.clientHeight)
       ui.faceReviewGrid.scrollTop = top + layout.height - ui.faceReviewGrid.clientHeight;
     renderVisible();
+    return face;
+  }
+
+  function focusVisibleFace(index) {
+    const face = revealVisibleFace(index);
+    if (!face) { ui.faceReviewGrid.focus(); return; }
     mounted.get(face.faceId)?.focus({ preventScroll: true });
   }
 
@@ -271,39 +283,46 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
 
   async function loadNextPage() {
     const person = currentFaceReviewPerson();
-    if (!person || loading || !hasMore) return;
+    if (!person) return;
+    if (loading) return pageLoad?.generation === generation ? pageLoad.promise : undefined;
+    if (!hasMore) return;
     const requestedGeneration = generation;
     const requestedDraftRevision = draftRevision;
     const pendingDraft = activeDecisionGeneration === requestedGeneration
       || actionQueue.some(action => action.type === "decision" && action.requestGeneration === requestedGeneration);
     loading = true; updateControls();
-    try {
-      const result = await api(`/api/person-faces/${encodeURIComponent(person.id)}?page=${nextPage}&size=${pageSize}`);
-      if (requestedGeneration !== generation) return;
-      faces.push(...result.faces);
-      if (visibility.hideDecided) {
-        for (const face of result.faces) {
-          if (statusOf(face) !== "untouched" && !visibility.decisionsAfterHide.has(face.faceId)) hidden.add(face.faceId);
+    const promise = (async () => {
+      try {
+        const result = await api(`/api/person-faces/${encodeURIComponent(person.id)}?page=${nextPage}&size=${pageSize}`);
+        if (requestedGeneration !== generation) return;
+        faces.push(...result.faces);
+        if (visibility.hideDecided) {
+          for (const face of result.faces) {
+            if (statusOf(face) !== "untouched" && !visibility.decisionsAfterHide.has(face.faceId)) hidden.add(face.faceId);
+          }
+        }
+        nextPage = result.page + 1; hasMore = result.hasMore;
+        state.faceReviewPage = result.page;
+        if (!pendingDraft && requestedDraftRevision === draftRevision) {
+          state.faceReviewResult = result;
+          updateFaceReviewProgress(result);
+        }
+        renderVisible();
+        loadError = false;
+      } catch (error) {
+        if (requestedGeneration !== generation) return;
+        hasMore = false; loadError = true;
+        showToast(`Could not load faces: ${error.message}`);
+      } finally {
+        if (requestedGeneration === generation) {
+          loading = false; updateControls(); renderVisible();
+          if (hasMore) requestAnimationFrame(maybeLoadMore);
         }
       }
-      nextPage = result.page + 1; hasMore = result.hasMore;
-      state.faceReviewPage = result.page;
-      if (!pendingDraft && requestedDraftRevision === draftRevision) {
-        state.faceReviewResult = result;
-        updateFaceReviewProgress(result);
-      }
-      renderVisible();
-      loadError = false;
-    } catch (error) {
-      if (requestedGeneration !== generation) return;
-      hasMore = false; loadError = true;
-      showToast(`Could not load faces: ${error.message}`);
-    } finally {
-      if (requestedGeneration === generation) {
-        loading = false; updateControls(); renderVisible();
-        if (hasMore) requestAnimationFrame(maybeLoadMore);
-      }
-    }
+    })();
+    pageLoad = { generation: requestedGeneration, promise };
+    try { await promise; }
+    finally { if (pageLoad?.promise === promise) pageLoad = null; }
   }
 
   function toggleSelection(face, range = false) {
@@ -404,11 +423,8 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
   }
 
-  function stageSelected(verdict) {
+  function stageFaces(selected, verdict, clearSelected = false) {
     const person = currentFaceReviewPerson();
-    const selected = state.faceReviewSelectedData.size
-      ? [...state.faceReviewSelectedData.values()].filter(face => !face.queued)
-      : visibleFaces().filter(face => face.faceId === focusedFaceId);
     if (!person || !selected.length || busy) return;
     if (selected.some(face => hidden.has(face.faceId))) {
       showToast("Show hidden selected faces before marking them.");
@@ -419,8 +435,95 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       face,
       verdict: reset ? face.reviewed ? "unreviewed" : "clear" : verdict,
     }));
-    if (state.faceReviewSelected.size) clearSelection();
+    if (clearSelected && state.faceReviewSelected.size) clearSelection();
     enqueueAction({ type: "decision", personId: person.id, decisions });
+  }
+
+  function stageSelected(verdict) {
+    const selected = state.faceReviewSelectedData.size
+      ? [...state.faceReviewSelectedData.values()].filter(face => !face.queued)
+      : visibleFaces().filter(face => face.faceId === focusedFaceId);
+    stageFaces(selected, verdict, true);
+  }
+
+  function updateLightboxReview() {
+    if (element("asset-preview-review").hidden || lightboxGeneration !== generation) return;
+    const available = visibleFaces();
+    const index = available.findIndex(face => face.faceId === lightboxFaceId);
+    const face = available[index];
+    if (!face) return;
+    const status = statusOf(face);
+    element("asset-preview-position").textContent = lightboxMessage || `Face ${index + 1} of ${available.length}${hasMore ? " loaded" : ""}`;
+    const statusLabel = element("asset-preview-review-status");
+    statusLabel.textContent = status === "correct" ? "Accepted" : status === "wrong" ? "Dismissed" : "Undecided";
+    statusLabel.dataset.status = status;
+    element("asset-preview-accept").setAttribute("aria-pressed", String(status === "correct"));
+    element("asset-preview-dismiss").setAttribute("aria-pressed", String(status === "wrong"));
+    element("asset-preview-accept").disabled = busy || lightboxMoving;
+    element("asset-preview-dismiss").disabled = busy || lightboxMoving;
+    element("asset-preview-previous").disabled = lightboxMoving || index === 0;
+    const canAdvance = index < available.length - 1 || hasMore || loadError;
+    element("asset-preview-next").disabled = lightboxMoving || !canAdvance;
+    element("asset-preview-skip").disabled = lightboxMoving || !canAdvance;
+  }
+
+  function openReviewPhoto(face) {
+    if (lightboxFaceId === null) lightboxGeneration = generation;
+    lightboxFaceId = face.faceId;
+    focusedFaceId = face.faceId;
+    lightboxMessage = "";
+    openAssetPreview(face.assetId, face.fileName, face.box, { review: true });
+    updateLightboxReview();
+  }
+
+  function decideLightbox(verdict) {
+    if (lightboxGeneration !== generation || lightboxMoving) return;
+    const face = visibleFaces().find(item => item.faceId === lightboxFaceId);
+    if (!face) return;
+    stageFaces([face], verdict);
+    updateLightboxReview();
+  }
+
+  async function moveLightbox(direction) {
+    if (lightboxGeneration !== generation || lightboxMoving) return;
+    const available = visibleFaces();
+    const index = available.findIndex(face => face.faceId === lightboxFaceId);
+    if (index < 0) return;
+    const target = index + direction;
+    if (target < 0) return;
+    const requestGeneration = generation;
+    lightboxMoving = true;
+    if (target >= available.length) lightboxMessage = "Loading next faces…";
+    updateLightboxReview();
+    try {
+      while (direction > 0 && target >= visibleFaces().length && (hasMore || loadError)) {
+        if (loadError) { hasMore = true; loadError = false; }
+        await loadNextPage();
+        if (requestGeneration !== generation || !element("asset-preview-dialog").open || loadError) break;
+      }
+      if (requestGeneration !== generation || !element("asset-preview-dialog").open) return;
+      const next = visibleFaces()[target];
+      if (next) {
+        revealVisibleFace(target);
+        openReviewPhoto(next);
+      } else lightboxMessage = loadError ? "Load failed · Right to retry" : "No further visible faces";
+    } finally {
+      lightboxMoving = false;
+      updateLightboxReview();
+    }
+  }
+
+  function closeReviewPhoto() {
+    const faceId = lightboxFaceId;
+    const reviewGeneration = lightboxGeneration;
+    lightboxFaceId = null;
+    lightboxGeneration = null;
+    lightboxMoving = false;
+    lightboxMessage = "";
+    if (faceId && reviewGeneration === generation && state.view === "faces") {
+      const index = visibleFaces().findIndex(face => face.faceId === faceId);
+      if (index >= 0) focusVisibleFace(index);
+    }
   }
 
   async function submitReview() {
@@ -444,7 +547,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       applyProgress(result);
       renderVisible(); maybeLoadMore();
       await refreshSummary().catch(error => showToast(error.message));
-      showToast(`Review submitted locally: ${result.submitted.correct} correct, ${result.submitted.wrong} wrong faces added to Pending. Immich is unchanged.`);
+      showToast(`Review submitted locally: ${result.submitted.correct} accepted, ${result.submitted.wrong} dismissed faces added to Pending. Immich is unchanged.`);
     } catch (error) {
       if (requestGeneration === generation) showToast(`Review was not submitted: ${error.message}`);
     } finally {
@@ -535,12 +638,27 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     element("face-review-detail").addEventListener("click", () => setMode("detail"));
     element("face-review-submit").addEventListener("click", () => {
       const result = state.faceReviewResult;
-      element("face-review-submit-summary").textContent = `${result?.draftCount || 0} decisions: ${result?.wrongDraftCount || 0} wrong faces will leave this review grid and enter Pending; correct faces will be saved locally. Immich changes only after you review Pending and explicitly Sync.`;
+      element("face-review-submit-summary").textContent = `${result?.draftCount || 0} decisions: ${result?.wrongDraftCount || 0} dismissed faces will leave this review grid and enter Pending; accepted faces will be saved locally. Immich changes only after you review Pending and explicitly Sync.`;
       element("face-review-submit-dialog").showModal();
     });
     element("face-review-cancel-submit").addEventListener("click", () => element("face-review-submit-dialog").close());
     element("face-review-confirm-submit").addEventListener("click", async () => { element("face-review-submit-dialog").close(); await submitReview(); });
     element("face-review-help").addEventListener("click", toggleShortcuts);
+    element("asset-preview-accept").addEventListener("click", () => decideLightbox("correct"));
+    element("asset-preview-dismiss").addEventListener("click", () => decideLightbox("wrong"));
+    element("asset-preview-previous").addEventListener("click", () => moveLightbox(-1));
+    element("asset-preview-next").addEventListener("click", () => moveLightbox(1));
+    element("asset-preview-skip").addEventListener("click", () => moveLightbox(1));
+    element("asset-preview-dialog").addEventListener("close", closeReviewPhoto);
+    element("asset-preview-dialog").addEventListener("keydown", event => {
+      if (element("asset-preview-review").hidden || lightboxGeneration !== generation || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "a") { event.preventDefault(); decideLightbox("correct"); }
+      else if (key === "d") { event.preventDefault(); decideLightbox("wrong"); }
+      else if (key === "s" || key === "arrowright") { event.preventDefault(); moveLightbox(1); }
+      else if (key === "arrowleft") { event.preventDefault(); moveLightbox(-1); }
+    });
+    document.addEventListener("face-review-save-state", updateLightboxReview);
     element("face-review-load-more").addEventListener("click", async event => {
       const keyboard = event.detail === 0, firstNewIndex = faces.length;
       hasMore = true; loadError = false;
@@ -567,7 +685,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       if (state.view !== "faces" || !currentFaceReviewPerson() || event.altKey || event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, button, [contenteditable]")) return;
       const key = event.key.toLowerCase();
       if (key === "a" && !event.shiftKey) { event.preventDefault(); stageSelected("correct"); }
-      else if (key === "s" && !event.shiftKey) { event.preventDefault(); stageSelected("wrong"); }
+      else if (key === "d" && !event.shiftKey) { event.preventDefault(); stageSelected("wrong"); }
       else if (key === "f") { event.preventDefault(); event.shiftKey ? showHidden() : hideDecided(); }
       else if (key === "?") { event.preventDefault(); toggleShortcuts(); }
     });
