@@ -38,7 +38,7 @@ const state = {
   mergeReviewGroups: [], mergeReviewIndex: 0, mergeReviewBusy: false, mergeReviewQueued: 0, mergeReviewSkipped: 0, mergeReviewSupported: false,
   faceReviewPeople: [], faceReviewPersonId: null, faceReviewCurrentPerson: null, faceReviewPage: 1,
   faceReviewPageSize: 20, faceReviewLayout: { columns: 5, rows: 4 }, faceReviewResult: null, faceReviewResizeTimer: null,
-  faceReviewSelected: new Set(), faceReviewSelectedData: new Map(), faceReviewLoading: false,
+  faceReviewSelected: new Set(), faceReviewSelectedData: new Map(), faceReviewLoading: false, faceReviewSaving: false,
 };
 
 async function api(path, options = {}) {
