@@ -87,12 +87,14 @@
 - Keep each commit focused on one task. Stage explicit files or hunks, then
   inspect the staged diff and status before committing. Exclude private state,
   `var/`, and unrelated working-tree changes.
-- Complete the agreed scope and relevant checks, then push the task branch and
+- Complete the agreed scope and relevant checks, then commit on the local task
+  branch and give the user the worktree path and a way to test it. Task-branch
+  commits do not need separate approval.
+- Wait for the user to confirm that the local behavior works before pushing the
+  task branch or opening a pull request. Once confirmed for that task, push and
   open a pull request against `main`. Describe the behavior, changed files,
-  checks, and any material limitations in the PR. The pull request is the
-  user's review point; separate approval before each task-branch commit is not
-  required. Leave PR review and merging to the user.
-- If branch push or PR creation is unavailable, keep the work on the task
-  branch and report what is needed. Do not put the changes on `main` instead.
+  checks, and any material limitations. Leave PR review and merging to the user.
+- If branch push or PR creation is unavailable after confirmation, keep the work
+  on the task branch and report what is needed. Do not put changes on `main`.
 - Do not amend, reset, rebase, force-push, or discard another person's work
   unless the user specifically asks for that operation.
