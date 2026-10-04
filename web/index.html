@@ -164,12 +164,11 @@
             <div class="face-review-actions">
               <button id="face-review-mark" class="quiet-button" type="button" disabled>Correct person <kbd>A</kbd></button>
               <button id="face-review-queue" class="danger-button" type="button" disabled>Wrong person <kbd>S</kbd></button>
-              <button id="face-review-reset" class="quiet-button" type="button" disabled>Reset decision <kbd>D</kbd></button>
               <button id="face-review-hide" class="quiet-button" type="button" disabled>Hide decided <kbd>F</kbd></button>
               <button id="face-review-show" class="quiet-button" type="button" disabled><span id="face-review-show-label">Show hidden</span> <kbd>Shift+F</kbd></button>
               <button id="face-review-clear" class="quiet-button" type="button" disabled>Clear selection</button>
             </div>
-            <div id="face-review-shortcuts" class="face-review-shortcuts" hidden><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> move between faces · <kbd>A</kbd> Correct person · <kbd>S</kbd> Wrong person · <kbd>D</kbd> reset decision · <kbd>F</kbd> hide faces decided so far · <kbd>Shift+F</kbd> show hidden faces · <kbd>Enter</kbd> or <kbd>Space</kbd> selects a face · <kbd>Shift</kbd>+click selects a range · <kbd>P</kbd> opens the photo · <kbd>?</kbd> toggles this help</div>
+            <div id="face-review-shortcuts" class="face-review-shortcuts" hidden><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> move between faces · <kbd>Shift</kbd>+arrow selects a range · <kbd>A</kbd> Correct person · <kbd>S</kbd> Wrong person · press the same decision again to reset · <kbd>F</kbd> hide decided faces, including later pages · <kbd>Shift+F</kbd> show hidden faces · <kbd>Enter</kbd> or <kbd>Space</kbd> selects a face · <kbd>Shift</kbd>+click selects a range · <kbd>P</kbd> opens the photo · <kbd>?</kbd> toggles this help</div>
             <div id="face-review-grid" class="face-review-grid" role="listbox" aria-multiselectable="true" aria-label="Assigned face crops" tabindex="0"></div>
             <div class="face-review-load-row"><span id="face-review-load-status" class="muted" aria-live="polite"></span><button id="face-review-load-more" class="quiet-button" type="button" hidden>Retry loading</button></div>
             <div class="face-review-submit-bar"><div><strong>Submit this review</strong><small>Correct faces are saved locally. Wrong faces leave this grid and enter Pending; Immich changes only after Sync.</small></div><button id="face-review-submit" class="primary-button" type="button" disabled>Review &amp; submit</button></div>

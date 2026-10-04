@@ -168,10 +168,11 @@ button, shows a small surrounding-image preview. Click **Photo**, or press `P`
 on a focused tile, to open the larger Immich preview.
 
 Use the arrow keys to move focus between face tiles; moving focus clears any
-multi-face selection. **Correct person** (`A`)
-marks the focused face green; **Wrong person** (`S`) marks it red, and **Reset
-decision** (`D`) returns it to untouched. You can also click tiles, use `Enter`
-or `Space` to select a focused tile, and `Shift`+click to select a range. The
+multi-face selection. Hold `Shift` with an arrow key to extend or shrink a
+selection from its starting face. **Correct person** (`A`) marks the focused
+face green; **Wrong person** (`S`) marks it red. Press the same decision again
+to reset it. You can also click tiles, use `Enter` or `Space` to select a
+focused tile, and `Shift`+click to select a range. The
 same actions apply to the selected faces when a selection exists; selection has
 a blue outline. Rapid key presses are saved in order, even if you choose another
 person before saving finishes. Pending Sync waits for local decisions to finish
@@ -188,9 +189,10 @@ request brings the face back into Face review. The counts distinguish correct
 faces, wrong faces waiting for submission, changes awaiting Sync, and untouched
 faces. New Immich photos reopen a person for review.
 
-**Hide decided** (`F`) hides all currently visible green and red faces. It does
-not hide a face when you mark it: press `F` again when you are ready to hide
-new decisions. **Show hidden** (`Shift+F`) brings hidden faces back. These are
+**Hide decided** (`F`) hides green and red faces, including already decided
+faces loaded on later pages. It does not hide a face when you mark it after
+pressing `F`: press `F` again when you are ready to hide new decisions.
+**Show hidden** (`Shift+F`) brings hidden faces back. These are
 view-only actions; they neither submit drafts nor change Immich. **Clear
 selection** removes the blue outline. Hidden faces stay hidden if you switch
 people and return, but reset on a page reload or after Pending changes refresh

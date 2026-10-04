@@ -5,8 +5,9 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   const pageSize = 60;
   let gap = 8;
   let faces = [];
-  let hidden = new Set();
-  let hiddenByPerson = new Map();
+  let visibility = { hidden: new Set(), hideDecided: false, decisionsAfterHide: new Set() };
+  let visibilityByPerson = new Map();
+  let hidden = visibility.hidden;
   let mounted = new Map();
   let surface = null;
   let nextPage = 1;
@@ -16,6 +17,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   let busy = false;
   let draftSaving = false;
   let draftRevision = 0;
+  const stagedVerdicts = new Map();
   let activeDecisionGeneration = null;
   let actionQueue = [];
   let generation = 0;
@@ -29,7 +31,11 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
 
   const element = id => document.getElementById(id);
   const currentFaceReviewPerson = () => state.faceReviewCurrentPerson;
-  const statusOf = face => face.draftVerdict === "wrong" ? "wrong" : face.draftVerdict === "unreviewed" ? "untouched" : face.draftVerdict === "correct" || face.reviewed ? "correct" : "untouched";
+  const statusOf = face => {
+    const staged = stagedVerdicts.get(face.faceId);
+    const draft = staged?.generation === generation ? staged.verdict === "clear" ? null : staged.verdict : face.draftVerdict;
+    return draft === "wrong" ? "wrong" : draft === "unreviewed" ? "untouched" : draft === "correct" || face.reviewed ? "correct" : "untouched";
+  };
   const visibleFaces = () => faces.filter(face => !face.queued && !hidden.has(face.faceId));
 
   function showPhotoPeek(face, card) {
@@ -105,9 +111,8 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     const focused = visibleFaces().some(face => face.faceId === focusedFaceId);
     const actionable = selected > 0 || focused;
     element("face-review-mark").disabled = !actionable || disabled;
-    element("face-review-reset").disabled = !actionable || disabled;
-    element("face-review-hide").disabled = disabled || (!draftSaving && !visibleFaces().some(face => statusOf(face) !== "untouched"));
-    element("face-review-show").disabled = disabled || (!hidden.size && !draftSaving);
+    element("face-review-hide").disabled = disabled || (!draftSaving && !hasMore && !visibleFaces().some(face => statusOf(face) !== "untouched"));
+    element("face-review-show").disabled = disabled || (!visibility.hideDecided && !hidden.size && !draftSaving);
     element("face-review-show-label").textContent = hidden.size ? `Show hidden (${hidden.size})` : "Show hidden";
     element("face-review-clear").disabled = !selected || disabled;
     element("face-review-queue").disabled = !actionable || disabled;
@@ -179,7 +184,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       if (event.target !== card) return;
       if (event.key === " " || event.key === "Enter") { event.preventDefault(); toggleSelection(face, event.shiftKey); }
       else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
-        event.preventDefault(); navigateFaces(face.faceId, event.key).catch(error => showToast(error.message));
+        event.preventDefault(); navigateFaces(face.faceId, event.key, event.shiftKey).catch(error => showToast(error.message));
       } else if (event.key.toLowerCase() === "p") { event.preventDefault(); event.stopPropagation(); openAssetPreview(face.assetId, face.fileName); }
     });
     return card;
@@ -231,15 +236,31 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     mounted.get(face.faceId)?.focus({ preventScroll: true });
   }
 
-  async function navigateFaces(faceId, key) {
+  async function navigateFaces(faceId, key, extendSelection = false) {
     const available = visibleFaces();
     const index = available.findIndex(face => face.faceId === faceId);
     if (index < 0) return;
-    if (state.faceReviewSelected.size) clearSelection();
+    const requestGeneration = generation;
+    const selectionAnchor = extendSelection && available.some(face => face.faceId === anchorId) ? anchorId : faceId;
+    if (!extendSelection && state.faceReviewSelected.size) clearSelection();
     calculateLayout();
     const delta = key === "ArrowLeft" ? -1 : key === "ArrowRight" ? 1 : key === "ArrowUp" ? -layout.columns : layout.columns;
     const target = index + delta;
     if (target >= available.length && hasMore) await loadNextPage();
+    if (requestGeneration !== generation) return;
+    if (extendSelection) {
+      const shown = visibleFaces();
+      const start = shown.findIndex(face => face.faceId === selectionAnchor);
+      const end = Math.max(0, Math.min(target, shown.length - 1));
+      state.faceReviewSelected.clear(); state.faceReviewSelectedData.clear();
+      if (start >= 0) {
+        for (let position = Math.min(start, end); position <= Math.max(start, end); position += 1) {
+          const face = shown[position];
+          if (!face.queued) { state.faceReviewSelected.add(face.faceId); state.faceReviewSelectedData.set(face.faceId, face); }
+        }
+      }
+      anchorId = selectionAnchor;
+    }
     focusVisibleFace(target);
   }
 
@@ -260,6 +281,11 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       const result = await api(`/api/person-faces/${encodeURIComponent(person.id)}?page=${nextPage}&size=${pageSize}`);
       if (requestedGeneration !== generation) return;
       faces.push(...result.faces);
+      if (visibility.hideDecided) {
+        for (const face of result.faces) {
+          if (statusOf(face) !== "untouched" && !visibility.decisionsAfterHide.has(face.faceId)) hidden.add(face.faceId);
+        }
+      }
       nextPage = result.page + 1; hasMore = result.hasMore;
       state.faceReviewPage = result.page;
       if (!pendingDraft && requestedDraftRevision === draftRevision) {
@@ -307,7 +333,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     updateMountedStates();
   }
 
-  async function saveDecisions({ decisions, personId, requestGeneration }) {
+  async function saveDecisions({ decisions, personId, requestGeneration, revision }) {
     let saved = 0;
     try {
       for (let offset = 0; offset < decisions.length; offset += 500) {
@@ -318,6 +344,17 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
           })) },
         });
         saved += chunk.length;
+        for (const { face } of chunk) {
+          if (stagedVerdicts.get(face.faceId)?.revision === revision) stagedVerdicts.delete(face.faceId);
+        }
+        const savedVisibility = visibilityByPerson.get(personId);
+        if (savedVisibility?.hideDecided) {
+          for (const { face, verdict } of chunk) {
+            if ((verdict === "correct" || verdict === "wrong") && !savedVisibility.hidden.has(face.faceId)) {
+              savedVisibility.decisionsAfterHide.add(face.faceId);
+            }
+          }
+        }
         if (requestGeneration === generation) {
           for (const { face, verdict } of chunk) face.draftVerdict = verdict === "clear" ? null : verdict;
           applyProgress(result);
@@ -325,15 +362,26 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       }
       if (requestGeneration === generation) { renderVisible(); maybeLoadMore(); }
     } catch (error) {
+      for (const { face } of decisions.slice(saved)) {
+        if (stagedVerdicts.get(face.faceId)?.revision === revision) stagedVerdicts.delete(face.faceId);
+      }
+      if (requestGeneration === generation) renderVisible();
       showToast(`${saved} decisions saved; could not finish: ${error.message}`);
     }
   }
 
   function enqueueAction(action) {
-    if (action.type === "decision") draftRevision += 1;
+    if (action.type === "decision") {
+      draftRevision += 1;
+      action.revision = draftRevision;
+      for (const { face, verdict } of action.decisions) {
+        stagedVerdicts.set(face.faceId, { generation, revision: draftRevision, verdict });
+      }
+    }
     actionQueue.push({ ...action, requestGeneration: generation });
     state.faceReviewSaving = true;
     drainActions().catch(error => showToast(error.message));
+    if (action.type === "decision") updateMountedStates();
   }
 
   async function drainActions() {
@@ -366,7 +414,11 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       showToast("Show hidden selected faces before marking them.");
       return;
     }
-    const decisions = selected.map(face => ({ face, verdict: verdict === "reset" ? face.reviewed ? "unreviewed" : "clear" : verdict }));
+    const reset = selected.every(face => statusOf(face) === verdict);
+    const decisions = selected.map(face => ({
+      face,
+      verdict: reset ? face.reviewed ? "unreviewed" : "clear" : verdict,
+    }));
     if (state.faceReviewSelected.size) clearSelection();
     enqueueAction({ type: "decision", personId: person.id, decisions });
   }
@@ -403,13 +455,19 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   function hideDecidedNow() {
     const available = visibleFaces();
     const focusIndex = available.findIndex(face => face.faceId === focusedFaceId);
+    visibility.hideDecided = true;
+    visibility.decisionsAfterHide.clear();
     for (const face of available) if (statusOf(face) !== "untouched") hidden.add(face.faceId);
     for (const id of hidden) { state.faceReviewSelected.delete(id); state.faceReviewSelectedData.delete(id); }
     if (hidden.has(anchorId)) anchorId = null;
     hidePhotoPeek(); renderVisible(); maybeLoadMore();
     if (focusIndex >= 0 && hidden.has(focusedFaceId)) focusVisibleFace(focusIndex);
   }
-  function showHiddenNow() { hidden.clear(); renderVisible(); maybeLoadMore(); }
+  function showHiddenNow() {
+    visibility.hideDecided = false;
+    visibility.decisionsAfterHide.clear();
+    hidden.clear(); renderVisible(); maybeLoadMore();
+  }
   function hideDecided() { if (!busy) enqueueAction({ type: "hide" }); }
   function showHidden() { if (!busy) enqueueAction({ type: "show" }); }
   function clearSelection() { state.faceReviewSelected.clear(); state.faceReviewSelectedData.clear(); anchorId = null; updateMountedStates(); }
@@ -430,7 +488,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     state.faceReviewPersonId = personId; state.faceReviewCurrentPerson = person;
     state.faceReviewResult = null;
     state.faceReviewSelected.clear(); state.faceReviewSelectedData.clear();
-    faces = []; hidden = hiddenByPerson.get(personId) || new Set(); hiddenByPerson.set(personId, hidden);
+    faces = [];
+    visibility = visibilityByPerson.get(personId) || { hidden: new Set(), hideDecided: false, decisionsAfterHide: new Set() };
+    visibilityByPerson.set(personId, visibility);
+    hidden = visibility.hidden;
     mounted = new Map(); nextPage = 1; hasMore = true; loadError = false; loading = false; busy = false; anchorId = null; focusedFaceId = null;
     hidePhotoPeek();
     renderFacePersonList();
@@ -447,7 +508,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     await loadFaceReviewPeople();
     if (state.faceReviewNeedsRefresh) {
       state.faceReviewNeedsRefresh = false;
-      hiddenByPerson = new Map();
+      visibilityByPerson = new Map();
       if (state.faceReviewPersonId) await selectFaceReviewPerson(state.faceReviewPersonId);
     } else if (state.faceReviewPersonId && surface && currentFaceReviewPerson()?.id === state.faceReviewPersonId) {
       renderVisible(); maybeLoadMore();
@@ -467,7 +528,6 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     });
     element("face-review-queue").addEventListener("click", () => stageSelected("wrong"));
     element("face-review-mark").addEventListener("click", () => stageSelected("correct"));
-    element("face-review-reset").addEventListener("click", () => stageSelected("reset"));
     element("face-review-hide").addEventListener("click", hideDecided);
     element("face-review-show").addEventListener("click", showHidden);
     element("face-review-clear").addEventListener("click", clearSelection);
@@ -508,7 +568,6 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       const key = event.key.toLowerCase();
       if (key === "a" && !event.shiftKey) { event.preventDefault(); stageSelected("correct"); }
       else if (key === "s" && !event.shiftKey) { event.preventDefault(); stageSelected("wrong"); }
-      else if (key === "d" && !event.shiftKey) { event.preventDefault(); stageSelected("reset"); }
       else if (key === "f") { event.preventDefault(); event.shiftKey ? showHidden() : hideDecided(); }
       else if (key === "?") { event.preventDefault(); toggleShortcuts(); }
     });
