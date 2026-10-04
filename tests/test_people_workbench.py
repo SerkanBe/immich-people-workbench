@@ -115,6 +115,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
             ("/investigate.js", b"export function createInvestigate"),
             ("/pending.js", b"export function createPending"),
             ("/browser-storage.js", b"export function readMergeCanvasState"),
+            ("/asset-preview.js", b"export function createAssetPreview"),
         ):
             with self.subTest(path=path), opener.open(base + path) as response:
                 self.assertEqual(response.status, 200)

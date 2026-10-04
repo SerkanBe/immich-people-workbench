@@ -15,6 +15,10 @@ with the reviewed face marked by a rectangle. The green and red
 borders are local review drafts, saved across reloads; they do not enter Pending
 or change Immich yet.
 
+In the photo preview, **Hide box** (`H`) removes the rectangle while you inspect
+the face. Use the zoom controls or `+`/`-` keys to enlarge or reduce the photo;
+scroll to pan when zoomed in.
+
 Press **Hide decided** (`F`) to hide the green and red faces marked so far,
 including ones loaded on later pages. Marking another face leaves it visible
 until you press `F` again, giving you a chance to correct a mistake.

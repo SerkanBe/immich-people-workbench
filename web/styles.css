@@ -335,8 +335,13 @@ dialog::backdrop { background: rgba(5,10,14,.66); backdrop-filter: blur(3px); }
 kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2); font: .8rem ui-monospace, monospace; }
 .detail-dialog { width: min(1050px, calc(100% - 28px)); }
 .asset-preview-dialog { width: min(1100px, calc(100% - 28px)); }
+.asset-preview-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.asset-preview-tools button { min-height: 34px; }
+.asset-preview-zoom { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.asset-preview-zoom span { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.asset-preview-viewport { width: 100%; max-height: min(68vh, calc(100vh - 210px)); overflow: auto; border-radius: 10px; background: #0a0d10; overscroll-behavior: contain; }
 .asset-preview-stage { position: relative; width: 100%; }
-.asset-preview-dialog img { display: block; width: 100%; max-height: 78vh; border-radius: 10px; object-fit: contain; background: #0a0d10; }
+.asset-preview-dialog img { display: block; width: 100%; max-height: min(68vh, calc(100vh - 210px)); object-fit: contain; background: #0a0d10; }
 #asset-preview-face-box { position: absolute; box-sizing: border-box; border: 3px solid #ffe45c; box-shadow: 0 0 0 2px #101820, 0 0 0 5px #ffe45c88; border-radius: 3px; pointer-events: none; }
 .detail-heading { display: flex; justify-content: space-between; align-items: start; }
 .detail-galleries { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }

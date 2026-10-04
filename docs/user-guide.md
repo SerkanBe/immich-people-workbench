@@ -166,8 +166,10 @@ and shows filenames. The chosen size is saved in this browser. Hover over a
 compact tile for a small surrounding-image preview. In Detail mode, click the
 face crop to open the larger Immich preview. Press `Space` on a focused tile in
 either mode to open it. The rectangle in that preview marks the face assigned
-to this person; if the preview and face coordinates do not align reliably, the
-marker is omitted.
+to this person; it is omitted when the preview and face-coordinate dimensions
+strongly disagree. Use **Hide box** (`H`) in the preview when it covers a small
+face, and **Zoom in** (`+`) or **Zoom out** (`-`) to inspect it. Scroll the enlarged
+preview to pan; `0` resets zoom to 100%.
 
 Use the arrow keys to move focus between face tiles; moving focus clears any
 multi-face selection. Hold `Shift` with an arrow key to extend or shrink a
