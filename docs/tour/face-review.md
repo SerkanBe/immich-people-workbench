@@ -18,10 +18,10 @@ or change Immich yet.
 ![Synthetic faces in compact Face review, with accepted and dismissed markings](../images/visual-tour/face-review.png)
 
 In the photo preview, `A` accepts and `D` dismisses the current face; press
-the same key again to reset its decision. The photo stays open. Use Left/Right
-to move between visible faces, or `S` to skip ahead without a decision. The
-lightbox loads the next page when needed and returns grid focus to the current
-face when closed.
+either key to mark the current face and advance. Use Left to return to it and
+press the same key again to reset its decision. Left/Right move between visible
+faces, and `S` skips ahead without a decision. The lightbox loads the next page
+when needed and returns grid focus to the current face when closed.
 
 In the photo preview, **Hide box** (`H`) removes the rectangle while you inspect
 the face. Click the photo to zoom in or return to fit. Use Ctrl+mouse-wheel to

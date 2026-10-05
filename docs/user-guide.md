@@ -173,11 +173,13 @@ adjust zoom around the pointer. Drag the enlarged photo to pan. The `+` and `-`
 keys adjust zoom, and `0` resets it to 100%.
 
 Inside that photo preview, **Accept face** (`A`) and **Dismiss face** (`D`)
-change only the current face's local draft decision. Press the same decision
-again to reset it. Left/Right moves through the currently visible faces; `S`
-skips to the next one without changing a decision. The lightbox fetches the
-next page as needed. If it cannot load that page, the current photo stays open
-and Right retries. Closing the lightbox returns grid focus to its current face.
+change only the current face's local draft decision, then advance to the next
+visible face. Use Left to return to a face and press the same decision again to
+reset it. Left/Right moves through the currently visible faces; `S` skips to
+the next one without changing a decision. The lightbox fetches the next page
+as needed and stays on the last face when there is no next face. If it cannot
+load that page, the marked photo stays open and Right retries. Closing the
+lightbox returns grid focus to its current face.
 Hidden faces and faces already queued in Pending are outside this sequence.
 
 Use the arrow keys to move focus between face tiles; moving focus clears any

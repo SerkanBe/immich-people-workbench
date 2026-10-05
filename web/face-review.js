@@ -425,10 +425,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
 
   function stageFaces(selected, verdict, clearSelected = false) {
     const person = currentFaceReviewPerson();
-    if (!person || !selected.length || busy) return;
+    if (!person || !selected.length || busy) return false;
     if (selected.some(face => hidden.has(face.faceId))) {
       showToast("Show hidden selected faces before marking them.");
-      return;
+      return false;
     }
     const reset = selected.every(face => statusOf(face) === verdict);
     const decisions = selected.map(face => ({
@@ -437,6 +437,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }));
     if (clearSelected && state.faceReviewSelected.size) clearSelection();
     enqueueAction({ type: "decision", personId: person.id, decisions });
+    return true;
   }
 
   function stageSelected(verdict) {
@@ -480,8 +481,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     if (lightboxGeneration !== generation || lightboxMoving) return;
     const face = visibleFaces().find(item => item.faceId === lightboxFaceId);
     if (!face) return;
-    stageFaces([face], verdict);
-    updateLightboxReview();
+    if (stageFaces([face], verdict)) moveLightbox(1);
   }
 
   async function moveLightbox(direction) {
