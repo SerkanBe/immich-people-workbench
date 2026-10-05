@@ -8,3 +8,6 @@ and tests use synthetic data.
 ```bash
 python3 -m unittest discover -s tests -p 'test_people_workbench.py' -v
 ```
+
+With Node.js installed, check the photo-preview rectangle calculations and
+controls with `node --test tests/test_asset_preview.mjs`.

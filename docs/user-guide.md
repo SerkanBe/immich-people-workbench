@@ -165,11 +165,13 @@ face. **Compact** shows small crops without tile text; **Detail** enlarges them
 and shows filenames. The chosen size is saved in this browser. Hover over a
 compact tile for a small surrounding-image preview. In Detail mode, click the
 face crop to open the larger Immich preview. Press `Space` on a focused tile in
-either mode to open it. The rectangle in that preview marks the face assigned
-to this person; it is omitted when the preview and face-coordinate dimensions
-strongly disagree. Use **Hide box** (`H`) in the preview when it covers a small
-face. Click the photo to zoom in or return to fit, or use Ctrl+mouse-wheel to
-adjust zoom around the pointer. Drag the enlarged photo to pan. The `+` and `-`
+either mode to open it. The rectangle in that preview maps Immich's face
+coordinates onto the preview, even when their image dimensions differ. If the
+preview has a different orientation, use **Rotate box** (`R`) to turn the
+rectangle 90° clockwise at a time until it lines up. The rotation resets for
+each photo and does not change Immich data. Use **Hide box** (`H`) when it covers
+a small face. Click the photo to zoom in or return to fit, or use Ctrl+mouse-wheel
+to adjust zoom around the pointer. Drag the enlarged photo to pan. The `+` and `-`
 keys adjust zoom, and `0` resets it to 100%.
 
 Inside that photo preview, **Accept face** (`A`) and **Dismiss face** (`D`)

@@ -1,6 +1,28 @@
 // Copyright (C) 2026 Serkan Bekdemir
 // SPDX-License-Identifier: AGPL-3.0-only
 
+export function projectFaceBox(box, imageWidth, imageHeight, frameWidth, frameHeight, quarterTurns = 0) {
+  if (!box) return null;
+  if ([box.x1, box.y1, box.x2, box.y2, box.width, box.height].some(value => value == null || value === "")) return null;
+  const [x1, y1, x2, y2, sourceWidth, sourceHeight] = [box.x1, box.y1, box.x2, box.y2, box.width, box.height].map(Number);
+  if (![x1, y1, x2, y2, sourceWidth, sourceHeight, imageWidth, imageHeight, frameWidth, frameHeight].every(Number.isFinite) ||
+      sourceWidth <= 0 || sourceHeight <= 0 || imageWidth <= 0 || imageHeight <= 0 || frameWidth <= 0 || frameHeight <= 0 ||
+      x2 <= x1 || y2 <= y1) return null;
+  const [left, top, right, bottom] = [x1 / sourceWidth, y1 / sourceHeight, x2 / sourceWidth, y2 / sourceHeight];
+  const turns = ((quarterTurns % 4) + 4) % 4;
+  const [u1, v1, u2, v2] = turns === 1 ? [1 - bottom, left, 1 - top, right]
+    : turns === 2 ? [1 - right, 1 - bottom, 1 - left, 1 - top]
+      : turns === 3 ? [top, 1 - right, bottom, 1 - left] : [left, top, right, bottom];
+  const scale = Math.min(frameWidth / imageWidth, frameHeight / imageHeight);
+  const shownWidth = imageWidth * scale, shownHeight = imageHeight * scale;
+  return {
+    left: (frameWidth - shownWidth) / 2 + u1 * shownWidth,
+    top: (frameHeight - shownHeight) / 2 + v1 * shownHeight,
+    width: (u2 - u1) * shownWidth,
+    height: (v2 - v1) * shownHeight,
+  };
+}
+
 export function createAssetPreview({ assetThumb }) {
   const dialog = document.querySelector("#asset-preview-dialog");
   const viewport = document.querySelector("#asset-preview-viewport");
@@ -10,11 +32,14 @@ export function createAssetPreview({ assetThumb }) {
   const caption = document.querySelector("#asset-preview-caption");
   const toggleBox = document.querySelector("#asset-preview-toggle-box");
   const toggleLabel = document.querySelector("#asset-preview-toggle-label");
+  const rotateBox = document.querySelector("#asset-preview-rotate-box");
+  const rotateLabel = document.querySelector("#asset-preview-rotate-label");
   const zoomLabel = document.querySelector("#asset-preview-zoom-level");
   const reviewControls = document.querySelector("#asset-preview-review");
   const zoomLevels = [1, 1.5, 2, 3, 4];
   let activeFaceBox = null;
   let boxVisible = true;
+  let boxRotation = 0;
   let zoomIndex = 0;
   let wheelRemainder = 0;
   let drag = null;
@@ -37,29 +62,26 @@ export function createAssetPreview({ assetThumb }) {
   function positionFaceBox() {
     marker.hidden = true;
     toggleBox.hidden = true;
+    rotateBox.hidden = true;
     caption.textContent = "Immich preview — the original file is not downloaded.";
-    const box = activeFaceBox;
-    if (!box || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
-    const [x1, y1, x2, y2, sourceWidth, sourceHeight] = [box.x1, box.y1, box.x2, box.y2, box.width, box.height].map(Number);
-    if (![x1, y1, x2, y2, sourceWidth, sourceHeight].every(Number.isFinite) ||
-        sourceWidth <= 0 || sourceHeight <= 0 || x1 < 0 || y1 < 0 || x2 > sourceWidth || y2 > sourceHeight || x2 <= x1 || y2 <= y1 ||
-        Math.abs((sourceWidth / sourceHeight) / (image.naturalWidth / image.naturalHeight) - 1) > 0.08) {
-      caption.textContent = "Immich preview — face location unavailable for this image.";
+    if (!activeFaceBox || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
+    const frameWidth = image.clientWidth, frameHeight = image.clientHeight;
+    const position = projectFaceBox(activeFaceBox, image.naturalWidth, image.naturalHeight, frameWidth, frameHeight, boxRotation);
+    if (!position) {
+      caption.textContent = "Immich preview — face coordinates unavailable for this image.";
       return;
     }
-    const frameWidth = image.clientWidth, frameHeight = image.clientHeight;
-    if (!frameWidth || !frameHeight) return;
-    const scale = Math.min(frameWidth / image.naturalWidth, frameHeight / image.naturalHeight);
-    const shownWidth = image.naturalWidth * scale, shownHeight = image.naturalHeight * scale;
-    marker.style.left = `${(frameWidth - shownWidth) / 2 + x1 / sourceWidth * shownWidth}px`;
-    marker.style.top = `${(frameHeight - shownHeight) / 2 + y1 / sourceHeight * shownHeight}px`;
-    marker.style.width = `${(x2 - x1) / sourceWidth * shownWidth}px`;
-    marker.style.height = `${(y2 - y1) / sourceHeight * shownHeight}px`;
+    marker.style.left = `${position.left}px`;
+    marker.style.top = `${position.top}px`;
+    marker.style.width = `${position.width}px`;
+    marker.style.height = `${position.height}px`;
     marker.hidden = !boxVisible;
     toggleBox.hidden = false;
+    rotateBox.hidden = false;
     toggleLabel.textContent = boxVisible ? "Hide box" : "Show box";
+    rotateLabel.textContent = `${boxRotation * 90}°`;
     caption.textContent = boxVisible
-      ? "Highlighted rectangle: the face assigned to this person. Immich preview; original file not downloaded."
+      ? "Highlighted rectangle: Immich face coordinates on this preview. Rotate the box if the photo orientation differs. Original file not downloaded."
       : "Face rectangle hidden. Immich preview; original file not downloaded.";
   }
 
@@ -93,6 +115,7 @@ export function createAssetPreview({ assetThumb }) {
     const continueReview = review && dialog.open && dialog.classList.contains("has-review");
     activeFaceBox = faceBox;
     if (!continueReview) boxVisible = true;
+    boxRotation = 0;
     zoomIndex = 0;
     wheelRemainder = 0;
     drag = null;
@@ -106,6 +129,7 @@ export function createAssetPreview({ assetThumb }) {
     image.style.maxHeight = "";
     marker.hidden = true;
     toggleBox.hidden = true;
+    rotateBox.hidden = true;
     reviewControls.hidden = !review;
     dialog.classList.toggle("has-review", review);
     caption.textContent = "Immich preview — the original file is not downloaded.";
@@ -121,6 +145,7 @@ export function createAssetPreview({ assetThumb }) {
   }
 
   toggleBox.addEventListener("click", () => { boxVisible = !boxVisible; positionFaceBox(); });
+  rotateBox.addEventListener("click", () => { boxRotation = (boxRotation + 1) % 4; positionFaceBox(); });
   viewport.addEventListener("click", event => {
     if (event.pointerId === ignoredTouchClickId) { ignoredTouchClickId = null; return; }
     if (suppressClick) { suppressClick = false; return; }
@@ -173,6 +198,7 @@ export function createAssetPreview({ assetThumb }) {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     const key = event.key.toLowerCase();
     if (key === "h" && !toggleBox.hidden) { event.preventDefault(); boxVisible = !boxVisible; positionFaceBox(); }
+    else if (key === "r" && !rotateBox.hidden) { event.preventDefault(); boxRotation = (boxRotation + 1) % 4; positionFaceBox(); }
     else if (event.target === viewport && (key === "enter" || key === " ")) { event.preventDefault(); setZoom(zoomIndex ? 0 : 2); }
     else if (key === "+" || key === "=") { event.preventDefault(); setZoom(zoomIndex + 1); }
     else if (key === "-" || key === "_") { event.preventDefault(); setZoom(zoomIndex - 1); }

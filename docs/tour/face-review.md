@@ -23,9 +23,12 @@ press the same key again to reset its decision. Left/Right move between visible
 faces, and `S` skips ahead without a decision. The lightbox loads the next page
 when needed and returns grid focus to the current face when closed.
 
-In the photo preview, **Hide box** (`H`) removes the rectangle while you inspect
-the face. Click the photo to zoom in or return to fit. Use Ctrl+mouse-wheel to
-adjust zoom around the pointer, then drag the enlarged photo to pan. The `+`
+In the photo preview, **Rotate box** (`R`) turns the face rectangle 90° clockwise
+if Immich's coordinates do not match the preview orientation. The rectangle
+stays visible when image dimensions differ, and rotation resets for each photo.
+**Hide box** (`H`) removes the rectangle while you inspect the face. Click the
+photo to zoom in or return to fit. Use Ctrl+mouse-wheel to adjust zoom around
+the pointer, then drag the enlarged photo to pan. The `+`
 and `-` keys also adjust zoom; `0` returns to 100%.
 
 ![Photo preview with the current face marked and lightbox review controls](../images/visual-tour/face-review-lightbox.png)
