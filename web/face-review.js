@@ -29,6 +29,8 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   let lightboxMoving = false;
   let lightboxMessage = "";
   let previewBubble = null;
+  let hideCompletedPeople = false;
+  let peopleLoadRevision = 0;
   let layout = { columns: 1, width: 104, height: 104, stride: 112 };
   const modeKey = "peopleWorkbench.faceReviewMode";
   let mode = "compact";
@@ -56,8 +58,8 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   }
   function hidePhotoPeek() { previewBubble?.classList.remove("shown"); }
 
-  function renderFacePersonList() {
-    const scrollTop = ui.facePersonList.scrollTop;
+  function renderFacePersonList(resetScroll = false) {
+    const scrollTop = resetScroll ? 0 : ui.facePersonList.scrollTop;
     ui.facePersonList.replaceChildren();
     for (const person of state.faceReviewPeople) {
       const button = document.createElement("button"); button.type = "button"; button.className = "face-person-button";
@@ -67,7 +69,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       const name = document.createElement("strong"); name.textContent = person.name || "Unnamed person";
       const count = document.createElement("small");
       const total = person.reviewTotal ?? person.assetCount ?? 0;
-      count.textContent = person.reviewed ? `✓ Checked · ${person.assetCount ?? "?"} photos` : `${person.reviewedCount || 0}/${total} checked${person.draftCount ? ` · ${person.draftCount} to submit` : ""}`;
+      count.textContent = person.reviewed ? `✓ Review complete · ${person.assetCount ?? "?"} photos` : `${person.reviewedCount || 0}/${total} checked${person.draftCount ? ` · ${person.draftCount} to submit` : ""}`;
       button.classList.toggle("reviewed", Boolean(person.reviewed));
       text.append(name, count);
       if (person.pendingOperation) {
@@ -80,18 +82,26 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       ui.facePersonList.append(button);
     }
     if (!state.faceReviewPeople.length) {
-      const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "No matching people."; ui.facePersonList.append(empty);
+      const empty = document.createElement("p"); empty.className = "muted";
+      empty.textContent = hideCompletedPeople ? "No people need review in this view. Show all people or change the search." : "No matching people.";
+      ui.facePersonList.append(empty);
     }
     ui.facePersonList.scrollTop = scrollTop;
   }
 
-  async function loadFaceReviewPeople() {
+  async function loadFaceReviewPeople(resetScroll = false) {
+    const revision = ++peopleLoadRevision;
     const query = element("face-person-search").value.trim();
-    const data = await api(`/api/people?kind=review&sort=${encodeURIComponent(state.sort)}&page=${state.pages.facePeople}&size=${state.pageSize}&q=${encodeURIComponent(query)}`);
+    const data = await api(`/api/people?kind=review&sort=${encodeURIComponent(state.sort)}&page=${state.pages.facePeople}&size=${state.pageSize}&q=${encodeURIComponent(query)}&hideCompleted=${hideCompletedPeople ? "1" : "0"}`);
+    if (revision !== peopleLoadRevision) return;
     state.faceReviewPeople = data.people; state.pages.facePeople = data.page;
-    renderFacePersonList();
+    renderFacePersonList(resetScroll);
     renderPagination("face-person-pagination", data, page => {
-      state.pages.facePeople = page; return loadFaceReviewPeople();
+      state.pages.facePeople = page; return loadFaceReviewPeople(true);
+    });
+    element("face-person-pagination").querySelectorAll("button:not(:disabled):not(.current)").forEach(button => {
+      button.tabIndex = 0;
+      if (button.title) button.setAttribute("aria-label", button.title);
     });
   }
 
@@ -548,6 +558,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       renderVisible(); maybeLoadMore();
       await refreshSummary().catch(error => showToast(error.message));
       showToast(`Review submitted locally: ${result.submitted.correct} accepted, ${result.submitted.wrong} dismissed faces added to Pending. Immich is unchanged.`);
+      if (hideCompletedPeople) await loadFaceReviewPeople().catch(error => showToast(`Could not refresh people: ${error.message}`));
     } catch (error) {
       if (requestGeneration === generation) showToast(`Review was not submitted: ${error.message}`);
     } finally {
@@ -627,7 +638,27 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     });
     element("face-person-search").addEventListener("input", () => {
       clearTimeout(searchTimer); state.pages.facePeople = 1;
-      searchTimer = setTimeout(() => loadFaceReviewPeople().catch(error => showToast(error.message)), 180);
+      searchTimer = setTimeout(() => loadFaceReviewPeople(true).catch(error => showToast(error.message)), 180);
+    });
+    element("face-person-toggle-completed").addEventListener("click", async () => {
+      const previous = hideCompletedPeople;
+      hideCompletedPeople = !hideCompletedPeople;
+      const button = element("face-person-toggle-completed");
+      button.classList.toggle("active", hideCompletedPeople);
+      button.textContent = hideCompletedPeople ? "Show all people" : "Hide completed people";
+      state.pages.facePeople = 1;
+      const revision = peopleLoadRevision + 1;
+      button.disabled = true;
+      try { await loadFaceReviewPeople(true); }
+      catch (error) {
+        if (revision === peopleLoadRevision) {
+          hideCompletedPeople = previous;
+          button.classList.toggle("active", hideCompletedPeople);
+          button.textContent = hideCompletedPeople ? "Show all people" : "Hide completed people";
+          await loadFaceReviewPeople(true).catch(() => {});
+        }
+        showToast(`Could not change people filter: ${error.message}`);
+      } finally { button.disabled = false; }
     });
     element("face-review-queue").addEventListener("click", () => stageSelected("wrong"));
     element("face-review-mark").addEventListener("click", () => stageSelected("correct"));

@@ -771,8 +771,10 @@ class AppState:
             people.sort(key=lambda p: p["skipCount"])
         return people
 
-    def people_page(self, kind: str, order: str, page: int, size: int, query: str = "") -> dict[str, Any]:
+    def people_page(self, kind: str, order: str, page: int, size: int, query: str = "", hide_completed: bool = False) -> dict[str, Any]:
         people = self.list_people(kind, order)
+        if kind == "review" and hide_completed:
+            people = [person for person in people if not person["reviewed"]]
         needle = normalized_name(query).casefold()
         if needle:
             people = [
@@ -1483,13 +1485,14 @@ class Handler(BaseHTTPRequestHandler):
                 kind = query.get("kind", ["unnamed"])[0]
                 order = query.get("sort", [STATE.store.setting("sort", "most")])[0]
                 STATE.store.set_setting("sort", order)
-                if "page" in query or "size" in query or "q" in query:
+                if "page" in query or "size" in query or "q" in query or "hideCompleted" in query:
                     try:
                         page = int(query.get("page", ["1"])[0])
                         size = int(query.get("size", ["24"])[0])
                     except ValueError as exc:
                         raise ToolError("Invalid people page") from exc
-                    self.send_json(STATE.people_page(kind, order, page, size, query.get("q", [""])[0]))
+                    self.send_json(STATE.people_page(kind, order, page, size, query.get("q", [""])[0],
+                                                     query.get("hideCompleted", ["0"])[0] == "1"))
                 else:
                     self.send_json({"people": STATE.list_people(kind, order)})
             elif path == "/api/names":

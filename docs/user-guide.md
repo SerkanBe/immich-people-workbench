@@ -157,11 +157,16 @@ The filenames and previews in this view come from the current Immich API.
 
 The Face review page lists visible named and unnamed Immich people, including
 people with a name or merge already waiting in Pending. A Pending label beside
-the person shows that context. Select one to load its currently assigned faces
-into a continuous, ordered grid. More faces load
-as you scroll or choose **Load more faces**; keyboard users can use that button
-to focus the next batch. Only nearby tiles are rendered. Each tile is cropped to the
-face. **Compact** shows small crops without tile text; **Detail** enlarges them
+the person shows that context. The sidebar list scrolls independently; use
+**Hide completed people** to show only people with faces still to review, and
+**Show all people** to bring completed people back. A person with some submitted
+faces remains listed while other faces still need review. This view-only filter
+resets to showing everyone after a reload. Changing sidebar pages
+or searching starts its list at the top. Select a person to load their assigned
+faces into a continuous, ordered grid. More faces load as you scroll or choose
+**Load more faces**; keyboard users can use that button to focus the next batch.
+Only nearby tiles are rendered, and each tile is cropped to the face.
+**Compact** shows small crops without tile text; **Detail** enlarges them
 and shows filenames. The chosen size is saved in this browser. Hover over a
 compact tile for a small surrounding-image preview. In Detail mode, click the
 face crop to open the larger Immich preview. Press `Space` on a focused tile in

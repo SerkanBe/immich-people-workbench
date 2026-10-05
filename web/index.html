@@ -147,7 +147,10 @@
       </div>
       <div class="face-review-layout">
         <aside class="face-person-panel">
-          <label>Find person <input id="face-person-search" type="search" autocomplete="off" placeholder="Name or unnamed"></label>
+          <div class="face-person-controls">
+            <label>Find person <input id="face-person-search" type="search" autocomplete="off" placeholder="Name or unnamed"></label>
+            <button id="face-person-toggle-completed" class="quiet-button" type="button">Hide completed people</button>
+          </div>
           <div id="face-person-list" class="face-person-list" aria-label="People available for face review"></div>
           <div id="face-person-pagination" class="pagination compact" hidden></div>
         </aside>

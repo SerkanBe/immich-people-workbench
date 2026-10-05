@@ -303,6 +303,34 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertEqual(unnamed["page"], 2)
             self.assertEqual(len(unnamed["people"]), 4)
 
+    def test_review_page_hides_only_completed_people_before_pagination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.sqlite3")
+            app = AppState(store, Path(directory) / "reports")
+            app.people = {
+                person_id: {"id": person_id, "name": name, "isHidden": False, "assetCount": count}
+                for person_id, name, count in (
+                    ("complete", "Complete", 1), ("partial", "Partial", 2),
+                    ("submitted", "Submitted", 1), ("draft", "Draft", 1),
+                    ("empty", "Empty", 0),
+                )
+            }
+            store.set_face_reviewed("face-complete", "complete", True)
+            store.set_face_reviewed("face-partial", "partial", True)
+            store.queue_face_detach("face-submitted", "submitted", "asset-submitted", "synthetic.jpg")
+            store.set_face_review_drafts("draft", [{
+                "faceId": "face-draft", "assetId": "asset-draft",
+                "fileName": "synthetic.jpg", "verdict": "correct",
+            }])
+
+            self.assertEqual(app.people_page("review", "most", 1, 5)["total"], 5)
+            first = app.people_page("review", "most", 1, 1, hide_completed=True)
+            second = app.people_page("review", "most", 2, 1, hide_completed=True)
+            third = app.people_page("review", "most", 3, 1, hide_completed=True)
+            self.assertEqual((first["total"], first["pages"]), (3, 3))
+            self.assertEqual([page["people"][0]["id"] for page in (first, second, third)], ["partial", "draft", "empty"])
+            self.assertEqual(app.people_page("review", "most", 1, 4, "Complete", True)["total"], 0)
+
     def test_store_persists_skips_and_pending_exclusions(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"
