@@ -158,9 +158,12 @@ test("Face review icon controls keep search, name, order, and completion indepen
     get("face-person-search-toggle").listeners.get("click")();
     assert.equal(get("face-person-search").value, "Synthetic");
     assert.equal(get("face-person-search-toggle").classList.contains("active"), true);
+    assert.equal(get("face-person-search-drawer").classList.contains("open"), true);
+    assert.equal(get("face-person-search-toggle").getAttribute("aria-expanded"), "true");
 
     get("face-person-filter-toggle").listeners.get("click")();
     assert.equal(get("face-person-filter-drawer").classList.contains("open"), true);
+    assert.equal(get("face-person-search-drawer").classList.contains("open"), true);
     await get("face-person-name-filter").listeners.get("change")({
       target: Object.assign(get("face-person-name-named"), { value: "named" }),
     });
@@ -182,16 +185,19 @@ test("Face review icon controls keep search, name, order, and completion indepen
     for (const handler of windowListeners.get("keydown")) handler({ key: "Escape", target: node(), preventDefault: () => { prevented = true; } });
     assert.equal(prevented, true);
     assert.equal(get("face-person-filter-drawer").classList.contains("open"), false);
+    assert.equal(get("face-person-search-drawer").classList.contains("open"), true);
     assert.equal(document.activeElement, get("face-person-filter-toggle"));
     get("face-person-sort-toggle").listeners.get("click")();
     documentListeners.get("pointerdown")({ target: node() });
     assert.equal(get("face-person-sort-drawer").classList.contains("open"), false);
+    assert.equal(get("face-person-search-drawer").classList.contains("open"), true);
     get("face-person-search-toggle").listeners.get("click")();
     get("face-person-search-clear").listeners.get("click")();
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.match(paths.at(-1), /sort=fewest.*q=&hideCompleted=1&nameFilter=named$/);
     get("face-person-search-toggle").listeners.get("click")();
     assert.equal(get("face-person-search-toggle").classList.contains("active"), false);
+    assert.equal(get("face-person-search-drawer").classList.contains("open"), false);
   } finally {
     Object.assign(globalThis, previous);
   }

@@ -226,12 +226,14 @@ on loaded photos. On first use after this counting change, saved decisions remai
 but each person's photo pages must load once before they can appear completed.
 New Immich photos reopen a person for review.
 
-The magnifying glass opens a search field; closing it keeps the query, and its
-clear button removes it. The funnel icon opens the All / Named / Unnamed
+The magnifying glass opens a search field. While a query is entered, the field
+stays visible alongside other controls; clear the query, then close the field
+with the icon or `Escape`. The funnel icon opens the All / Named / Unnamed
 filter, and the order icon opens the sort choices. The green check is a separate
 toggle for completed people, so it works with any name filter. Active icons
 show when a query, filter, or nondefault order is in effect. `Escape` closes
-an open control. Named means they already have a name in Immich; a name only
+an open choice panel; it leaves an active search visible. Named means they
+already have a name in Immich; a name only
 queued in Pending remains unnamed here. Search and pagination use the selected
 group. Changing filters leaves the person currently open on screen. The green
 check removes fully reviewed people from the sidebar until pressed again.

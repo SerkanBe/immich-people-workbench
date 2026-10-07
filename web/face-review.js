@@ -76,10 +76,11 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     completed.setAttribute("aria-label", "Hide completed people");
   }
 
-  function setOpenPeopleControl(name) {
+  function setOpenPeopleControl(name, focus = true) {
     openPeopleControl = name;
+    const searchActive = Boolean(element("face-person-search").value.trim());
     for (const control of ["search", "filter", "sort"]) {
-      const open = control === name;
+      const open = control === name || (control === "search" && searchActive);
       const drawer = element(`face-person-${control}-drawer`);
       drawer.classList.toggle("open", open);
       drawer.inert = !open;
@@ -87,9 +88,9 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
       element(`face-person-${control}-toggle`).setAttribute("aria-expanded", String(open));
     }
     updatePeopleControlState();
-    if (name === "search") element("face-person-search").focus();
-    else if (name === "filter") element(`face-person-name-${nameFilter}`).focus();
-    else if (name === "sort") element(`face-person-sort-${sortLabels[state.sort] ? state.sort : "most"}`).focus();
+    if (focus && name === "search") element("face-person-search").focus();
+    else if (focus && name === "filter") element(`face-person-name-${nameFilter}`).focus();
+    else if (focus && name === "sort") element(`face-person-sort-${sortLabels[state.sort] ? state.sort : "most"}`).focus();
   }
   const statusOf = face => {
     const staged = stagedVerdicts.get(face.faceId);
@@ -805,6 +806,9 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     });
     for (const control of ["search", "filter", "sort"]) {
       element(`face-person-${control}-toggle`).addEventListener("click", () => {
+        if (control === "search" && element("face-person-search").value.trim()) {
+          setOpenPeopleControl("search"); return;
+        }
         setOpenPeopleControl(openPeopleControl === control ? null : control);
       });
     }
@@ -819,7 +823,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     });
     const search = element("face-person-search");
     const scheduleSearch = () => {
-      updatePeopleControlState();
+      setOpenPeopleControl("search", false);
       clearTimeout(searchTimer); state.pages.facePeople = 1;
       searchTimer = setTimeout(() => loadFaceReviewPeople(true).catch(error => showToast(error.message)), 180);
     };
