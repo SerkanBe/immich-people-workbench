@@ -713,8 +713,8 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     hidePhotoPeek(); renderVisible(); maybeLoadMore();
   }
   function toggleShortcuts() {
-    const panel = element("face-review-shortcuts"); panel.hidden = !panel.hidden;
-    element("face-review-help").setAttribute("aria-expanded", String(!panel.hidden));
+    const dialog = element("face-review-help-dialog");
+    if (dialog.open) dialog.close(); else dialog.showModal();
   }
 
   async function selectFaceReviewPerson(personId, focusGrid = false) {
@@ -856,6 +856,9 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     });
     window.addEventListener("keydown", event => {
       if (state.view !== "faces" || !currentFaceReviewPerson() || event.altKey) return;
+      if (event.key === "?" && element("face-review-help-dialog").open && !event.ctrlKey && !event.metaKey) {
+        event.preventDefault(); toggleShortcuts(); return;
+      }
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey
           && !event.target.closest("input, textarea, select, dialog, [contenteditable]")
           && state.faceReviewResult?.draftCount) {

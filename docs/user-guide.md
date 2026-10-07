@@ -162,8 +162,9 @@ the person shows that context. The sidebar list scrolls independently; use
 **Show completed people** to bring completed people back. A person with some
 submitted faces remains listed while other faces still need review. This view-only filter
 resets to showing everyone after a reload. Changing sidebar pages
-or searching starts its list at the top. Each person shows Immich's photo count
-and any locally saved checked-face count. While Face review is open, Workbench
+or searching starts its list at the top. **Order** sorts the sidebar by
+Immich photo count or update time before pagination. Each person shows Immich's
+photo count and any locally saved checked-face count. While Face review is open, Workbench
 counts faces in the background with read-only Immich requests. Progress appears
 above the sidebar; large libraries can take time, and a failed count can be
 retried. The exact face total appears after all of that person's photo pages
@@ -247,7 +248,8 @@ view-only actions; they neither submit drafts nor change Immich. **Clear
 selection** removes the blue outline. Hidden faces stay hidden if you switch
 people and return, but reset on a page reload or after Pending changes refresh
 the face grid. Selection is session-only; draft decisions are durable. The
-**Shortcuts** button, or `?`, shows the key reference.
+**Shortcuts** button, or `?`, opens a dialog with the key reference; press
+`Escape` to close it.
 
 At explicit Pending Sync, dismissed faces are reassigned before a pending name or
 merge for their source person is applied. If a wrong-face correction fails, is
@@ -272,6 +274,13 @@ use server-side pagination. The header's **Per page** selector offers 12, 24,
 face grid loads sequential server batches as you scroll. Search filtering is
 applied before person-list pagination, and out-of-range pages are clamped after
 queue operations remove entries.
+
+The Unnamed, Investigate, Face review, Named, and Ignored people lists each have
+an **Order** selector with most or fewest photos first, plus update-time and
+random options. The selection carries between views and is applied before
+pagination. Pending is a list of queued operations, so it keeps its own review
+order. Merge also has an Order selector for initial card placement; saved canvas
+positions take precedence afterward.
 
 The Merge Workbench intentionally remains unpaginated: it is one persistent
 spatial canvas, so hiding most cards behind pages would break saved positions,

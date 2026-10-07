@@ -39,6 +39,7 @@ function node() {
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
     addEventListener: (event, handler) => listeners.set(event, handler),
     setAttribute() {}, removeAttribute() {}, focus() {}, closest: () => null,
+    showModal() { this.open = true; },
     close() { this.open = false; this.listeners.get("close")?.(); },
   };
 }
@@ -52,6 +53,35 @@ test("Face review hides submitted faces while leaving new drafts available", () 
   assert.equal(showFaceInReview(checked, true, false, null), true);
   assert.equal(showFaceInReview(checked, true, true, null), true);
   assert.equal(showFaceInReview({ reviewed: false, queued: true }, true, false, null), false);
+});
+
+test("Face review shortcut help opens and closes as a dialog", () => {
+  const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };
+  const elements = new Map();
+  let keydown;
+  globalThis.document = {
+    getElementById: id => { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
+    addEventListener() {},
+  };
+  globalThis.window = { addEventListener: (event, handler) => { if (event === "keydown") keydown = handler; } };
+  globalThis.localStorage = { getItem: () => null };
+  try {
+    const review = createFaceReview({
+      state: { view: "faces", faceReviewCurrentPerson: { id: "synthetic" } },
+      ui: { facePersonList: node(), faceReviewGrid: node() },
+    });
+    review.bindFaceReviewControls();
+    const dialog = document.getElementById("face-review-help-dialog");
+    document.getElementById("face-review-help").listeners.get("click")();
+    assert.equal(dialog.open, true);
+    let prevented = false;
+    keydown({ key: "?", target: node(), altKey: false, ctrlKey: false, metaKey: false,
+      preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(dialog.open, false);
+  } finally {
+    Object.assign(globalThis, previous);
+  }
 });
 
 test("Face review sidebar shows photo counts before face inventory is complete", async () => {

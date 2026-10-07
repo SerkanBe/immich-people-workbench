@@ -115,7 +115,7 @@ async function refreshSummary() {
   const summary = await api("/api/state");
   state.summary = summary;
   state.sort = summary.sort || state.sort;
-  document.querySelector("#sort-select").value = state.sort;
+  document.querySelectorAll("[data-people-sort]").forEach(select => { select.value = state.sort; });
   document.querySelector("#connection-status").textContent = summary.connected ? `Immich ${summary.version} · local queue enabled` : "Not connected";
   document.querySelector("#reload-button").hidden = !summary.connected;
   for (const key of ["unnamed", "investigate", "faces", "pending", "named", "ignored"]) {
@@ -125,7 +125,6 @@ async function refreshSummary() {
   document.querySelector("#pending-count").textContent = summary.counts.pending ?? 0;
   document.querySelector("#reset-button").disabled = !summary.connected || !(summary.counts.pending > 0);
   document.querySelector("#investigate-return-all").disabled = !summary.connected || !(summary.counts.investigate > 0);
-  document.querySelector("#merge-sort-select").value = state.sort;
   const working = ["loading", "statistics"].includes(summary.phase);
   const panel = document.querySelector("#progress-panel");
   panel.hidden = !working;
@@ -184,7 +183,7 @@ async function renderCurrentView(focusFirst = false, refresh = true) {
 
 const { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid, bindNamingControls } = createNaming({ api, assetThumb, cleanName, loadNames, personThumb, refreshSummary, renderInvestigate: (...args) => renderInvestigate(...args), renderPagination, showToast, state, ui });
 
-const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState: () => saveMergeCanvasState(state, showToast), showSlide, showToast, resetListPages, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
+const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState: () => saveMergeCanvasState(state, showToast), showSlide, showToast, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
 
 const openAssetPreview = createAssetPreview({ assetThumb });
 
@@ -227,7 +226,12 @@ document.querySelector("#logout-button").addEventListener("click", async () => {
 document.querySelector("#page-size-select").addEventListener("change", event => {
   state.pageSize = Number(event.target.value) || 24; savePageSize(state.pageSize, showToast); resetListPages(); renderCurrentView(true).catch(error => showToast(error.message));
 });
-document.querySelector("#sort-select").addEventListener("change", event => { state.sort = event.target.value; resetListPages(); renderCurrentView(true, false).catch(error => showToast(error.message)); });
+document.querySelectorAll("[data-people-sort]").forEach(select => select.addEventListener("change", event => {
+  state.sort = event.target.value;
+  document.querySelectorAll("[data-people-sort]").forEach(other => { other.value = state.sort; });
+  resetListPages();
+  renderCurrentView(true, false).catch(error => showToast(error.message));
+}));
 initializeMergeCanvas();
 bindMergeControls();
 bindNamingControls();

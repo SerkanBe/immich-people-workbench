@@ -305,8 +305,12 @@ class PeopleWorkbenchTests(unittest.TestCase):
 
             named_review = app.people_page("review", "most", 2, 4, name_filter="named")
             unnamed_review = app.people_page("review", "most", 2, 4, name_filter="unnamed")
+            fewest_named = app.people_page("review", "fewest", 1, 4, name_filter="named")
+            most_named = app.people_page("review", "most", 1, 4, name_filter="named")
             self.assertEqual((named_review["total"], unnamed_review["total"]), (15, 15))
             self.assertEqual((len(named_review["people"]), len(unnamed_review["people"])), (4, 4))
+            self.assertEqual([person["id"] for person in fewest_named["people"]], ["1", "3", "5", "7"])
+            self.assertEqual([person["id"] for person in most_named["people"]], ["29", "27", "25", "23"])
             self.assertTrue(all(person["name"] for person in named_review["people"]))
             self.assertTrue(all(not person["name"] for person in unnamed_review["people"]))
             self.assertEqual(app.people_page("review", "most", 1, 5, "Person 1", name_filter="unnamed")["total"], 0)
