@@ -159,8 +159,8 @@ The Face review page lists visible named and unnamed Immich people, including
 people with a name or merge already waiting in Pending. A Pending label beside
 the person shows that context. The sidebar list scrolls independently; use
 **Hide completed people** to show only people with faces still to review, and
-**Show all people** to bring completed people back. A person with some submitted
-faces remains listed while other faces still need review. This view-only filter
+**Show completed people** to bring completed people back. A person with some
+submitted faces remains listed while other faces still need review. This view-only filter
 resets to showing everyone after a reload. Changing sidebar pages
 or searching starts its list at the top. Select a person to load their assigned
 faces into a continuous, ordered grid. More faces load as you scroll or choose
@@ -208,7 +208,14 @@ the current assignment still exists in Immich until Sync. The Pending list holds
 the *change request*, where you can preview, exclude, or remove it. Removing the
 request brings the face back into Face review. The counts distinguish accepted
 faces, dismissed faces waiting for submission, changes awaiting Sync, and untouched
-faces. New Immich photos reopen a person for review.
+faces. Progress counts distinct assigned faces, even when several appear in one
+photo. The exact total is available after all of that person's photo pages have
+loaded; until then the sidebar keeps the person in the review list. The local
+face count is reused on later visits and invalidated when Immich reports a
+changed photo count or person update. Opening a person also detects new faces
+on loaded photos. On first use after this counting change, saved decisions remain,
+but each person's photo pages must load once before they can appear completed.
+New Immich photos reopen a person for review.
 
 Use **Show people** to switch the Face review sidebar between all, named, and
 unnamed people. Named means they already have a name in Immich; a name only

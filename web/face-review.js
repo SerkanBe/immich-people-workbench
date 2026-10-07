@@ -69,8 +69,8 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       const text = document.createElement("span");
       const name = document.createElement("strong"); name.textContent = person.name || "Unnamed person";
       const count = document.createElement("small");
-      const total = person.reviewTotal ?? person.assetCount ?? 0;
-      count.textContent = person.reviewed ? `✓ Review complete · ${person.assetCount ?? "?"} photos` : `${person.reviewedCount || 0}/${total} checked${person.draftCount ? ` · ${person.draftCount} to submit` : person.reviewReopened ? " · reopened" : ""}`;
+      const progress = person.inventoryComplete ? `${person.reviewedCount || 0}/${person.reviewTotal} faces checked` : "Face count pending";
+      count.textContent = person.reviewed ? `✓ Review complete · ${person.reviewTotal} faces` : `${progress}${person.draftCount ? ` · ${person.draftCount} to submit` : person.reviewReopened ? " · reopened" : ""}`;
       button.classList.toggle("reviewed", Boolean(person.reviewed));
       text.append(name, count);
       if (person.pendingOperation) {
@@ -110,15 +110,17 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     const person = currentFaceReviewPerson();
     if (!person || !result) return;
     person.reviewedCount = result.reviewedCount || 0;
-    person.reviewTotal = result.reviewTotal ?? person.assetCount ?? result.totalAssets ?? 0;
+    person.reviewTotal = result.reviewTotal;
+    person.inventoryComplete = Boolean(result.inventoryComplete);
     person.reviewed = Boolean(result.personReviewed);
     person.reviewReopened = Boolean(result.reviewReopened);
     person.draftCount = result.draftCount || 0;
     const pagePerson = state.faceReviewPeople.find(item => item.id === person.id);
-    if (pagePerson && pagePerson !== person) Object.assign(pagePerson, { reviewedCount: person.reviewedCount, reviewTotal: person.reviewTotal, reviewed: person.reviewed, reviewReopened: person.reviewReopened, draftCount: person.draftCount });
+    if (pagePerson && pagePerson !== person) Object.assign(pagePerson, { reviewedCount: person.reviewedCount, reviewTotal: person.reviewTotal, inventoryComplete: person.inventoryComplete, reviewed: person.reviewed, reviewReopened: person.reviewReopened, draftCount: person.draftCount });
     const pending = person.pendingOperation ? ` · Pending ${person.pendingOperation}${person.pendingName ? ` → ${person.pendingName}` : ""}` : "";
     const reopened = person.reviewReopened ? " · Review reopened" : "";
-    element("face-review-meta").textContent = `${result.correctCount || 0} accepted · ${result.wrongDraftCount || 0} dismissed to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${result.untouchedCount ?? "?"} untouched${reopened}${pending}`;
+    const remaining = person.inventoryComplete ? `${result.untouchedCount} untouched` : `${result.untouchedCount} untouched in loaded photos · load all photos for total`;
+    element("face-review-meta").textContent = `${result.correctCount || 0} accepted · ${result.wrongDraftCount || 0} dismissed to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${remaining}${reopened}${pending}`;
     element("face-review-content").classList.toggle("person-reviewed", person.reviewed);
     renderFacePersonList();
   }
@@ -135,7 +137,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     element("face-review-clear").disabled = !selected || disabled;
     element("face-review-queue").disabled = !actionable || disabled;
     const review = state.faceReviewResult;
-    const canFinish = review?.reviewReopened && !review?.untouchedCount;
+    const canFinish = review?.inventoryComplete && review?.reviewReopened && !review?.untouchedCount;
     element("face-review-submit").disabled = disabled || draftSaving || actionQueue.length > 0 || !(review?.draftCount || review?.personReviewed || canFinish);
     element("face-review-submit").textContent = draftSaving ? "Saving decisions…" : review?.draftCount ? `Submit review (${review.draftCount})` : review?.personReviewed ? "Reopen review" : canFinish ? "Finish review" : "Submit review";
     element("face-review-compact").setAttribute("aria-pressed", String(mode === "compact"));
@@ -321,6 +323,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
         if (!pendingDraft && requestedDraftRevision === draftRevision) {
           state.faceReviewResult = result;
           updateFaceReviewProgress(result);
+          if (hideCompletedPeople && result.personReviewed) loadFaceReviewPeople().catch(error => showToast(`Could not refresh people: ${error.message}`));
         }
         renderVisible();
         loadError = false;
@@ -574,7 +577,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   async function toggleReviewReopened() {
     const person = currentFaceReviewPerson();
     const review = state.faceReviewResult;
-    if (!person || !review || busy || draftSaving || actionQueue.length || review.draftCount || !(review.personReviewed || review.reviewReopened && !review.untouchedCount)) return;
+    if (!person || !review || busy || draftSaving || actionQueue.length || review.draftCount || !(review.personReviewed || review.inventoryComplete && review.reviewReopened && !review.untouchedCount)) return;
     const requestGeneration = generation;
     busy = true; updateControls();
     try {

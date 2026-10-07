@@ -311,6 +311,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertTrue(all(not person["name"] for person in unnamed_review["people"]))
             self.assertEqual(app.people_page("review", "most", 1, 5, "Person 1", name_filter="unnamed")["total"], 0)
             app.store.set_face_reviewed("face-1", "1", True)
+            app.store.record_face_review_page("1", 1, 1, [{"faceId": "face-1"}], False, 1, "")
             filtered = app.people_page("review", "most", 1, 5, hide_completed=True, name_filter="named")
             self.assertEqual(filtered["total"], 14)
             self.assertNotIn("1", {person["id"] for person in filtered["people"]})
@@ -336,6 +337,10 @@ class PeopleWorkbenchTests(unittest.TestCase):
                 "faceId": "face-draft", "assetId": "asset-draft",
                 "fileName": "synthetic.jpg", "verdict": "correct",
             }])
+            store.record_face_review_page("complete", 1, 1, [{"faceId": "face-complete"}], False, 1, "")
+            store.record_face_review_page("partial", 1, 2, [{"faceId": "face-partial"}, {"faceId": "face-untouched"}], False, 2, "")
+            store.record_face_review_page("submitted", 1, 1, [{"faceId": "face-submitted"}], False, 1, "")
+            store.record_face_review_page("draft", 1, 1, [{"faceId": "face-draft"}], False, 1, "")
 
             self.assertEqual(app.people_page("review", "most", 1, 5)["total"], 5)
             first = app.people_page("review", "most", 1, 1, hide_completed=True)
@@ -580,6 +585,8 @@ class PeopleWorkbenchTests(unittest.TestCase):
             app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
             person_id = fake.rows[0]["id"]
 
+            app.faces_for_person(person_id)
+
             first = app.set_face_reviewed({"personId": person_id, "faceId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "reviewed": True})
             second = app.set_face_reviewed({"personId": person_id, "faceId": "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "reviewed": True})
 
@@ -589,6 +596,111 @@ class PeopleWorkbenchTests(unittest.TestCase):
             reviewed_person = next(person for person in app.list_people("review", "most") if person["id"] == person_id)
             self.assertTrue(reviewed_person["reviewed"])
             self.assertEqual(reviewed_person["reviewedCount"], 2)
+            store.invalidate_face_review_inventory(person_id)
+            self.assertFalse(next(person for person in app.list_people("review", "most") if person["id"] == person_id)["reviewed"])
+            self.assertTrue(app.faces_for_person(person_id)["personReviewed"])
+
+    def test_two_faces_on_one_photo_need_two_decisions(self):
+        class TwoFaces(FakeImmich):
+            extra_face = False
+
+            def person_assets_page(self, person_id, page=1, size=50):
+                return self.person_assets(person_id, 1), False, 1
+
+            def faces(self, asset_id):
+                first = super().faces(asset_id)[0]
+                faces = [first, dict(first, id="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")]
+                if self.extra_face:
+                    faces.append(dict(first, id="ffffffff-ffff-4fff-8fff-ffffffffffff"))
+                return faces
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "state.sqlite3"
+            store = Store(path)
+            app = AppState(store, root / "reports")
+            fake = TwoFaces()
+            app.client = fake
+            app.people = {row["id"]: dict(row, assetCount=1) for row in fake.rows}
+            person_id = fake.rows[0]["id"]
+            first = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            second = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+
+            loaded = app.faces_for_person(person_id)
+            self.assertEqual((loaded["totalAssets"], loaded["reviewTotal"]), (1, 2))
+            self.assertEqual(len(loaded["faces"]), 2)
+            app.set_face_review_drafts({"personId": person_id, "items": [{
+                "faceId": first, "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "fileName": "synthetic.jpg", "verdict": "correct",
+            }]})
+            one = app.submit_face_review({"personId": person_id})
+            self.assertEqual((one["reviewedCount"], one["untouchedCount"]), (1, 1))
+            self.assertFalse(one["personReviewed"])
+            self.assertIn(person_id, {person["id"] for person in app.people_page("review", "most", 1, 10, hide_completed=True)["people"]})
+
+            app.set_face_review_drafts({"personId": person_id, "items": [{
+                "faceId": second, "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "fileName": "synthetic.jpg", "verdict": "correct",
+            }]})
+            two = app.submit_face_review({"personId": person_id})
+            self.assertEqual((two["reviewedCount"], two["reviewTotal"]), (2, 2))
+            self.assertTrue(two["personReviewed"])
+            self.assertNotIn(person_id, {person["id"] for person in app.people_page("review", "most", 1, 10, hide_completed=True)["people"]})
+            self.assertEqual(Store(path).face_review_inventory(person_id)[0], {first, second})
+            restarted = AppState(Store(path), root / "reports")
+            restarted.people = app.people
+            self.assertTrue(next(person for person in restarted.list_people("review", "most") if person["id"] == person_id)["reviewed"])
+            fake.extra_face = True
+            changed = app.faces_for_person(person_id)
+            self.assertEqual((changed["reviewedCount"], changed["reviewTotal"]), (2, 3))
+            self.assertFalse(changed["personReviewed"])
+            self.assertEqual(fake.calls, [])
+
+    def test_review_stays_incomplete_until_last_asset_page_is_loaded(self):
+        class PagedFaces(FakeImmich):
+            fail_second = False
+
+            def person_assets_page(self, person_id, page=1, size=50):
+                rows = self.person_assets(person_id, 2)
+                start = (page - 1) * size
+                return rows[start:start + size], start + size < len(rows), len(rows)
+
+            def faces(self, asset_id):
+                if self.fail_second and asset_id == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb":
+                    raise RuntimeError("Synthetic face lookup failure")
+                return super().faces(asset_id)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = AppState(Store(root / "state.sqlite3"), root / "reports")
+            fake = PagedFaces()
+            app.client = fake
+            app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
+            person_id = fake.rows[0]["id"]
+            first = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            second = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+
+            first_page = app.faces_for_person(person_id, 1, 1)
+            self.assertTrue(first_page["hasMore"])
+            self.assertFalse(first_page["inventoryComplete"])
+            app.set_face_reviewed({"personId": person_id, "faceId": first, "reviewed": True})
+            self.assertFalse(app.face_review_progress(person_id, app.people[person_id])["personReviewed"])
+            self.assertIn(person_id, {person["id"] for person in app.people_page("review", "most", 1, 10, hide_completed=True)["people"]})
+
+            fake.fail_second = True
+            with self.assertRaisesRegex(RuntimeError, "Synthetic face lookup failure"):
+                app.faces_for_person(person_id, 2, 1)
+            self.assertFalse(app.face_review_progress(person_id, app.people[person_id])["inventoryComplete"])
+            fake.fail_second = False
+            app.faces_for_person(person_id, 2, 2)
+            self.assertFalse(app.face_review_progress(person_id, app.people[person_id])["inventoryComplete"])
+            final_page = app.faces_for_person(person_id, 2, 1)
+            self.assertTrue(final_page["inventoryComplete"])
+            self.assertEqual((final_page["reviewedCount"], final_page["reviewTotal"]), (1, 2))
+            app.set_face_reviewed({"personId": person_id, "faceId": second, "reviewed": True})
+            self.assertTrue(app.face_review_progress(person_id, app.people[person_id])["personReviewed"])
+            app.people[person_id]["updatedAt"] = "new assignment"
+            self.assertFalse(app.list_people("review", "most")[0]["reviewed"])
 
     def test_reopened_review_survives_restart_and_keeps_submitted_decisions(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -602,6 +714,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
             person_id = fake.rows[0]["id"]
             accepted = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
             dismissed = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            app.faces_for_person(person_id)
             app.set_face_review_drafts({"personId": person_id, "items": [
                 {"faceId": accepted, "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "fileName": "a.jpg", "verdict": "correct"},
                 {"faceId": dismissed, "assetId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "fileName": "b.jpg", "verdict": "wrong"},
@@ -610,6 +723,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertTrue(submitted["personReviewed"])
             self.assertTrue(next(p for p in app.list_people("review", "most") if p["id"] == person_id)["reviewed"])
             self.assertNotIn(person_id, {p["id"] for p in app.people_page("review", "most", 1, 20, hide_completed=True)["people"]})
+            self.assertTrue(app.faces_for_person(person_id)["personReviewed"])
 
             reopened = app.set_review_reopened({"personId": person_id, "reopened": True})
             self.assertTrue(reopened["reviewReopened"])
@@ -638,6 +752,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
             person_id = fake.rows[0]["id"]
             first = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
             second = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            app.faces_for_person(person_id)
             with self.assertRaisesRegex(ToolError, "completed"):
                 app.set_review_reopened({"personId": person_id, "reopened": True})
             app.set_face_reviewed({"personId": person_id, "faceId": first, "reviewed": True})
@@ -664,6 +779,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
             app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
             person_id = fake.rows[0]["id"]
             ids = ["cccccccc-cccc-4ccc-8ccc-cccccccccccc", "dddddddd-dddd-4ddd-8ddd-dddddddddddd"]
+            app.faces_for_person(person_id)
 
             with self.assertRaises(ToolError):
                 app.set_faces_reviewed({"personId": person_id, "faceIds": ids + ["invalid"], "reviewed": True})
@@ -692,6 +808,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
             person_id = fake.rows[0]["id"]
             first = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
             second = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            app.faces_for_person(person_id)
             store.queue_face_detach(first, person_id, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "synthetic.jpg")
 
             result = app.set_faces_reviewed({"personId": person_id, "faceIds": [second], "reviewed": True})
@@ -711,6 +828,8 @@ class PeopleWorkbenchTests(unittest.TestCase):
             face_id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
             asset_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
+            app.faces_for_person(source)
+            self.assertIsNotNone(store.face_review_inventory(source)[1])
             app.queue_face_detach({"personId": source, "faceId": face_id, "assetId": asset_id, "fileName": "family-photo.jpg"})
             self.assertEqual(len(store.face_detaches()), 1)
             self.assertNotIn(face_id, store.reviewed_face_ids(source))
@@ -724,6 +843,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertIn(("reassign-face", target, face_id), fake.calls)
             self.assertEqual(store.face_detaches(), [])
             self.assertNotIn(face_id, store.reviewed_face_ids(source))
+            self.assertIsNone(store.face_review_inventory(source)[1])
 
     def test_pending_person_can_be_reviewed_before_sync_and_drafts_survive_reopen(self):
         with tempfile.TemporaryDirectory() as directory:

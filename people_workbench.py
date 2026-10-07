@@ -329,6 +329,19 @@ class Store:
                     person_id TEXT PRIMARY KEY,
                     reopened_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS face_review_inventory (
+                    face_id TEXT PRIMARY KEY,
+                    person_id TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS face_review_inventory_person_idx ON face_review_inventory(person_id);
+                CREATE TABLE IF NOT EXISTS face_review_scan (
+                    person_id TEXT PRIMARY KEY,
+                    next_page INTEGER NOT NULL,
+                    page_size INTEGER NOT NULL,
+                    complete INTEGER NOT NULL,
+                    asset_count INTEGER,
+                    person_updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -613,6 +626,70 @@ class Store:
             rows = db.execute("SELECT person_id,COUNT(*) AS count FROM face_review_drafts GROUP BY person_id").fetchall()
         return {row["person_id"]: int(row["count"]) for row in rows}
 
+    def record_face_review_page(self, person_id: str, page: int, page_size: int, faces: list[dict[str, Any]],
+                                has_more: bool, asset_count: int | None, person_updated_at: str) -> None:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            state = db.execute("SELECT * FROM face_review_scan WHERE person_id=?", (person_id,)).fetchone()
+            if (state and state["complete"] and state["page_size"] == page_size and state["asset_count"] == asset_count
+                    and state["person_updated_at"] == person_updated_at):
+                known = {row["face_id"] for row in db.execute(
+                    "SELECT face_id FROM face_review_inventory WHERE person_id=?", (person_id,)
+                )}
+                if all(face["faceId"] in known for face in faces):
+                    return
+                db.execute("DELETE FROM face_review_inventory WHERE person_id=?", (person_id,))
+                db.execute("DELETE FROM face_review_scan WHERE person_id=?", (person_id,))
+                if page != 1:
+                    return
+                state = None
+            if page == 1:
+                db.execute("DELETE FROM face_review_inventory WHERE person_id=?", (person_id,))
+            elif (not state or state["complete"] or state["next_page"] != page or state["page_size"] != page_size
+                  or state["asset_count"] != asset_count
+                  or state["person_updated_at"] != person_updated_at):
+                return
+            db.executemany(
+                "INSERT INTO face_review_inventory(face_id,person_id) VALUES(?,?) "
+                "ON CONFLICT(face_id) DO UPDATE SET person_id=excluded.person_id",
+                [(face["faceId"], person_id) for face in faces],
+            )
+            db.execute(
+                """INSERT INTO face_review_scan(person_id,next_page,page_size,complete,asset_count,person_updated_at)
+                   VALUES(?,?,?,?,?,?) ON CONFLICT(person_id) DO UPDATE SET next_page=excluded.next_page,
+                   page_size=excluded.page_size,complete=excluded.complete,asset_count=excluded.asset_count,
+                   person_updated_at=excluded.person_updated_at""",
+                (person_id, page + 1, page_size, int(not has_more), asset_count, person_updated_at),
+            )
+
+    def face_review_inventory(self, person_id: str) -> tuple[set[str], dict[str, Any] | None]:
+        with self.connect() as db:
+            state = db.execute("SELECT * FROM face_review_scan WHERE person_id=?", (person_id,)).fetchone()
+            rows = db.execute("SELECT face_id FROM face_review_inventory WHERE person_id=?", (person_id,)).fetchall()
+        return {row["face_id"] for row in rows}, dict(state) if state else None
+
+    def face_review_inventory_summaries(self) -> dict[str, dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT s.person_id,s.complete,s.asset_count,s.person_updated_at,
+                          COUNT(i.face_id) AS total,
+                          SUM(CASE WHEN d.verdict='unreviewed' THEN 0
+                                   WHEN p.face_id IS NOT NULL OR d.verdict IN ('correct','wrong')
+                                        OR r.face_id IS NOT NULL THEN 1 ELSE 0 END) AS handled
+                   FROM face_review_scan s
+                   LEFT JOIN face_review_inventory i ON i.person_id=s.person_id
+                   LEFT JOIN face_reviews r ON r.face_id=i.face_id AND r.person_id=s.person_id
+                   LEFT JOIN face_review_drafts d ON d.face_id=i.face_id AND d.person_id=s.person_id
+                   LEFT JOIN face_detach_pending p ON p.face_id=i.face_id AND p.source_person_id=s.person_id
+                   GROUP BY s.person_id"""
+            ).fetchall()
+        return {row["person_id"]: dict(row) for row in rows}
+
+    def invalidate_face_review_inventory(self, person_id: str) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM face_review_scan WHERE person_id=?", (person_id,))
+            db.execute("DELETE FROM face_review_inventory WHERE person_id=?", (person_id,))
+
     def setting(self, key: str, default: str = "") -> str:
         with self.connect() as db:
             row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -669,6 +746,11 @@ class AppState:
             if self.client is None:
                 raise ToolError("Connect to Immich first")
             return self.client
+
+    @staticmethod
+    def face_inventory_current(scan: dict[str, Any] | None, person: dict[str, Any]) -> bool:
+        return bool(scan and scan["asset_count"] == person.get("assetCount")
+                    and scan["person_updated_at"] == str(person.get("updatedAt") or ""))
 
     def connect(self, client: Immich) -> str:
         version = client.version()
@@ -771,17 +853,21 @@ class AppState:
         for person in people:
             person["skipCount"] = skips.get(person["id"], 0)
         if kind == "review":
-            review_counts = self.store.face_review_counts()
+            inventory = self.store.face_review_inventory_summaries()
             draft_counts = self.store.face_review_draft_counts()
             reopened_ids = self.store.reopened_review_ids()
             pending_by_id = {item["person_id"]: item for item in pending}
             for person in people:
-                total = max(0, int(person.get("assetCount") or 0))
-                reviewed = min(total, review_counts.get(person["id"], 0)) if total else 0
+                scan = inventory.get(person["id"])
+                current = self.face_inventory_current(scan, person)
+                complete = bool(current and scan["complete"])
+                known = int(scan["total"]) if current else 0
+                reviewed = int(scan["handled"] or 0) if current else 0
                 person["reviewedCount"] = reviewed
-                person["reviewTotal"] = total
+                person["reviewTotal"] = known if complete else None
+                person["inventoryComplete"] = complete
                 person["reviewReopened"] = person["id"] in reopened_ids
-                person["reviewed"] = total > 0 and reviewed >= total and not draft_counts.get(person["id"]) and not person["reviewReopened"]
+                person["reviewed"] = complete and known > 0 and reviewed >= known and not draft_counts.get(person["id"]) and not person["reviewReopened"]
                 person["draftCount"] = draft_counts.get(person["id"], 0)
                 queued = pending_by_id.get(person["id"])
                 if queued:
@@ -991,6 +1077,8 @@ class AppState:
             face["queued"] = face["faceId"] in queued
             face["reviewed"] = face["faceId"] in reviewed
             face["draftVerdict"] = drafts[face["faceId"]]["verdict"] if face["faceId"] in drafts else None
+        self.store.record_face_review_page(person_id, page, size, faces, has_more, person.get("assetCount"),
+                                           str(person.get("updatedAt") or ""))
         counts = self.face_review_progress(person_id, person)
         pages = max(1, (total + size - 1) // size)
         return {
@@ -1014,22 +1102,26 @@ class AppState:
         return self.face_review_progress(person_id, person)
 
     def face_review_progress(self, person_id: str, person: dict[str, Any]) -> dict[str, Any]:
-        total = max(0, int(person.get("assetCount") or 0))
+        inventory, scan = self.store.face_review_inventory(person_id)
+        if not self.face_inventory_current(scan, person):
+            inventory, scan = set(), None
+        complete = bool(scan and scan["complete"])
         queued = {row["face_id"] for row in self.store.face_detaches() if row["source_person_id"] == person_id}
         drafts = self.store.face_review_drafts(person_id)
         draft_correct = {row["face_id"] for row in drafts if row["verdict"] == "correct"}
         draft_wrong = {row["face_id"] for row in drafts if row["verdict"] == "wrong"}
         draft_unreviewed = {row["face_id"] for row in drafts if row["verdict"] == "unreviewed"}
         correct = (self.store.reviewed_face_ids(person_id) | draft_correct) - draft_wrong - draft_unreviewed - queued
-        handled = correct | draft_wrong | queued
-        count = min(total, len(handled)) if total else 0
+        handled = (correct | draft_wrong | queued) - draft_unreviewed
+        count = len(handled & inventory)
         reopened = person_id in self.store.reopened_review_ids()
         return {
-            "reviewedCount": count, "reviewTotal": total,
+            "reviewedCount": count, "reviewTotal": len(inventory) if complete else None,
+            "inventoryComplete": complete,
             "correctCount": len(correct), "wrongDraftCount": len(draft_wrong),
             "queuedFaceCount": len(queued), "draftCount": len(drafts),
-            "untouchedCount": max(0, total - len(handled)),
-            "personReviewed": total > 0 and count >= total and not drafts and not reopened,
+            "untouchedCount": len(inventory - handled),
+            "personReviewed": complete and bool(inventory) and count >= len(inventory) and not drafts and not reopened,
             "reviewReopened": reopened,
         }
 
@@ -1046,7 +1138,7 @@ class AppState:
         if reopened:
             if not progress["personReviewed"]:
                 raise ToolError("Only a completed review can be reopened")
-        elif not progress["reviewReopened"] or progress["untouchedCount"] or progress["draftCount"]:
+        elif not progress["reviewReopened"] or not progress["inventoryComplete"] or progress["untouchedCount"] or progress["draftCount"]:
             raise ToolError("Review the remaining faces and submit decisions before finishing")
         self.store.set_review_reopened(person_id, reopened)
         return self.face_review_progress(person_id, person)
@@ -1279,10 +1371,12 @@ class AppState:
         for row in face_rows:
             face_id = row["face_id"]
             try:
+                self.store.invalidate_face_review_inventory(row["source_person_id"])
                 target_id = row.get("target_person_id")
                 if not target_id:
                     target_id = client.create_person()["id"]
                     self.store.set_face_detach_target(face_id, target_id)
+                self.store.invalidate_face_review_inventory(target_id)
                 client.reassign_face(target_id, face_id)
                 self.store.remove_face_detach(face_id)
                 self.store.remove_face_review(face_id)
@@ -1320,6 +1414,8 @@ class AppState:
                         raise ToolError("Merge target's pending name is excluded from this sync")
                     if target_id in failed_ids:
                         raise ToolError("Merge target's pending name failed to sync")
+                    self.store.invalidate_face_review_inventory(person_id)
+                    self.store.invalidate_face_review_inventory(target_id)
                     client.merge(target_id, person_id)
                     if row.get("feature_asset_id"):
                         client.update_person(target_id, {"featureFaceAssetId": row["feature_asset_id"]})

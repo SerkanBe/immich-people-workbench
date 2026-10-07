@@ -28,7 +28,7 @@ test("Face review submits directly, then reopens and finishes without changing d
   const person = { id: "11111111-1111-4111-8111-111111111111", name: "Synthetic person", assetCount: 1 };
   const state = {
     faceReviewCurrentPerson: person, faceReviewPersonId: person.id, faceReviewPeople: [person],
-    faceReviewResult: { draftCount: 1, reviewedCount: 1, reviewTotal: 1, untouchedCount: 0 },
+    faceReviewResult: { draftCount: 1, reviewedCount: 1, reviewTotal: 1, untouchedCount: 0, inventoryComplete: true },
     faceReviewSelected: new Set(), faceReviewSelectedData: new Map(), view: "faces",
     pages: { facePeople: 3 }, pageSize: 10, sort: "most",
   };
@@ -38,10 +38,10 @@ test("Face review submits directly, then reopens and finishes without changing d
     if (path.startsWith("/api/people?")) return { people: [person], page: 1 };
     if (path === "/api/face-review/submit") return {
       submitted: { correct: 1, wrong: 0 }, submittedFaces: [], draftCount: 0,
-      reviewedCount: 1, reviewTotal: 1, untouchedCount: 0, personReviewed: true, reviewReopened: false,
+      reviewedCount: 1, reviewTotal: 1, untouchedCount: 0, inventoryComplete: true, personReviewed: true, reviewReopened: false,
     };
     if (path === "/api/face-review/reopen") return {
-      draftCount: 0, reviewedCount: 1, reviewTotal: 1, untouchedCount: 0,
+      draftCount: 0, reviewedCount: 1, reviewTotal: 1, untouchedCount: 0, inventoryComplete: true,
       personReviewed: !options.body.reopened, reviewReopened: options.body.reopened,
     };
     throw new Error(`Unexpected request: ${path}`);

@@ -46,7 +46,9 @@ them. Removing a request returns its face to Face review.
 The sidebar's **Show people** filter lets you review named people first, then
 switch to unnamed people. **Hide completed people** keeps finished people out
 of the sidebar. The open person stays visible, and **Show completed people**
-brings finished people back.
+brings finished people back. A person's completion count uses faces, so two
+faces on one photo need two decisions. Load all photo pages to establish the
+exact total before that person can be marked complete.
 **Reopen review** returns a completed person to the active list while keeping
 their accepted faces and Pending requests. **Finish review** marks them complete
 again once all faces have been handled.
