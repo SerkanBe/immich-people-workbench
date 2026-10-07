@@ -10,11 +10,47 @@ const { createFaceReview } = await import(`data:text/javascript;base64,${Buffer.
 function node() {
   const listeners = new Map();
   return {
-    listeners, classList: { toggle() {} }, style: {}, scrollTop: 0, clientHeight: 600,
-    append() {}, replaceChildren() {}, addEventListener: (event, handler) => listeners.set(event, handler),
+    listeners, children: [], value: "", classList: { toggle() {} }, style: {}, scrollTop: 0, clientHeight: 600,
+    append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; },
+    addEventListener: (event, handler) => listeners.set(event, handler),
     setAttribute() {}, querySelectorAll: () => [], focus() {},
   };
 }
+
+test("Face review sidebar shows photo counts before face inventory is complete", async () => {
+  const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };
+  const elements = new Map();
+  globalThis.document = {
+    getElementById: id => { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
+    createElement: () => node(), addEventListener() {},
+  };
+  globalThis.window = { addEventListener() {} };
+  globalThis.localStorage = { getItem: () => null };
+  const people = [
+    { id: "unscanned", name: "First", assetCount: 8, inventoryComplete: false, reviewedCount: 0 },
+    { id: "partial", name: "Second", assetCount: 4, inventoryComplete: false, reviewedCount: 2 },
+    { id: "complete", name: "Third", assetCount: 1, inventoryComplete: true, reviewedCount: 1, reviewTotal: 2 },
+  ];
+  const list = node();
+  try {
+    const review = createFaceReview({
+      api: async () => ({ people, page: 1 }),
+      state: { faceReviewPeople: [], pages: { facePeople: 1 }, pageSize: 10, sort: "most" },
+      ui: { facePersonList: list, faceReviewGrid: node() },
+      assetThumb: () => "", personThumb: () => "", refreshSummary: async () => {}, showToast: () => {},
+      renderPagination: () => {},
+    });
+    await review.loadFaceReviewPeople();
+    const labels = list.children.map(button => button.children[1].children.slice(1).map(item => item.textContent));
+    assert.deepEqual(labels, [
+      ["8 photos"],
+      ["4 photos", "2 faces checked so far"],
+      ["1 photo", "1/2 faces checked"],
+    ]);
+  } finally {
+    Object.assign(globalThis, previous);
+  }
+});
 
 test("Face review submits directly, then reopens and finishes without changing decisions", async () => {
   const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };

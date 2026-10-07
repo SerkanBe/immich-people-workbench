@@ -162,8 +162,11 @@ the person shows that context. The sidebar list scrolls independently; use
 **Show completed people** to bring completed people back. A person with some
 submitted faces remains listed while other faces still need review. This view-only filter
 resets to showing everyone after a reload. Changing sidebar pages
-or searching starts its list at the top. Select a person to load their assigned
-faces into a continuous, ordered grid. More faces load as you scroll or choose
+or searching starts its list at the top. Each person shows Immich's photo count.
+The sidebar shows checked faces as decisions are made; an exact face total
+appears after all of that person's photo pages have loaded. Select a person to
+load their assigned faces into a continuous, ordered grid. More faces load as
+you scroll or choose
 **Load more faces**; keyboard users can use that button to focus the next batch.
 Only nearby tiles are rendered, and each tile is cropped to the face.
 **Compact** shows small crops without tile text; **Detail** enlarges them

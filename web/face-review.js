@@ -69,10 +69,16 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       const text = document.createElement("span");
       const name = document.createElement("strong"); name.textContent = person.name || "Unnamed person";
       const count = document.createElement("small");
-      const progress = person.inventoryComplete ? `${person.reviewedCount || 0}/${person.reviewTotal} faces checked` : "Face count pending";
-      count.textContent = person.reviewed ? `✓ Review complete · ${person.reviewTotal} faces` : `${progress}${person.draftCount ? ` · ${person.draftCount} to submit` : person.reviewReopened ? " · reopened" : ""}`;
+      count.textContent = person.assetCount == null ? "Photo count unavailable" : `${person.assetCount} ${person.assetCount === 1 ? "photo" : "photos"}`;
+      const progress = person.reviewed ? `✓ Review complete · ${person.reviewTotal} faces`
+        : person.inventoryComplete ? `${person.reviewedCount || 0}/${person.reviewTotal} faces checked`
+        : person.reviewedCount ? `${person.reviewedCount} faces checked so far` : "";
+      const status = [progress, person.draftCount ? `${person.draftCount} to submit` : person.reviewReopened ? "reopened" : ""].filter(Boolean).join(" · ");
       button.classList.toggle("reviewed", Boolean(person.reviewed));
       text.append(name, count);
+      if (status) {
+        const detail = document.createElement("small"); detail.textContent = status; text.append(detail);
+      }
       if (person.pendingOperation) {
         const badge = document.createElement("em"); badge.className = "face-person-pending";
         badge.textContent = `Pending ${person.pendingOperation === "merge-target" ? "merge target" : person.pendingOperation}`;
