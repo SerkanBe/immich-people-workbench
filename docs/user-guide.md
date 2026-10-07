@@ -162,9 +162,13 @@ the person shows that context. The sidebar list scrolls independently; use
 **Show completed people** to bring completed people back. A person with some
 submitted faces remains listed while other faces still need review. This view-only filter
 resets to showing everyone after a reload. Changing sidebar pages
-or searching starts its list at the top. Each person shows Immich's photo count.
-The sidebar shows checked faces as decisions are made; an exact face total
-appears after all of that person's photo pages have loaded. Select a person to
+or searching starts its list at the top. Each person shows Immich's photo count
+and any locally saved checked-face count. While Face review is open, Workbench
+counts faces in the background with read-only Immich requests. Progress appears
+above the sidebar; large libraries can take time, and a failed count can be
+retried. The exact face total appears after all of that person's photo pages
+have been counted. Partial counts
+survive a reload, so the scan can resume later. Select a person to
 load their assigned faces into a continuous, ordered grid. More faces load as
 you scroll or choose
 **Load more faces**; keyboard users can use that button to focus the next batch.
@@ -230,10 +234,13 @@ person to the active list while keeping accepted faces and Pending requests.
 **Finish review** marks that person complete again when no faces remain
 untouched or awaiting submission.
 
-**Hide decided** (`F`) hides green and red faces, including already decided
-faces loaded on later pages. It does not hide a face when you mark it after
-pressing `F`: press `F` again when you are ready to hide new decisions.
-**Show hidden** (`Shift+F`) brings hidden faces back. These are
+Submitted accepted faces are hidden from the working grid by default. New draft
+decisions stay visible until **Submit review**; submitted dismissals remain in
+Pending. **Show checked** reveals submitted accepted faces, and **Hide checked**
+returns to the working grid. **Hide decided** (`F`) can also hide current green
+and red drafts. It does not hide a face when you mark it after pressing `F`:
+press `F` again when you are ready to hide new decisions. **Show hidden**
+(`Shift+F`) brings manually hidden faces back. These are
 view-only actions; they neither submit drafts nor change Immich. **Clear
 selection** removes the blue outline. Hidden faces stay hidden if you switch
 people and return, but reset on a page reload or after Pending changes refresh

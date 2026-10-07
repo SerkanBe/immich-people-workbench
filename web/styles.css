@@ -234,6 +234,8 @@ body.merge-zen .merge-tray { position: static; height: 100vh; overflow-y: auto; 
 .face-person-controls input, .face-person-controls select { display: block; width: 100%; margin-top: 4px; }
 .face-person-controls button { justify-self: start; min-height: 32px; padding: 5px 8px; font-size: .8rem; }
 .face-person-controls button.active { border-color: var(--accent); background: var(--accent-soft); }
+.face-person-scan { display: flex; align-items: center; gap: 6px; font-size: .8rem; }
+.face-person-scan button { flex: 0 0 auto; }
 .face-person-list { display: grid; align-content: start; gap: 6px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .face-person-button { display: grid; grid-template-columns: 50px minmax(0, 1fr); align-items: center; gap: 9px; width: 100%; padding: 6px; border: 1px solid transparent; border-radius: 9px; color: var(--text); background: transparent; text-align: left; }
 .face-person-button:hover { background: var(--surface-2); }

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("../web/face-review.js", import.meta.url), "utf8");
-const { createFaceReview } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const { createFaceReview, showFaceInReview } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 
 function node() {
   const listeners = new Map();
@@ -16,6 +16,17 @@ function node() {
     setAttribute() {}, querySelectorAll: () => [], focus() {},
   };
 }
+
+test("Face review hides submitted faces while leaving new drafts available", () => {
+  const checked = { reviewed: true, queued: false };
+  const newFace = { reviewed: false, queued: false };
+  assert.equal(showFaceInReview(checked, false, false, null), false);
+  assert.equal(showFaceInReview(newFace, false, false, "correct"), true);
+  assert.equal(showFaceInReview(checked, false, false, "wrong"), true);
+  assert.equal(showFaceInReview(checked, true, false, null), true);
+  assert.equal(showFaceInReview(checked, true, true, null), true);
+  assert.equal(showFaceInReview({ reviewed: false, queued: true }, true, false, null), false);
+});
 
 test("Face review sidebar shows photo counts before face inventory is complete", async () => {
   const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };
@@ -47,6 +58,43 @@ test("Face review sidebar shows photo counts before face inventory is complete",
       ["4 photos", "2 faces checked so far"],
       ["1 photo", "1/2 faces checked"],
     ]);
+  } finally {
+    Object.assign(globalThis, previous);
+  }
+});
+
+test("Face review counts people in background and refreshes the sidebar", async () => {
+  const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };
+  const elements = new Map();
+  globalThis.document = {
+    getElementById: id => { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
+    createElement: () => node(), addEventListener() {},
+  };
+  globalThis.window = { addEventListener() {} };
+  globalThis.localStorage = { getItem: () => null };
+  const calls = [];
+  const state = { view: "faces", faceReviewPeople: [], pages: { facePeople: 1 }, pageSize: 10, sort: "most" };
+  const person = { id: "11111111-1111-4111-8111-111111111111", name: "Synthetic", assetCount: 2 };
+  const api = async path => {
+    calls.push(path);
+    if (path.startsWith("/api/people?")) return { people: [person], page: 1 };
+    if (path === "/api/face-review/scan-next") return {
+      personId: person.id, complete: calls.filter(item => item === path).length === 1 ? 0 : 1,
+      total: 1, failed: 0, done: calls.filter(item => item === path).length > 1,
+    };
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  try {
+    const review = createFaceReview({
+      api, state, ui: { facePersonList: node(), faceReviewGrid: node() },
+      assetThumb: () => "", personThumb: () => "", refreshSummary: async () => {}, showToast: () => {},
+      renderPagination: () => {},
+    });
+    await review.renderFaceReview();
+    await new Promise(resolve => setTimeout(resolve, 220));
+    assert.equal(calls.filter(path => path === "/api/face-review/scan-next").length, 2);
+    assert.equal(document.getElementById("face-person-scan-status").textContent, "Face counts ready · 1 person");
+    assert.equal(calls.filter(path => path.startsWith("/api/people?")).length, 3);
   } finally {
     Object.assign(globalThis, previous);
   }

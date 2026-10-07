@@ -671,7 +671,7 @@ class Store:
     def face_review_inventory_summaries(self) -> dict[str, dict[str, Any]]:
         with self.connect() as db:
             rows = db.execute(
-                """SELECT s.person_id,s.complete,s.asset_count,s.person_updated_at,
+                """SELECT s.person_id,s.next_page,s.page_size,s.complete,s.asset_count,s.person_updated_at,
                           COUNT(i.face_id) AS total,
                           SUM(CASE WHEN d.verdict='unreviewed' THEN 0
                                    WHEN p.face_id IS NOT NULL OR d.verdict IN ('correct','wrong')
@@ -709,6 +709,9 @@ class AppState:
         self.reports = reports
         self.lock = threading.RLock()
         self.sync_lock = threading.Lock()
+        self.face_scan_lock = threading.Lock()
+        self.face_inventory_locks: dict[str, threading.Lock] = {}
+        self.face_scan_failures: set[str] = set()
         self.client: Immich | None = None
         self.version = ""
         self.people: dict[str, dict[str, Any]] = {}
@@ -725,6 +728,7 @@ class AppState:
             self.people = {}
             self.sample_cache = {}
             self.similarity_cache = {}
+            self.face_scan_failures.clear()
             self.phase = "idle"
             self.message = "Sign in to Immich"
             self.progress = {"current": 0, "total": None}
@@ -757,6 +761,7 @@ class AppState:
         with self.lock:
             self.client, self.version = client, version
             self.people, self.sample_cache, self.similarity_cache = {}, {}, {}
+            self.face_scan_failures.clear()
         self.set_status("connected", f"Connected to Immich {version}")
         return version
 
@@ -790,6 +795,7 @@ class AppState:
                     return
                 self.people = mapped
                 self.similarity_cache = {}
+                self.face_scan_failures.clear()
                 self.set_status_for_client(client, "ready", f"Loaded {len(mapped)} people", len(mapped), len(mapped))
         except Exception as exc:
             if client is not None:
@@ -854,6 +860,7 @@ class AppState:
             person["skipCount"] = skips.get(person["id"], 0)
         if kind == "review":
             inventory = self.store.face_review_inventory_summaries()
+            saved_counts = self.store.face_review_counts()
             draft_counts = self.store.face_review_draft_counts()
             reopened_ids = self.store.reopened_review_ids()
             pending_by_id = {item["person_id"]: item for item in pending}
@@ -862,7 +869,7 @@ class AppState:
                 current = self.face_inventory_current(scan, person)
                 complete = bool(current and scan["complete"])
                 known = int(scan["total"]) if current else 0
-                reviewed = int(scan["handled"] or 0) if current else 0
+                reviewed = int(scan["handled"] or 0) if current and complete else saved_counts.get(person["id"], 0)
                 person["reviewedCount"] = reviewed
                 person["reviewTotal"] = known if complete else None
                 person["inventoryComplete"] = complete
@@ -1035,7 +1042,72 @@ class AppState:
     def pending_page(self, page: int, size: int) -> dict[str, Any]:
         return paginate(self.pending_public(), page, size, "pending")
 
-    def faces_for_person(self, person_id: str, page: int = 1, size: int = 40) -> dict[str, Any]:
+    def scan_face_review_page(self, active_person_id: str = "", retry_failed: bool = False) -> dict[str, Any]:
+        if active_person_id and not UUID_RE.fullmatch(active_person_id):
+            raise ToolError("Invalid active person ID")
+        if not self.face_scan_lock.acquire(blocking=False):
+            return {"busy": True}
+        try:
+            with self.lock:
+                if retry_failed:
+                    self.face_scan_failures.clear()
+                people = [dict(person) for person in self.people.values() if not person.get("isHidden")]
+                failures = set(self.face_scan_failures)
+            self.require_client()
+            inventory = self.store.face_review_inventory_summaries()
+            incomplete = [person for person in people if not (
+                self.face_inventory_current(inventory.get(person["id"]), person)
+                and inventory[person["id"]]["complete"]
+            )]
+            available = [person for person in incomplete if person["id"] not in failures]
+            available.sort(key=lambda person: (
+                not self.face_inventory_current(inventory.get(person["id"]), person),
+                not bool(person.get("name")), person.get("assetCount") or 0, person["id"],
+            ))
+            if active_person_id and len(available) > 1:
+                available.sort(key=lambda person: person["id"] == active_person_id)
+            scanned_id = ""
+            scanned_progress = None
+            if available:
+                person = available[0]
+                scanned_id = person["id"]
+                scan = inventory.get(scanned_id)
+                current = self.face_inventory_current(scan, person)
+                page = int(scan["next_page"]) if current and scan and not scan["complete"] else 1
+                size = int(scan["page_size"]) if current and scan and not scan["complete"] else 60
+                try:
+                    result = self.faces_for_person(scanned_id, page, size, workers=2)
+                    scanned_progress = {key: result[key] for key in (
+                        "reviewedCount", "reviewTotal", "inventoryComplete", "correctCount",
+                        "wrongDraftCount", "queuedFaceCount", "draftCount", "untouchedCount",
+                        "personReviewed", "reviewReopened",
+                    )}
+                except Exception:
+                    with self.lock:
+                        self.face_scan_failures.add(scanned_id)
+            with self.lock:
+                people = [dict(person) for person in self.people.values() if not person.get("isHidden")]
+                failures = set(self.face_scan_failures)
+            inventory = self.store.face_review_inventory_summaries()
+            unfinished_ids = {person["id"] for person in people if not (
+                self.face_inventory_current(inventory.get(person["id"]), person)
+                and inventory[person["id"]]["complete"]
+            )}
+            complete = len(people) - len(unfinished_ids)
+            failed = len(unfinished_ids & failures)
+            return {"busy": False, "personId": scanned_id, "progress": scanned_progress,
+                    "complete": complete, "total": len(people), "failed": failed,
+                    "done": complete + failed >= len(people)}
+        finally:
+            self.face_scan_lock.release()
+
+    def faces_for_person(self, person_id: str, page: int = 1, size: int = 40, workers: int = 6) -> dict[str, Any]:
+        with self.lock:
+            person_lock = self.face_inventory_locks.setdefault(person_id, threading.Lock())
+        with person_lock:
+            return self._faces_for_person(person_id, page, size, workers)
+
+    def _faces_for_person(self, person_id: str, page: int, size: int, workers: int) -> dict[str, Any]:
         with self.lock:
             person = self.people.get(person_id)
         if not person or person.get("isHidden"):
@@ -1067,7 +1139,7 @@ class AppState:
 
         faces: list[dict[str, Any]] = []
         if assets:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(assets))) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers, len(assets))) as pool:
                 for rows in pool.map(collect, assets):
                     faces.extend(rows)
         queued = {row["face_id"] for row in self.store.face_detaches()}
@@ -1771,6 +1843,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, **STATE.submit_face_review(payload)})
             elif path == "/api/face-review/reopen":
                 self.send_json({"ok": True, **STATE.set_review_reopened(payload)})
+            elif path == "/api/face-review/scan-next":
+                self.send_json(STATE.scan_face_review_page(str(payload.get("activePersonId") or ""),
+                                                           payload.get("retryFailed") is True))
             elif path == "/api/face-detach/include":
                 face_id = str(payload.get("faceId", ""))
                 if not UUID_RE.fullmatch(face_id):

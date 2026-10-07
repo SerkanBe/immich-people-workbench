@@ -702,6 +702,47 @@ class PeopleWorkbenchTests(unittest.TestCase):
             app.people[person_id]["updatedAt"] = "new assignment"
             self.assertFalse(app.list_people("review", "most")[0]["reviewed"])
 
+    def test_background_face_count_resumes_and_retries_without_immich_writes(self):
+        class PagedFaces(FakeImmich):
+            fail_second = False
+
+            def person_assets_page(self, person_id, page=1, size=50):
+                rows = self.person_assets(person_id, 2)
+                start = (page - 1) * size
+                return rows[start:start + size], start + size < len(rows), len(rows)
+
+            def faces(self, asset_id):
+                if self.fail_second and asset_id == "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb":
+                    raise RuntimeError("Synthetic read failure")
+                return super().faces(asset_id)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(root / "state.sqlite3")
+            app = AppState(store, root / "reports")
+            fake = PagedFaces()
+            app.client = fake
+            person = dict(fake.rows[0], assetCount=2)
+            app.people = {person["id"]: person}
+            app.faces_for_person(person["id"], 1, 1)
+            store.set_face_reviewed("cccccccc-cccc-4ccc-8ccc-cccccccccccc", person["id"], True)
+            self.assertEqual(app.list_people("review", "most")[0]["reviewedCount"], 1)
+
+            fake.fail_second = True
+            failed = app.scan_face_review_page()
+            self.assertEqual((failed["complete"], failed["failed"], failed["done"]), (0, 1, True))
+            self.assertFalse(app.face_review_progress(person["id"], person)["inventoryComplete"])
+            fake.fail_second = False
+            counted = app.scan_face_review_page(retry_failed=True)
+            self.assertEqual((counted["complete"], counted["failed"], counted["done"]), (1, 0, True))
+            self.assertEqual((counted["progress"]["reviewedCount"], counted["progress"]["reviewTotal"]), (1, 2))
+            self.assertEqual(fake.calls, [])
+
+            restarted = AppState(Store(root / "state.sqlite3"), root / "reports")
+            restarted.client = fake
+            restarted.people = app.people
+            self.assertEqual((restarted.scan_face_review_page()["complete"], restarted.scan_face_review_page()["done"]), (1, True))
+
     def test_reopened_review_survives_restart_and_keeps_submitted_decisions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

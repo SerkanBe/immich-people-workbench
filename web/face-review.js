@@ -1,12 +1,19 @@
 // Copyright (C) 2026 Serkan Bekdemir
 // SPDX-License-Identifier: AGPL-3.0-only
 
+export function showFaceInReview(face, showChecked, hidden, draft) {
+  return Boolean(!face.queued && (!hidden || showChecked && face.reviewed)
+    && (showChecked || !face.reviewed || draft && draft !== "clear"));
+}
+
 export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui }) {
   const pageSize = 60;
   let gap = 8;
   let faces = [];
   let visibility = { hidden: new Set(), hideDecided: false, decisionsAfterHide: new Set() };
   let visibilityByPerson = new Map();
+  let showCheckedByPerson = new Map();
+  let showChecked = false;
   let hidden = visibility.hidden;
   let mounted = new Map();
   let surface = null;
@@ -32,6 +39,9 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   let hideCompletedPeople = false;
   let nameFilter = "all";
   let peopleLoadRevision = 0;
+  let scanRunning = false;
+  let scanRestartRequested = false;
+  let scanRetryRequested = false;
   let layout = { columns: 1, width: 104, height: 104, stride: 112 };
   const modeKey = "peopleWorkbench.faceReviewMode";
   let mode = "compact";
@@ -44,7 +54,11 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     const draft = staged?.generation === generation ? staged.verdict === "clear" ? null : staged.verdict : face.draftVerdict;
     return draft === "wrong" ? "wrong" : draft === "unreviewed" ? "untouched" : draft === "correct" || face.reviewed ? "correct" : "untouched";
   };
-  const visibleFaces = () => faces.filter(face => !face.queued && !hidden.has(face.faceId));
+  const visibleFaces = () => faces.filter(face => {
+    const staged = stagedVerdicts.get(face.faceId);
+    const draft = staged?.generation === generation ? staged.verdict : face.draftVerdict;
+    return showFaceInReview(face, showChecked, hidden.has(face.faceId), draft);
+  });
 
   function showPhotoPeek(face, card) {
     if (!previewBubble) {
@@ -112,6 +126,60 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     });
   }
 
+  async function scanFaceCounts(retryFailed = false) {
+    if (state.view !== "faces") return;
+    if (scanRunning) {
+      scanRestartRequested = true;
+      scanRetryRequested ||= retryFailed;
+      return;
+    }
+    scanRunning = true;
+    const status = element("face-person-scan-status");
+    const retry = element("face-person-scan-retry");
+    retry.hidden = true;
+    status.textContent = "Counting faces in background…";
+    let previousComplete = -1;
+    try {
+      while (state.view === "faces") {
+        const result = await api("/api/face-review/scan-next", {
+          method: "POST", body: { activePersonId: state.faceReviewPersonId || "", retryFailed },
+        });
+        if (state.view !== "faces") break;
+        if (result.busy) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          continue;
+        }
+        retryFailed = false;
+        const peopleLabel = result.total === 1 ? "person" : "people";
+        const message = result.done
+          ? result.failed ? `Counted ${result.complete}/${result.total} ${peopleLabel} · ${result.failed} failed` : `Face counts ready · ${result.total} ${peopleLabel}`
+          : `Counting faces · ${result.complete}/${result.total} ${peopleLabel}${result.failed ? ` · ${result.failed} failed` : ""}`;
+        if (status.textContent !== message) status.textContent = message;
+        retry.hidden = !(result.done && result.failed);
+        if (result.personId === state.faceReviewPersonId && result.progress && !draftSaving && !actionQueue.length) {
+          applyProgress(result.progress);
+        }
+        if (result.complete !== previousComplete) {
+          previousComplete = result.complete;
+          await loadFaceReviewPeople().catch(error => showToast(`Could not refresh face counts: ${error.message}`));
+        }
+        if (result.done) break;
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+    } catch (error) {
+      status.textContent = `Could not count faces: ${error.message}`;
+      retry.hidden = false;
+    } finally {
+      scanRunning = false;
+      const restart = scanRestartRequested && state.view === "faces";
+      const retry = scanRetryRequested;
+      scanRestartRequested = false; scanRetryRequested = false;
+      if (restart) {
+        scanFaceCounts(retry).catch(error => showToast(`Could not count faces: ${error.message}`));
+      }
+    }
+  }
+
   function updateFaceReviewProgress(result = state.faceReviewResult) {
     const person = currentFaceReviewPerson();
     if (!person || !result) return;
@@ -139,7 +207,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     element("face-review-mark").disabled = !actionable || disabled;
     element("face-review-hide").disabled = disabled || (!draftSaving && !hasMore && !visibleFaces().some(face => statusOf(face) !== "untouched"));
     element("face-review-show").disabled = disabled || (!visibility.hideDecided && !hidden.size && !draftSaving);
-    element("face-review-show-label").textContent = hidden.size ? `Show hidden (${hidden.size})` : "Show hidden";
+    const manuallyHidden = faces.filter(face => hidden.has(face.faceId) && !(showChecked && face.reviewed)).length;
+    element("face-review-show-label").textContent = manuallyHidden ? `Show hidden (${manuallyHidden})` : "Show hidden";
+    element("face-review-show-checked").textContent = showChecked ? "Hide checked" : "Show checked";
+    element("face-review-show-checked").setAttribute("aria-pressed", String(showChecked));
     element("face-review-clear").disabled = !selected || disabled;
     element("face-review-queue").disabled = !actionable || disabled;
     const review = state.faceReviewResult;
@@ -245,7 +316,9 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
     if (!available.length && !hasMore && !loadError && !loading) {
       const message = document.createElement("p"); message.className = "face-review-empty muted";
-      message.textContent = hidden.size ? "Decided faces are hidden. Use Show hidden to see them." : "No faces remain to review here. Dismissed faces submitted to Pending are hidden from this grid.";
+      message.textContent = hidden.size && !showChecked ? "Decided faces are hidden. Use Show hidden to see them."
+        : !showChecked && faces.some(face => face.reviewed && !face.queued) ? "Checked faces are hidden. Use Show checked to see them."
+          : "No faces remain to review here. Dismissed faces submitted to Pending are hidden from this grid.";
       surface.append(message);
     } else surface.querySelectorAll(".face-review-empty").forEach(node => node.remove());
     updateMountedStates();
@@ -450,7 +523,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   function stageFaces(selected, verdict, clearSelected = false) {
     const person = currentFaceReviewPerson();
     if (!person || !selected.length || busy) return false;
-    if (selected.some(face => hidden.has(face.faceId))) {
+    if (selected.some(face => hidden.has(face.faceId) && !(showChecked && face.reviewed))) {
       showToast("Show hidden selected faces before marking them.");
       return false;
     }
@@ -616,6 +689,19 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   }
   function hideDecided() { if (!busy) enqueueAction({ type: "hide" }); }
   function showHidden() { if (!busy) enqueueAction({ type: "show" }); }
+  function toggleChecked() {
+    showChecked = !showChecked;
+    if (state.faceReviewPersonId) showCheckedByPerson.set(state.faceReviewPersonId, showChecked);
+    if (!showChecked) {
+      for (const face of faces) {
+        if (face.reviewed && statusOf(face) !== "untouched") {
+          state.faceReviewSelected.delete(face.faceId);
+          state.faceReviewSelectedData.delete(face.faceId);
+        }
+      }
+    }
+    hidePhotoPeek(); renderVisible(); maybeLoadMore(); updateControls();
+  }
   function clearSelection() { state.faceReviewSelected.clear(); state.faceReviewSelectedData.clear(); anchorId = null; updateMountedStates(); }
   function setMode(next) {
     mode = next;
@@ -637,6 +723,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     faces = [];
     visibility = visibilityByPerson.get(personId) || { hidden: new Set(), hideDecided: false, decisionsAfterHide: new Set() };
     visibilityByPerson.set(personId, visibility);
+    showChecked = showCheckedByPerson.get(personId) || false;
     hidden = visibility.hidden;
     mounted = new Map(); nextPage = 1; hasMore = true; loadError = false; loading = false; busy = false; anchorId = null; focusedFaceId = null;
     hidePhotoPeek();
@@ -660,6 +747,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       renderVisible(); maybeLoadMore();
     } else if (state.faceReviewPersonId) await selectFaceReviewPerson(state.faceReviewPersonId);
     else { element("face-review-placeholder").hidden = false; element("face-review-content").hidden = true; }
+    scanFaceCounts().catch(error => showToast(`Could not count faces: ${error.message}`));
   }
 
   function bindFaceReviewControls() {
@@ -708,8 +796,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
         showToast(`Could not change people filter: ${error.message}`);
       } finally { button.disabled = false; }
     });
+    element("face-person-scan-retry").addEventListener("click", () => scanFaceCounts(true));
     element("face-review-queue").addEventListener("click", () => stageSelected("wrong"));
     element("face-review-mark").addEventListener("click", () => stageSelected("correct"));
+    element("face-review-show-checked").addEventListener("click", toggleChecked);
     element("face-review-hide").addEventListener("click", hideDecided);
     element("face-review-show").addEventListener("click", showHidden);
     element("face-review-clear").addEventListener("click", clearSelection);
