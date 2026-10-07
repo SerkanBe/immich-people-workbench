@@ -30,6 +30,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   let lightboxMessage = "";
   let previewBubble = null;
   let hideCompletedPeople = false;
+  let nameFilter = "all";
   let peopleLoadRevision = 0;
   let layout = { columns: 1, width: 104, height: 104, stride: 112 };
   const modeKey = "peopleWorkbench.faceReviewMode";
@@ -83,7 +84,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
     if (!state.faceReviewPeople.length) {
       const empty = document.createElement("p"); empty.className = "muted";
-      empty.textContent = hideCompletedPeople ? "No people need review in this view. Show all people or change the search." : "No matching people.";
+      empty.textContent = hideCompletedPeople ? "No people need review with these filters. Show completed people or change the search." : "No people match these filters.";
       ui.facePersonList.append(empty);
     }
     ui.facePersonList.scrollTop = scrollTop;
@@ -92,7 +93,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   async function loadFaceReviewPeople(resetScroll = false) {
     const revision = ++peopleLoadRevision;
     const query = element("face-person-search").value.trim();
-    const data = await api(`/api/people?kind=review&sort=${encodeURIComponent(state.sort)}&page=${state.pages.facePeople}&size=${state.pageSize}&q=${encodeURIComponent(query)}&hideCompleted=${hideCompletedPeople ? "1" : "0"}`);
+    const data = await api(`/api/people?kind=review&sort=${encodeURIComponent(state.sort)}&page=${state.pages.facePeople}&size=${state.pageSize}&q=${encodeURIComponent(query)}&hideCompleted=${hideCompletedPeople ? "1" : "0"}&nameFilter=${nameFilter}`);
     if (revision !== peopleLoadRevision) return;
     state.faceReviewPeople = data.people; state.pages.facePeople = data.page;
     renderFacePersonList(resetScroll);
@@ -662,12 +663,28 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       clearTimeout(searchTimer); state.pages.facePeople = 1;
       searchTimer = setTimeout(() => loadFaceReviewPeople(true).catch(error => showToast(error.message)), 180);
     });
+    element("face-person-name-filter").addEventListener("change", async event => {
+      const previous = nameFilter;
+      nameFilter = event.target.value;
+      state.pages.facePeople = 1;
+      const revision = peopleLoadRevision + 1;
+      event.target.disabled = true;
+      try { await loadFaceReviewPeople(true); }
+      catch (error) {
+        if (revision === peopleLoadRevision) {
+          nameFilter = previous;
+          event.target.value = previous;
+          await loadFaceReviewPeople(true).catch(() => {});
+        }
+        showToast(`Could not change people filter: ${error.message}`);
+      } finally { event.target.disabled = false; }
+    });
     element("face-person-toggle-completed").addEventListener("click", async () => {
       const previous = hideCompletedPeople;
       hideCompletedPeople = !hideCompletedPeople;
       const button = element("face-person-toggle-completed");
       button.classList.toggle("active", hideCompletedPeople);
-      button.textContent = hideCompletedPeople ? "Show all people" : "Hide completed people";
+      button.textContent = hideCompletedPeople ? "Show completed people" : "Hide completed people";
       state.pages.facePeople = 1;
       const revision = peopleLoadRevision + 1;
       button.disabled = true;
@@ -676,7 +693,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
         if (revision === peopleLoadRevision) {
           hideCompletedPeople = previous;
           button.classList.toggle("active", hideCompletedPeople);
-          button.textContent = hideCompletedPeople ? "Show all people" : "Hide completed people";
+          button.textContent = hideCompletedPeople ? "Show completed people" : "Hide completed people";
           await loadFaceReviewPeople(true).catch(() => {});
         }
         showToast(`Could not change people filter: ${error.message}`);

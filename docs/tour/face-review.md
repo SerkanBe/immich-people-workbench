@@ -43,8 +43,10 @@ faces remain green. Dismissed faces leave this person's grid and become
 face-correction requests in Pending, where you can inspect, exclude, or remove
 them. Removing a request returns its face to Face review.
 
-**Hide completed people** keeps finished people out of the sidebar. The open
-person stays visible, and **Show all people** brings finished people back.
+The sidebar's **Show people** filter lets you review named people first, then
+switch to unnamed people. **Hide completed people** keeps finished people out
+of the sidebar. The open person stays visible, and **Show completed people**
+brings finished people back.
 **Reopen review** returns a completed person to the active list while keeping
 their accepted faces and Pending requests. **Finish review** marks them complete
 again once all faces have been handled.

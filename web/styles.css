@@ -231,7 +231,7 @@ body.merge-zen .merge-tray { position: static; height: 100vh; overflow-y: auto; 
 .face-person-panel, .face-review-main { border: 1px solid var(--border); border-radius: 13px; background: var(--surface); }
 .face-person-panel { --panel-top: 92px; position: sticky; top: var(--panel-top); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px; height: calc(100vh - var(--panel-top) - 20px); height: calc(100dvh - var(--panel-top) - 20px); min-height: 0; overflow-y: auto; padding: 13px; }
 .face-person-controls { display: grid; gap: 8px; }
-.face-person-controls input { display: block; width: 100%; margin-top: 4px; }
+.face-person-controls input, .face-person-controls select { display: block; width: 100%; margin-top: 4px; }
 .face-person-controls button { justify-self: start; min-height: 32px; padding: 5px 8px; font-size: .8rem; }
 .face-person-controls button.active { border-color: var(--accent); background: var(--accent-soft); }
 .face-person-list { display: grid; align-content: start; gap: 6px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }

@@ -30,10 +30,12 @@ test("Face review submits directly, then reopens and finishes without changing d
     faceReviewCurrentPerson: person, faceReviewPersonId: person.id, faceReviewPeople: [person],
     faceReviewResult: { draftCount: 1, reviewedCount: 1, reviewTotal: 1, untouchedCount: 0 },
     faceReviewSelected: new Set(), faceReviewSelectedData: new Map(), view: "faces",
+    pages: { facePeople: 3 }, pageSize: 10, sort: "most",
   };
   const calls = [];
   const api = async (path, options) => {
-    calls.push([path, options.body]);
+    calls.push([path, options?.body]);
+    if (path.startsWith("/api/people?")) return { people: [person], page: 1 };
     if (path === "/api/face-review/submit") return {
       submitted: { correct: 1, wrong: 0 }, submittedFaces: [], draftCount: 0,
       reviewedCount: 1, reviewTotal: 1, untouchedCount: 0, personReviewed: true, reviewReopened: false,
@@ -48,6 +50,7 @@ test("Face review submits directly, then reopens and finishes without changing d
     const review = createFaceReview({
       api, state, ui: { facePersonList: node(), faceReviewGrid: node() },
       assetThumb: () => "", personThumb: () => "", refreshSummary: async () => {}, showToast: () => {},
+      renderPagination: () => {},
     });
     review.bindFaceReviewControls();
     const button = document.getElementById("face-review-submit");
@@ -62,6 +65,18 @@ test("Face review submits directly, then reopens and finishes without changing d
     await click();
     assert.deepEqual(calls[2], ["/api/face-review/reopen", { personId: person.id, reopened: false }]);
     assert.equal(button.textContent, "Reopen review");
+
+    document.getElementById("face-person-search").value = "Synthetic";
+    const filter = document.getElementById("face-person-name-filter");
+    filter.value = "named";
+    await filter.listeners.get("change")({ target: filter });
+    assert.match(calls.at(-1)[0], /page=1&size=10&q=Synthetic&hideCompleted=0&nameFilter=named$/);
+    await document.getElementById("face-person-toggle-completed").listeners.get("click")();
+    assert.match(calls.at(-1)[0], /hideCompleted=1&nameFilter=named$/);
+    assert.equal(document.getElementById("face-person-toggle-completed").textContent, "Show completed people");
+    filter.value = "unnamed";
+    await filter.listeners.get("change")({ target: filter });
+    assert.match(calls.at(-1)[0], /hideCompleted=1&nameFilter=unnamed$/);
   } finally {
     Object.assign(globalThis, previous);
   }

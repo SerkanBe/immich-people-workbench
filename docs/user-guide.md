@@ -210,11 +210,15 @@ request brings the face back into Face review. The counts distinguish accepted
 faces, dismissed faces waiting for submission, changes awaiting Sync, and untouched
 faces. New Immich photos reopen a person for review.
 
+Use **Show people** to switch the Face review sidebar between all, named, and
+unnamed people. Named means they already have a name in Immich; a name only
+queued in Pending remains unnamed here. Search and pagination use the selected
+group. Changing filters leaves the person currently open on screen.
 **Hide completed people** removes fully reviewed people from the sidebar until
-you choose **Show all people**. The person currently open stays on screen. Use
-**Reopen review** to put a completed person back into the active list without
-undoing accepted faces or Pending requests. **Finish review** marks that person
-complete again when no faces remain untouched or awaiting submission.
+you choose **Show completed people**. **Reopen review** returns a completed
+person to the active list while keeping accepted faces and Pending requests.
+**Finish review** marks that person complete again when no faces remain
+untouched or awaiting submission.
 
 **Hide decided** (`F`) hides green and red faces, including already decided
 faces loaded on later pages. It does not hide a face when you mark it after

@@ -303,6 +303,20 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertEqual(unnamed["page"], 2)
             self.assertEqual(len(unnamed["people"]), 4)
 
+            named_review = app.people_page("review", "most", 2, 4, name_filter="named")
+            unnamed_review = app.people_page("review", "most", 2, 4, name_filter="unnamed")
+            self.assertEqual((named_review["total"], unnamed_review["total"]), (15, 15))
+            self.assertEqual((len(named_review["people"]), len(unnamed_review["people"])), (4, 4))
+            self.assertTrue(all(person["name"] for person in named_review["people"]))
+            self.assertTrue(all(not person["name"] for person in unnamed_review["people"]))
+            self.assertEqual(app.people_page("review", "most", 1, 5, "Person 1", name_filter="unnamed")["total"], 0)
+            app.store.set_face_reviewed("face-1", "1", True)
+            filtered = app.people_page("review", "most", 1, 5, hide_completed=True, name_filter="named")
+            self.assertEqual(filtered["total"], 14)
+            self.assertNotIn("1", {person["id"] for person in filtered["people"]})
+            with self.assertRaisesRegex(ToolError, "name filter"):
+                app.people_page("review", "most", 1, 5, name_filter="invalid")
+
     def test_review_page_hides_only_completed_people_before_pagination(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.sqlite3")
