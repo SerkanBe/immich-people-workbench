@@ -576,6 +576,70 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertTrue(reviewed_person["reviewed"])
             self.assertEqual(reviewed_person["reviewedCount"], 2)
 
+    def test_reopened_review_survives_restart_and_keeps_submitted_decisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "state.sqlite3"
+            store = Store(path)
+            app = AppState(store, root / "reports")
+            fake = FakeImmich()
+            app.client = fake
+            app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
+            person_id = fake.rows[0]["id"]
+            accepted = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            dismissed = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            app.set_face_review_drafts({"personId": person_id, "items": [
+                {"faceId": accepted, "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "fileName": "a.jpg", "verdict": "correct"},
+                {"faceId": dismissed, "assetId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "fileName": "b.jpg", "verdict": "wrong"},
+            ]})
+            submitted = app.submit_face_review({"personId": person_id})
+            self.assertTrue(submitted["personReviewed"])
+            self.assertTrue(next(p for p in app.list_people("review", "most") if p["id"] == person_id)["reviewed"])
+            self.assertNotIn(person_id, {p["id"] for p in app.people_page("review", "most", 1, 20, hide_completed=True)["people"]})
+
+            reopened = app.set_review_reopened({"personId": person_id, "reopened": True})
+            self.assertTrue(reopened["reviewReopened"])
+            self.assertFalse(reopened["personReviewed"])
+            self.assertFalse(next(p for p in app.list_people("review", "most") if p["id"] == person_id)["reviewed"])
+            self.assertIn(person_id, {p["id"] for p in app.people_page("review", "most", 1, 20, hide_completed=True)["people"]})
+            restarted = Store(path)
+            self.assertEqual(restarted.reopened_review_ids(), {person_id})
+            self.assertEqual(restarted.reviewed_face_ids(person_id), {accepted})
+            self.assertEqual([row["face_id"] for row in restarted.face_detaches()], [dismissed])
+
+            finished = app.set_review_reopened({"personId": person_id, "reopened": False})
+            self.assertTrue(finished["personReviewed"])
+            self.assertNotIn(person_id, {p["id"] for p in app.people_page("review", "most", 1, 20, hide_completed=True)["people"]})
+            self.assertFalse(restarted.reopened_review_ids())
+            self.assertEqual(fake.calls, [])
+
+    def test_reopened_review_requires_completion_and_submission_clears_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = Store(root / "state.sqlite3")
+            app = AppState(store, root / "reports")
+            fake = FakeImmich()
+            app.client = fake
+            app.people = {row["id"]: dict(row, assetCount=2) for row in fake.rows}
+            person_id = fake.rows[0]["id"]
+            first = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            second = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+            with self.assertRaisesRegex(ToolError, "completed"):
+                app.set_review_reopened({"personId": person_id, "reopened": True})
+            app.set_face_reviewed({"personId": person_id, "faceId": first, "reviewed": True})
+            app.set_face_reviewed({"personId": person_id, "faceId": second, "reviewed": True})
+            app.set_review_reopened({"personId": person_id, "reopened": True})
+            app.set_face_review_drafts({"personId": person_id, "items": [{
+                "faceId": first, "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "fileName": "a.jpg", "verdict": "unreviewed",
+            }]})
+            with self.assertRaisesRegex(ToolError, "remaining faces"):
+                app.set_review_reopened({"personId": person_id, "reopened": False})
+            app.submit_face_review({"personId": person_id})
+            self.assertFalse(store.reopened_review_ids())
+            self.assertFalse(app.face_review_progress(person_id, app.people[person_id])["personReviewed"])
+            self.assertEqual(store.reviewed_face_ids(person_id), {second})
+            self.assertEqual(fake.calls, [])
+
     def test_bulk_review_saves_locally_and_rejects_invalid_batches(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

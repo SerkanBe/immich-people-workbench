@@ -325,6 +325,10 @@ class Store:
                     updated_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS face_review_drafts_person_idx ON face_review_drafts(person_id);
+                CREATE TABLE IF NOT EXISTS face_review_reopened (
+                    person_id TEXT PRIMARY KEY,
+                    reopened_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -461,6 +465,22 @@ class Store:
                 ).fetchall()
         return [dict(row) for row in rows]
 
+    def reopened_review_ids(self) -> set[str]:
+        with self.connect() as db:
+            rows = db.execute("SELECT person_id FROM face_review_reopened").fetchall()
+        return {row["person_id"] for row in rows}
+
+    def set_review_reopened(self, person_id: str, reopened: bool) -> None:
+        with self.connect() as db:
+            if reopened:
+                db.execute(
+                    "INSERT INTO face_review_reopened(person_id,reopened_at) VALUES(?,?) "
+                    "ON CONFLICT(person_id) DO UPDATE SET reopened_at=excluded.reopened_at",
+                    (person_id, now()),
+                )
+            else:
+                db.execute("DELETE FROM face_review_reopened WHERE person_id=?", (person_id,))
+
     def set_face_review_drafts(self, person_id: str, items: list[dict[str, str]]) -> None:
         stamp = now()
         with self.connect() as db:
@@ -511,6 +531,7 @@ class Store:
                         (row["face_id"], person_id, row["asset_id"], row["file_name"], stamp, stamp),
                     )
             db.execute("DELETE FROM face_review_drafts WHERE person_id=?", (person_id,))
+            db.execute("DELETE FROM face_review_reopened WHERE person_id=?", (person_id,))
         return counts
 
     def set_face_detach_included(self, face_id: str, included: bool) -> None:
@@ -752,13 +773,15 @@ class AppState:
         if kind == "review":
             review_counts = self.store.face_review_counts()
             draft_counts = self.store.face_review_draft_counts()
+            reopened_ids = self.store.reopened_review_ids()
             pending_by_id = {item["person_id"]: item for item in pending}
             for person in people:
                 total = max(0, int(person.get("assetCount") or 0))
                 reviewed = min(total, review_counts.get(person["id"], 0)) if total else 0
                 person["reviewedCount"] = reviewed
                 person["reviewTotal"] = total
-                person["reviewed"] = total > 0 and reviewed >= total and not draft_counts.get(person["id"])
+                person["reviewReopened"] = person["id"] in reopened_ids
+                person["reviewed"] = total > 0 and reviewed >= total and not draft_counts.get(person["id"]) and not person["reviewReopened"]
                 person["draftCount"] = draft_counts.get(person["id"], 0)
                 queued = pending_by_id.get(person["id"])
                 if queued:
@@ -995,13 +1018,33 @@ class AppState:
         correct = (self.store.reviewed_face_ids(person_id) | draft_correct) - draft_wrong - draft_unreviewed - queued
         handled = correct | draft_wrong | queued
         count = min(total, len(handled)) if total else 0
+        reopened = person_id in self.store.reopened_review_ids()
         return {
             "reviewedCount": count, "reviewTotal": total,
             "correctCount": len(correct), "wrongDraftCount": len(draft_wrong),
             "queuedFaceCount": len(queued), "draftCount": len(drafts),
             "untouchedCount": max(0, total - len(handled)),
-            "personReviewed": total > 0 and count >= total and not drafts,
+            "personReviewed": total > 0 and count >= total and not drafts and not reopened,
+            "reviewReopened": reopened,
         }
+
+    def set_review_reopened(self, payload: dict[str, Any]) -> dict[str, Any]:
+        person_id = str(payload.get("personId", ""))
+        reopened = payload.get("reopened")
+        if not UUID_RE.fullmatch(person_id) or not isinstance(reopened, bool):
+            raise ToolError("Invalid review state")
+        with self.lock:
+            person = self.people.get(person_id)
+        if not person or person.get("isHidden"):
+            raise ToolError("Person is no longer available for face review")
+        progress = self.face_review_progress(person_id, person)
+        if reopened:
+            if not progress["personReviewed"]:
+                raise ToolError("Only a completed review can be reopened")
+        elif not progress["reviewReopened"] or progress["untouchedCount"] or progress["draftCount"]:
+            raise ToolError("Review the remaining faces and submit decisions before finishing")
+        self.store.set_review_reopened(person_id, reopened)
+        return self.face_review_progress(person_id, person)
 
     def set_face_review_drafts(self, payload: dict[str, Any]) -> dict[str, Any]:
         person_id = str(payload.get("personId", ""))
@@ -1624,6 +1667,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, **STATE.set_face_review_drafts(payload)})
             elif path == "/api/face-review/submit":
                 self.send_json({"ok": True, **STATE.submit_face_review(payload)})
+            elif path == "/api/face-review/reopen":
+                self.send_json({"ok": True, **STATE.set_review_reopened(payload)})
             elif path == "/api/face-detach/include":
                 face_id = str(payload.get("faceId", ""))
                 if not UUID_RE.fullmatch(face_id):

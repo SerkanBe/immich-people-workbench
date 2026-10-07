@@ -9,5 +9,5 @@ and tests use synthetic data.
 python3 -m unittest discover -s tests -p 'test_people_workbench.py' -v
 ```
 
-With Node.js installed, check the photo-preview rectangle calculations and
-controls with `node --test tests/test_asset_preview.mjs`.
+With Node.js installed, run the synthetic browser interaction tests with
+`node --test tests/*.mjs`. Check changed browser modules with `node --check`.

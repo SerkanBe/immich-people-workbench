@@ -199,9 +199,8 @@ same actions apply to the selected faces when a selection exists; selection has
 a blue outline. Rapid key presses are saved in order, even if you choose another
 person before saving finishes. Pending Sync waits for local decisions to finish
 saving. These decisions are drafts saved in local SQLite; once saving finishes,
-you can reload without losing them. They do
-not change Immich or enter Pending until **Review & submit** opens the batch
-summary and you choose **Submit review**.
+you can reload without losing them. They do not change Immich or enter Pending
+until you choose **Submit review**. Submission takes one click.
 
 Submission saves accepted faces as locally reviewed and adds each dismissed face's
 reassignment to Pending. Dismissed faces then leave this person's Face review grid;
@@ -210,6 +209,12 @@ the *change request*, where you can preview, exclude, or remove it. Removing the
 request brings the face back into Face review. The counts distinguish accepted
 faces, dismissed faces waiting for submission, changes awaiting Sync, and untouched
 faces. New Immich photos reopen a person for review.
+
+**Hide completed people** removes fully reviewed people from the sidebar until
+you choose **Show all people**. The person currently open stays on screen. Use
+**Reopen review** to put a completed person back into the active list without
+undoing accepted faces or Pending requests. **Finish review** marks that person
+complete again when no faces remain untouched or awaiting submission.
 
 **Hide decided** (`F`) hides green and red faces, including already decided
 faces loaded on later pages. It does not hide a face when you mark it after

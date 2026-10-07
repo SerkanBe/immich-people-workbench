@@ -38,10 +38,16 @@ including ones loaded on later pages. Marking another face leaves it visible
 until you press `F` again, giving you a chance to correct a mistake.
 **Show hidden** (`Shift+F`) brings them back.
 
-Choose **Submit review** to confirm the marked faces. Accepted faces remain
-green. Dismissed faces leave this person's grid and become face-correction requests
-in Pending, where you can inspect, exclude, or remove them. Removing a request
-returns its face to Face review.
+Choose **Submit review** to save the marked faces with one click. Accepted
+faces remain green. Dismissed faces leave this person's grid and become
+face-correction requests in Pending, where you can inspect, exclude, or remove
+them. Removing a request returns its face to Face review.
+
+**Hide completed people** keeps finished people out of the sidebar. The open
+person stays visible, and **Show all people** brings finished people back.
+**Reopen review** returns a completed person to the active list while keeping
+their accepted faces and Pending requests. **Finish review** marks them complete
+again once all faces have been handled.
 
 ![Face review after Submit, with a dismissed face awaiting Sync](../images/visual-tour/face-review-submitted.png)
 

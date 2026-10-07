@@ -69,7 +69,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       const name = document.createElement("strong"); name.textContent = person.name || "Unnamed person";
       const count = document.createElement("small");
       const total = person.reviewTotal ?? person.assetCount ?? 0;
-      count.textContent = person.reviewed ? `✓ Review complete · ${person.assetCount ?? "?"} photos` : `${person.reviewedCount || 0}/${total} checked${person.draftCount ? ` · ${person.draftCount} to submit` : ""}`;
+      count.textContent = person.reviewed ? `✓ Review complete · ${person.assetCount ?? "?"} photos` : `${person.reviewedCount || 0}/${total} checked${person.draftCount ? ` · ${person.draftCount} to submit` : person.reviewReopened ? " · reopened" : ""}`;
       button.classList.toggle("reviewed", Boolean(person.reviewed));
       text.append(name, count);
       if (person.pendingOperation) {
@@ -111,11 +111,13 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     person.reviewedCount = result.reviewedCount || 0;
     person.reviewTotal = result.reviewTotal ?? person.assetCount ?? result.totalAssets ?? 0;
     person.reviewed = Boolean(result.personReviewed);
+    person.reviewReopened = Boolean(result.reviewReopened);
     person.draftCount = result.draftCount || 0;
     const pagePerson = state.faceReviewPeople.find(item => item.id === person.id);
-    if (pagePerson && pagePerson !== person) Object.assign(pagePerson, { reviewedCount: person.reviewedCount, reviewTotal: person.reviewTotal, reviewed: person.reviewed, draftCount: person.draftCount });
+    if (pagePerson && pagePerson !== person) Object.assign(pagePerson, { reviewedCount: person.reviewedCount, reviewTotal: person.reviewTotal, reviewed: person.reviewed, reviewReopened: person.reviewReopened, draftCount: person.draftCount });
     const pending = person.pendingOperation ? ` · Pending ${person.pendingOperation}${person.pendingName ? ` → ${person.pendingName}` : ""}` : "";
-    element("face-review-meta").textContent = `${result.correctCount || 0} accepted · ${result.wrongDraftCount || 0} dismissed to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${result.untouchedCount ?? "?"} untouched${pending}`;
+    const reopened = person.reviewReopened ? " · Review reopened" : "";
+    element("face-review-meta").textContent = `${result.correctCount || 0} accepted · ${result.wrongDraftCount || 0} dismissed to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${result.untouchedCount ?? "?"} untouched${reopened}${pending}`;
     element("face-review-content").classList.toggle("person-reviewed", person.reviewed);
     renderFacePersonList();
   }
@@ -131,8 +133,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     element("face-review-show-label").textContent = hidden.size ? `Show hidden (${hidden.size})` : "Show hidden";
     element("face-review-clear").disabled = !selected || disabled;
     element("face-review-queue").disabled = !actionable || disabled;
-    element("face-review-submit").disabled = disabled || draftSaving || actionQueue.length > 0 || !(state.faceReviewResult?.draftCount > 0);
-    element("face-review-submit").textContent = draftSaving ? "Saving decisions…" : state.faceReviewResult?.draftCount ? `Review & submit (${state.faceReviewResult.draftCount})` : "Review & submit";
+    const review = state.faceReviewResult;
+    const canFinish = review?.reviewReopened && !review?.untouchedCount;
+    element("face-review-submit").disabled = disabled || draftSaving || actionQueue.length > 0 || !(review?.draftCount || review?.personReviewed || canFinish);
+    element("face-review-submit").textContent = draftSaving ? "Saving decisions…" : review?.draftCount ? `Submit review (${review.draftCount})` : review?.personReviewed ? "Reopen review" : canFinish ? "Finish review" : "Submit review";
     element("face-review-compact").setAttribute("aria-pressed", String(mode === "compact"));
     element("face-review-detail").setAttribute("aria-pressed", String(mode === "detail"));
     ui.faceReviewGrid.classList.toggle("compact", mode === "compact");
@@ -566,6 +570,24 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     }
   }
 
+  async function toggleReviewReopened() {
+    const person = currentFaceReviewPerson();
+    const review = state.faceReviewResult;
+    if (!person || !review || busy || draftSaving || actionQueue.length || review.draftCount || !(review.personReviewed || review.reviewReopened && !review.untouchedCount)) return;
+    const requestGeneration = generation;
+    busy = true; updateControls();
+    try {
+      const result = await api("/api/face-review/reopen", { method: "POST", body: { personId: person.id, reopened: Boolean(review.personReviewed) } });
+      if (requestGeneration !== generation) return;
+      applyProgress(result);
+      if (hideCompletedPeople) await loadFaceReviewPeople().catch(error => showToast(`Could not refresh people: ${error.message}`));
+    } catch (error) {
+      if (requestGeneration === generation) showToast(`Could not change review state: ${error.message}`);
+    } finally {
+      if (requestGeneration === generation) { busy = false; updateControls(); }
+    }
+  }
+
   function hideDecidedNow() {
     const available = visibleFaces();
     const focusIndex = available.findIndex(face => face.faceId === focusedFaceId);
@@ -668,12 +690,9 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     element("face-review-compact").addEventListener("click", () => setMode("compact"));
     element("face-review-detail").addEventListener("click", () => setMode("detail"));
     element("face-review-submit").addEventListener("click", () => {
-      const result = state.faceReviewResult;
-      element("face-review-submit-summary").textContent = `${result?.draftCount || 0} decisions: ${result?.wrongDraftCount || 0} dismissed faces will leave this review grid and enter Pending; accepted faces will be saved locally. Immich changes only after you review Pending and explicitly Sync.`;
-      element("face-review-submit-dialog").showModal();
+      if (state.faceReviewResult?.draftCount) submitReview();
+      else toggleReviewReopened();
     });
-    element("face-review-cancel-submit").addEventListener("click", () => element("face-review-submit-dialog").close());
-    element("face-review-confirm-submit").addEventListener("click", async () => { element("face-review-submit-dialog").close(); await submitReview(); });
     element("face-review-help").addEventListener("click", toggleShortcuts);
     element("asset-preview-accept").addEventListener("click", () => decideLightbox("correct"));
     element("asset-preview-dismiss").addEventListener("click", () => decideLightbox("wrong"));
