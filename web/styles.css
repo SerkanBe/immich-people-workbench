@@ -241,7 +241,7 @@ body.merge-zen .merge-tray { position: static; height: 100vh; overflow-y: auto; 
 .face-person-drawer { min-height: 0; max-height: 0; overflow: hidden; opacity: 0; visibility: hidden; transition: max-height .18s ease, opacity .18s ease, visibility 0s linear .18s; }
 .face-person-drawer.open { max-height: 280px; opacity: 1; visibility: visible; transition: max-height .18s ease, opacity .18s ease; }
 .face-person-drawer-inner { margin: 7px 0 2px; }
-.face-person-search-row { display: flex; gap: 6px; }
+.face-person-search-row { display: flex; gap: 6px; padding: 6px; }
 .face-person-search-row input { flex: 1; min-width: 0; }
 .face-person-clear { min-width: 42px; padding: 4px; border: 1px solid var(--border); border-radius: 8px; color: var(--text); background: var(--surface-2); font-size: 1.2rem; }
 .face-person-options { min-width: 0; padding: 5px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); }
