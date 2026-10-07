@@ -6,7 +6,7 @@ export function showFaceInReview(face, showChecked, hidden, draft) {
     && (showChecked || !face.reviewed || draft && draft !== "clear"));
 }
 
-export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui }) {
+export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui }) {
   const pageSize = 60;
   let gap = 8;
   let faces = [];
@@ -38,6 +38,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   let previewBubble = null;
   let hideCompletedPeople = false;
   let nameFilter = "all";
+  let openPeopleControl = null;
   let peopleLoadRevision = 0;
   let scanRunning = false;
   let scanRestartRequested = false;
@@ -49,6 +50,47 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
 
   const element = id => document.getElementById(id);
   const currentFaceReviewPerson = () => state.faceReviewCurrentPerson;
+  const sortLabels = { most: "Most photos first", fewest: "Fewest photos first", "updated-newest": "Recently updated", "updated-oldest": "Least recently updated", random: "Random" };
+
+  function updatePeopleControlState() {
+    const query = element("face-person-search").value.trim();
+    const search = element("face-person-search-toggle");
+    search.classList.toggle("active", Boolean(query) || openPeopleControl === "search");
+    search.title = query ? "Search people (query active)" : "Search people";
+    search.setAttribute("aria-label", search.title);
+    element("face-person-search-clear").disabled = !query;
+    const filter = element("face-person-filter-toggle");
+    filter.classList.toggle("active", nameFilter !== "all" || openPeopleControl === "filter");
+    filter.title = `Filter people by name: ${nameFilter === "all" ? "All people" : nameFilter === "named" ? "Named people" : "Unnamed people"}`;
+    filter.setAttribute("aria-label", filter.title);
+    for (const value of ["all", "named", "unnamed"]) element(`face-person-name-${value}`).checked = value === nameFilter;
+    const sort = element("face-person-sort-toggle");
+    sort.classList.toggle("active", state.sort !== "most" || openPeopleControl === "sort");
+    sort.title = `Order people: ${sortLabels[state.sort] || sortLabels.most}`;
+    sort.setAttribute("aria-label", sort.title);
+    for (const value of Object.keys(sortLabels)) element(`face-person-sort-${value}`).checked = value === state.sort;
+    const completed = element("face-person-toggle-completed");
+    completed.classList.toggle("active", hideCompletedPeople);
+    completed.setAttribute("aria-pressed", String(hideCompletedPeople));
+    completed.title = hideCompletedPeople ? "Show completed people" : "Hide completed people";
+    completed.setAttribute("aria-label", "Hide completed people");
+  }
+
+  function setOpenPeopleControl(name) {
+    openPeopleControl = name;
+    for (const control of ["search", "filter", "sort"]) {
+      const open = control === name;
+      const drawer = element(`face-person-${control}-drawer`);
+      drawer.classList.toggle("open", open);
+      drawer.inert = !open;
+      drawer.setAttribute("aria-hidden", String(!open));
+      element(`face-person-${control}-toggle`).setAttribute("aria-expanded", String(open));
+    }
+    updatePeopleControlState();
+    if (name === "search") element("face-person-search").focus();
+    else if (name === "filter") element(`face-person-name-${nameFilter}`).focus();
+    else if (name === "sort") element(`face-person-sort-${sortLabels[state.sort] ? state.sort : "most"}`).focus();
+  }
   const statusOf = face => {
     const staged = stagedVerdicts.get(face.faceId);
     const draft = staged?.generation === generation ? staged.verdict === "clear" ? null : staged.verdict : face.draftVerdict;
@@ -742,6 +784,7 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
   }
 
   async function renderFaceReview() {
+    updatePeopleControlState();
     await loadFaceReviewPeople();
     if (state.faceReviewNeedsRefresh) {
       state.faceReviewNeedsRefresh = false;
@@ -760,32 +803,66 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       if (!state.faceReviewSaving) return;
       event.preventDefault(); event.returnValue = "";
     });
-    element("face-person-search").addEventListener("input", () => {
+    for (const control of ["search", "filter", "sort"]) {
+      element(`face-person-${control}-toggle`).addEventListener("click", () => {
+        setOpenPeopleControl(openPeopleControl === control ? null : control);
+      });
+    }
+    document.addEventListener("pointerdown", event => {
+      if (openPeopleControl && !element("face-person-controls").contains(event.target)) setOpenPeopleControl(null);
+    });
+    window.addEventListener("keydown", event => {
+      if (state.view !== "faces" || event.key !== "Escape" || !openPeopleControl || event.target.closest("dialog")) return;
+      const control = openPeopleControl;
+      event.preventDefault(); element(`face-person-${control}-toggle`).focus();
+      setOpenPeopleControl(null);
+    });
+    const search = element("face-person-search");
+    const scheduleSearch = () => {
+      updatePeopleControlState();
       clearTimeout(searchTimer); state.pages.facePeople = 1;
       searchTimer = setTimeout(() => loadFaceReviewPeople(true).catch(error => showToast(error.message)), 180);
+    };
+    search.addEventListener("input", scheduleSearch);
+    element("face-person-search-clear").addEventListener("click", () => {
+      if (!search.value) return;
+      search.value = ""; scheduleSearch(); search.focus();
     });
     element("face-person-name-filter").addEventListener("change", async event => {
+      if (!["all", "named", "unnamed"].includes(event.target.value)) return;
       const previous = nameFilter;
       nameFilter = event.target.value;
+      updatePeopleControlState();
+      element("face-person-filter-toggle").focus();
+      setOpenPeopleControl(null);
       state.pages.facePeople = 1;
       const revision = peopleLoadRevision + 1;
-      event.target.disabled = true;
+      const fieldset = element("face-person-name-filter");
+      fieldset.disabled = true;
       try { await loadFaceReviewPeople(true); }
       catch (error) {
         if (revision === peopleLoadRevision) {
           nameFilter = previous;
-          event.target.value = previous;
+          updatePeopleControlState();
           await loadFaceReviewPeople(true).catch(() => {});
         }
         showToast(`Could not change people filter: ${error.message}`);
-      } finally { event.target.disabled = false; }
+      } finally { fieldset.disabled = false; }
+    });
+    element("face-person-sort-options").addEventListener("change", async event => {
+      if (!Object.hasOwn(sortLabels, event.target.value)) return;
+      element("face-person-sort-toggle").focus();
+      setOpenPeopleControl(null);
+      try { await changePeopleSort(event.target.value); }
+      catch (error) { showToast(`Could not change people order: ${error.message}`); }
+      updatePeopleControlState();
     });
     element("face-person-toggle-completed").addEventListener("click", async () => {
       const previous = hideCompletedPeople;
       hideCompletedPeople = !hideCompletedPeople;
       const button = element("face-person-toggle-completed");
-      button.classList.toggle("active", hideCompletedPeople);
-      button.textContent = hideCompletedPeople ? "Show completed people" : "Hide completed people";
+      setOpenPeopleControl(null);
+      updatePeopleControlState();
       state.pages.facePeople = 1;
       const revision = peopleLoadRevision + 1;
       button.disabled = true;
@@ -793,13 +870,13 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       catch (error) {
         if (revision === peopleLoadRevision) {
           hideCompletedPeople = previous;
-          button.classList.toggle("active", hideCompletedPeople);
-          button.textContent = hideCompletedPeople ? "Show completed people" : "Hide completed people";
+          updatePeopleControlState();
           await loadFaceReviewPeople(true).catch(() => {});
         }
         showToast(`Could not change people filter: ${error.message}`);
       } finally { button.disabled = false; }
     });
+    setOpenPeopleControl(null);
     element("face-person-scan-retry").addEventListener("click", () => scanFaceCounts(true));
     element("face-review-queue").addEventListener("click", () => stageSelected("wrong"));
     element("face-review-mark").addEventListener("click", () => stageSelected("correct"));

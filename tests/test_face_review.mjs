@@ -10,6 +10,7 @@ const { createFaceReview, showFaceInReview } = await import(`data:text/javascrip
 function node() {
   const listeners = new Map();
   const classes = new Set();
+  const attributes = new Map();
   return {
     listeners, children: [], value: "", dataset: {}, style: {}, scrollTop: 0, clientHeight: 600, clientWidth: 600, offsetHeight: 600,
     classList: {
@@ -38,7 +39,11 @@ function node() {
     },
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
     addEventListener: (event, handler) => listeners.set(event, handler),
-    setAttribute() {}, removeAttribute() {}, focus() {}, closest: () => null,
+    setAttribute: (name, value) => attributes.set(name, String(value)),
+    getAttribute: name => attributes.get(name) ?? null,
+    removeAttribute: name => attributes.delete(name),
+    focus() { globalThis.document.activeElement = this; }, closest: () => null,
+    contains(target) { for (let current = target; current; current = current.parent) if (current === this) return true; return false; },
     showModal() { this.open = true; },
     close() { this.open = false; this.listeners.get("close")?.(); },
   };
@@ -114,6 +119,79 @@ test("Face review sidebar shows photo counts before face inventory is complete",
       ["4 photos", "2 faces checked so far"],
       ["1 photo", "1/2 faces checked"],
     ]);
+  } finally {
+    Object.assign(globalThis, previous);
+  }
+});
+
+test("Face review icon controls keep search, name, order, and completion independent", async () => {
+  const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };
+  const elements = new Map(), documentListeners = new Map(), windowListeners = new Map();
+  globalThis.document = {
+    getElementById: id => { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
+    createElement: () => node(),
+    addEventListener: (event, handler) => documentListeners.set(event, handler),
+  };
+  globalThis.window = { addEventListener: (event, handler) => windowListeners.set(event, [...(windowListeners.get(event) || []), handler]) };
+  globalThis.localStorage = { getItem: () => null };
+  const state = { view: "faces", pages: { facePeople: 3 }, pageSize: 10, sort: "most", faceReviewPeople: [] };
+  const paths = [];
+  let review;
+  try {
+    review = createFaceReview({
+      api: async path => { paths.push(path); return { people: [], page: 1 }; },
+      changePeopleSort: async value => { state.sort = value; state.pages.facePeople = 1; await review.loadFaceReviewPeople(); },
+      state, ui: { facePersonList: node(), faceReviewGrid: node() },
+      assetThumb: () => "", personThumb: () => "", refreshSummary: async () => {}, showToast: () => {},
+      renderPagination: () => {},
+    });
+    review.bindFaceReviewControls();
+    const get = id => document.getElementById(id);
+    get("face-person-search-toggle").listeners.get("click")();
+    assert.equal(get("face-person-search-drawer").classList.contains("open"), true);
+    assert.equal(get("face-person-search-toggle").getAttribute("aria-expanded"), "true");
+    assert.equal(document.activeElement, get("face-person-search"));
+    get("face-person-search").value = "Synthetic";
+    get("face-person-search").listeners.get("input")();
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.match(paths.at(-1), /page=1&size=10&q=Synthetic&hideCompleted=0&nameFilter=all$/);
+    get("face-person-search-toggle").listeners.get("click")();
+    assert.equal(get("face-person-search").value, "Synthetic");
+    assert.equal(get("face-person-search-toggle").classList.contains("active"), true);
+
+    get("face-person-filter-toggle").listeners.get("click")();
+    assert.equal(get("face-person-filter-drawer").classList.contains("open"), true);
+    await get("face-person-name-filter").listeners.get("change")({
+      target: Object.assign(get("face-person-name-named"), { value: "named" }),
+    });
+    assert.match(paths.at(-1), /hideCompleted=0&nameFilter=named$/);
+    assert.equal(get("face-person-filter-toggle").classList.contains("active"), true);
+
+    get("face-person-sort-toggle").listeners.get("click")();
+    await get("face-person-sort-options").listeners.get("change")({
+      target: Object.assign(get("face-person-sort-fewest"), { value: "fewest" }),
+    });
+    assert.match(paths.at(-1), /sort=fewest.*hideCompleted=0&nameFilter=named$/);
+    assert.equal(get("face-person-sort-toggle").classList.contains("active"), true);
+    await get("face-person-toggle-completed").listeners.get("click")();
+    assert.match(paths.at(-1), /sort=fewest.*q=Synthetic&hideCompleted=1&nameFilter=named$/);
+    assert.equal(get("face-person-toggle-completed").getAttribute("aria-pressed"), "true");
+
+    get("face-person-filter-toggle").listeners.get("click")();
+    let prevented = false;
+    for (const handler of windowListeners.get("keydown")) handler({ key: "Escape", target: node(), preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(get("face-person-filter-drawer").classList.contains("open"), false);
+    assert.equal(document.activeElement, get("face-person-filter-toggle"));
+    get("face-person-sort-toggle").listeners.get("click")();
+    documentListeners.get("pointerdown")({ target: node() });
+    assert.equal(get("face-person-sort-drawer").classList.contains("open"), false);
+    get("face-person-search-toggle").listeners.get("click")();
+    get("face-person-search-clear").listeners.get("click")();
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.match(paths.at(-1), /sort=fewest.*q=&hideCompleted=1&nameFilter=named$/);
+    get("face-person-search-toggle").listeners.get("click")();
+    assert.equal(get("face-person-search-toggle").classList.contains("active"), false);
   } finally {
     Object.assign(globalThis, previous);
   }
@@ -280,15 +358,14 @@ test("Face review submits directly, then reopens and finishes without changing d
 
     document.getElementById("face-person-search").value = "Synthetic";
     const filter = document.getElementById("face-person-name-filter");
-    filter.value = "named";
-    await filter.listeners.get("change")({ target: filter });
+    await filter.listeners.get("change")({ target: Object.assign(document.getElementById("face-person-name-named"), { value: "named" }) });
     assert.match(calls.at(-1)[0], /page=1&size=10&q=Synthetic&hideCompleted=0&nameFilter=named$/);
     await document.getElementById("face-person-toggle-completed").listeners.get("click")();
     assert.match(calls.at(-1)[0], /hideCompleted=1&nameFilter=named$/);
-    assert.equal(document.getElementById("face-person-toggle-completed").textContent, "Show completed people");
-    filter.value = "unnamed";
-    await filter.listeners.get("change")({ target: filter });
+    assert.equal(document.getElementById("face-person-toggle-completed").title, "Show completed people");
+    await filter.listeners.get("change")({ target: Object.assign(document.getElementById("face-person-name-unnamed"), { value: "unnamed" }) });
     assert.match(calls.at(-1)[0], /hideCompleted=1&nameFilter=unnamed$/);
+    assert.equal(state.faceReviewPersonId, person.id);
   } finally {
     Object.assign(globalThis, previous);
   }

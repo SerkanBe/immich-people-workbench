@@ -111,11 +111,25 @@ function resetListPages() {
   state.faceReviewPage = 1;
 }
 
+function syncPeopleSortControls() {
+  document.querySelectorAll("select[data-people-sort]").forEach(select => { select.value = state.sort; });
+  for (const value of ["most", "fewest", "updated-newest", "updated-oldest", "random"]) {
+    document.querySelector(`#face-person-sort-${value}`).checked = value === state.sort;
+  }
+}
+
+async function changePeopleSort(value) {
+  state.sort = value;
+  syncPeopleSortControls();
+  resetListPages();
+  await renderCurrentView(true, false);
+}
+
 async function refreshSummary() {
   const summary = await api("/api/state");
   state.summary = summary;
   state.sort = summary.sort || state.sort;
-  document.querySelectorAll("[data-people-sort]").forEach(select => { select.value = state.sort; });
+  syncPeopleSortControls();
   document.querySelector("#connection-status").textContent = summary.connected ? `Immich ${summary.version} · local queue enabled` : "Not connected";
   document.querySelector("#reload-button").hidden = !summary.connected;
   for (const key of ["unnamed", "investigate", "faces", "pending", "named", "ignored"]) {
@@ -189,7 +203,7 @@ const openAssetPreview = createAssetPreview({ assetThumb });
 
 const { renderInvestigate, bindInvestigateControls } = createInvestigate({ api, assetThumb, attachNameBehavior, moveSlide, openAssetPreview, personThumb, refreshSummary, renderPagination, showSlide, showToast, state, ui });
 
-const { renderFaceReview, bindFaceReviewControls } = createFaceReview({ api, assetThumb, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui });
+const { renderFaceReview, bindFaceReviewControls } = createFaceReview({ api, assetThumb, changePeopleSort, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui });
 
 const { renderPending, bindPendingControls } = createPending({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui, waitUntilReady });
 
@@ -226,11 +240,8 @@ document.querySelector("#logout-button").addEventListener("click", async () => {
 document.querySelector("#page-size-select").addEventListener("change", event => {
   state.pageSize = Number(event.target.value) || 24; savePageSize(state.pageSize, showToast); resetListPages(); renderCurrentView(true).catch(error => showToast(error.message));
 });
-document.querySelectorAll("[data-people-sort]").forEach(select => select.addEventListener("change", event => {
-  state.sort = event.target.value;
-  document.querySelectorAll("[data-people-sort]").forEach(other => { other.value = state.sort; });
-  resetListPages();
-  renderCurrentView(true, false).catch(error => showToast(error.message));
+document.querySelectorAll("select[data-people-sort]").forEach(select => select.addEventListener("change", event => {
+  changePeopleSort(event.target.value).catch(error => showToast(error.message));
 }));
 initializeMergeCanvas();
 bindMergeControls();
