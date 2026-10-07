@@ -51,6 +51,7 @@ test("preview shows a mismatched box and resets its rotation for the next photo"
         toggle: (name, force) => { if (force ?? !classes.has(name)) classes.add(name); else classes.delete(name); },
       },
       addEventListener: (event, handler) => listeners.set(event, handler),
+      setAttribute() {},
       focus() {},
       showModal() { this.open = true; },
     }];

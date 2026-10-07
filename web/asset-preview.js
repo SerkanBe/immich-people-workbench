@@ -132,6 +132,9 @@ export function createAssetPreview({ assetThumb }) {
     rotateBox.hidden = true;
     reviewControls.hidden = !review;
     dialog.classList.toggle("has-review", review);
+    viewport.setAttribute("aria-label", review
+      ? "Photo preview. Press Space to close; Enter to zoom in or fit; use plus and minus keys to adjust zoom."
+      : "Photo preview. Press Enter or Space to zoom in or fit; use plus and minus keys to adjust zoom.");
     caption.textContent = "Immich preview — the original file is not downloaded.";
     document.querySelector("#asset-preview-title").textContent = fileName || "Photo preview";
     image.src = assetThumb(assetId);
@@ -197,6 +200,7 @@ export function createAssetPreview({ assetThumb }) {
   dialog.addEventListener("keydown", event => {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
     const key = event.key.toLowerCase();
+    if (key === " " && dialog.classList.contains("has-review")) return;
     if (key === "h" && !toggleBox.hidden) { event.preventDefault(); boxVisible = !boxVisible; positionFaceBox(); }
     else if (key === "r" && !rotateBox.hidden) { event.preventDefault(); boxRotation = (boxRotation + 1) % 4; positionFaceBox(); }
     else if (event.target === viewport && (key === "enter" || key === " ")) { event.preventDefault(); setZoom(zoomIndex ? 0 : 2); }

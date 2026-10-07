@@ -177,9 +177,10 @@ Only nearby tiles are rendered, and each tile is cropped to the face.
 and shows filenames. The chosen size is saved in this browser. Hover over a
 compact tile for a small surrounding-image preview. In Detail mode, click the
 face crop to open the larger Immich preview. Press `Space` on a focused tile in
-either mode to open it. The rectangle in that preview maps Immich's face
-coordinates onto the preview, even when their image dimensions differ. If the
-preview has a different orientation, use **Rotate box** (`R`) to turn the
+either mode to open it, and press `Space` again to close it. The rectangle in
+that preview maps Immich's face coordinates onto the preview, even when their
+image dimensions differ. If the preview has a different orientation, use
+**Rotate box** (`R`) to turn the
 rectangle 90° clockwise at a time until it lines up. The rotation resets for
 each photo and does not change Immich data. Use **Hide box** (`H`) when it covers
 a small face. Click the photo to zoom in or return to fit, or use Ctrl+mouse-wheel
@@ -207,7 +208,8 @@ a blue outline. Rapid key presses are saved in order, even if you choose another
 person before saving finishes. Pending Sync waits for local decisions to finish
 saving. These decisions are drafts saved in local SQLite; once saving finishes,
 you can reload without losing them. They do not change Immich or enter Pending
-until you choose **Submit review**. Submission takes one click.
+until you choose **Submit review**. Submission takes one click, or press
+`Ctrl`+`Enter` (`⌘`+`Enter` on macOS) while working in Face review.
 
 Submission saves accepted faces as locally reviewed and adds each dismissed face's
 reassignment to Pending. Dismissed faces then leave this person's Face review grid;

@@ -215,8 +215,12 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     element("face-review-queue").disabled = !actionable || disabled;
     const review = state.faceReviewResult;
     const canFinish = review?.inventoryComplete && review?.reviewReopened && !review?.untouchedCount;
-    element("face-review-submit").disabled = disabled || draftSaving || actionQueue.length > 0 || !(review?.draftCount || review?.personReviewed || canFinish);
-    element("face-review-submit").textContent = draftSaving ? "Saving decisions…" : review?.draftCount ? `Submit review (${review.draftCount})` : review?.personReviewed ? "Reopen review" : canFinish ? "Finish review" : "Submit review";
+    const submitButton = element("face-review-submit");
+    submitButton.disabled = disabled || draftSaving || actionQueue.length > 0 || !(review?.draftCount || review?.personReviewed || canFinish);
+    submitButton.textContent = draftSaving ? "Saving decisions…" : review?.draftCount ? `Submit review (${review.draftCount})` : review?.personReviewed ? "Reopen review" : canFinish ? "Finish review" : "Submit review";
+    submitButton.title = review?.draftCount ? "Submit review: Ctrl+Enter or Command+Enter" : "";
+    if (review?.draftCount) submitButton.setAttribute("aria-keyshortcuts", "Control+Enter Meta+Enter");
+    else submitButton.removeAttribute("aria-keyshortcuts");
     element("face-review-compact").setAttribute("aria-pressed", String(mode === "compact"));
     element("face-review-detail").setAttribute("aria-pressed", String(mode === "detail"));
     ui.faceReviewGrid.classList.toggle("compact", mode === "compact");
@@ -819,7 +823,10 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
     element("asset-preview-dialog").addEventListener("keydown", event => {
       if (element("asset-preview-review").hidden || lightboxGeneration !== generation || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       const key = event.key.toLowerCase();
-      if (key === "a") { event.preventDefault(); decideLightbox("correct"); }
+      if (key === " " && !event.target.closest("button, input, textarea, select, [contenteditable]")) {
+        event.preventDefault(); element("asset-preview-dialog").close();
+      }
+      else if (key === "a") { event.preventDefault(); decideLightbox("correct"); }
       else if (key === "d") { event.preventDefault(); decideLightbox("wrong"); }
       else if (key === "s" || key === "arrowright") { event.preventDefault(); moveLightbox(1); }
       else if (key === "arrowleft") { event.preventDefault(); moveLightbox(-1); }
@@ -848,9 +855,19 @@ export function createFaceReview({ api, assetThumb, drawFace, openAssetPreview, 
       state.faceReviewResizeTimer = setTimeout(() => { if (state.view === "faces" && surface) { renderVisible(); maybeLoadMore(); } }, 180);
     });
     window.addEventListener("keydown", event => {
-      if (state.view !== "faces" || !currentFaceReviewPerson() || event.altKey || event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, button, [contenteditable]")) return;
+      if (state.view !== "faces" || !currentFaceReviewPerson() || event.altKey) return;
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey
+          && !event.target.closest("input, textarea, select, dialog, [contenteditable]")
+          && state.faceReviewResult?.draftCount) {
+        event.preventDefault(); submitReview(); return;
+      }
+      if (event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, button, [contenteditable]")) return;
       const key = event.key.toLowerCase();
-      if (key === "a" && !event.shiftKey) { event.preventDefault(); stageSelected("correct"); }
+      if (key === " " && event.target === ui.faceReviewGrid && !event.shiftKey) {
+        const face = visibleFaces().find(item => item.faceId === focusedFaceId) || visibleFaces()[0];
+        if (face) { event.preventDefault(); openReviewPhoto(face); }
+      }
+      else if (key === "a" && !event.shiftKey) { event.preventDefault(); stageSelected("correct"); }
       else if (key === "d" && !event.shiftKey) { event.preventDefault(); stageSelected("wrong"); }
       else if (key === "f") { event.preventDefault(); event.shiftKey ? showHidden() : hideDecided(); }
       else if (key === "?") { event.preventDefault(); toggleShortcuts(); }

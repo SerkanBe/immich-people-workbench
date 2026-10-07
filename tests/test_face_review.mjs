@@ -9,11 +9,37 @@ const { createFaceReview, showFaceInReview } = await import(`data:text/javascrip
 
 function node() {
   const listeners = new Map();
+  const classes = new Set();
   return {
-    listeners, children: [], value: "", classList: { toggle() {} }, style: {}, scrollTop: 0, clientHeight: 600,
-    append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; },
+    listeners, children: [], value: "", dataset: {}, style: {}, scrollTop: 0, clientHeight: 600, clientWidth: 600, offsetHeight: 600,
+    classList: {
+      add: name => classes.add(name), remove: name => classes.delete(name), contains: name => classes.has(name),
+      toggle: (name, force) => { if (force ?? !classes.has(name)) classes.add(name); else classes.delete(name); },
+    },
+    append(...items) { for (const item of items) { item.parent = this; this.children.push(item); } },
+    replaceChildren(...items) { this.children = []; this.append(...items); },
+    insertBefore(item, following) {
+      item.parent = this;
+      const index = following ? this.children.indexOf(following) : -1;
+      if (index < 0) this.children.push(item); else this.children.splice(index, 0, item);
+    },
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter(item => item !== this); },
+    querySelectorAll(selector) {
+      if (!selector.startsWith(".")) return [];
+      const matches = [];
+      const visit = parent => {
+        for (const item of parent.children) {
+          if (item.className?.split(" ").includes(selector.slice(1))) matches.push(item);
+          visit(item);
+        }
+      };
+      visit(this);
+      return matches;
+    },
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
     addEventListener: (event, handler) => listeners.set(event, handler),
-    setAttribute() {}, querySelectorAll: () => [], focus() {},
+    setAttribute() {}, removeAttribute() {}, focus() {}, closest: () => null,
+    close() { this.open = false; this.listeners.get("close")?.(); },
   };
 }
 
@@ -100,7 +126,7 @@ test("Face review counts people in background and refreshes the sidebar", async 
   }
 });
 
-test("Face review submits directly, then reopens and finishes without changing decisions", async () => {
+test("Space opens a focused face and closes its review lightbox", async () => {
   const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };
   const elements = new Map();
   globalThis.document = {
@@ -108,6 +134,67 @@ test("Face review submits directly, then reopens and finishes without changing d
     createElement: () => node(), addEventListener() {},
   };
   globalThis.window = { addEventListener() {} };
+  globalThis.localStorage = { getItem: () => null };
+  const person = { id: "11111111-1111-4111-8111-111111111111", name: "Synthetic", assetCount: 1 };
+  const face = { faceId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", assetId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", fileName: "synthetic.jpg", reviewed: false, queued: false, box: null };
+  const list = node(), grid = node();
+  const state = {
+    view: "faces", faceReviewPeople: [], pages: { facePeople: 1 }, pageSize: 10, sort: "most",
+    faceReviewSelected: new Set(), faceReviewSelectedData: new Map(),
+  };
+  const api = async path => {
+    if (path.startsWith("/api/people?")) return { people: [person], page: 1 };
+    if (path.startsWith("/api/person-faces/")) return {
+      faces: [face], page: 1, hasMore: false, draftCount: 0, reviewedCount: 0,
+      reviewTotal: 1, inventoryComplete: true, untouchedCount: 1,
+    };
+    if (path === "/api/face-review/scan-next") return { complete: 1, total: 1, failed: 0, done: true };
+    throw new Error(`Unexpected request: ${path}`);
+  };
+  try {
+    const review = createFaceReview({
+      api, state, ui: { facePersonList: list, faceReviewGrid: grid },
+      assetThumb: () => "", personThumb: () => "", drawFace: async () => {},
+      openAssetPreview: () => {
+        document.getElementById("asset-preview-dialog").open = true;
+        document.getElementById("asset-preview-review").hidden = false;
+      },
+      refreshSummary: async () => {}, showToast: () => {}, renderPagination: () => {},
+    });
+    review.bindFaceReviewControls();
+    await review.renderFaceReview();
+    await list.children[0].listeners.get("click")();
+    const card = grid.children[0].querySelector(".face-review-card");
+    assert.ok(card);
+    card.listeners.get("keydown")({ key: " ", target: card, preventDefault() {} });
+    const dialog = document.getElementById("asset-preview-dialog");
+    assert.equal(dialog.open, true);
+    dialog.listeners.get("keydown")({
+      key: " ", target: { closest: () => ({}) }, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false,
+      preventDefault() {},
+    });
+    assert.equal(dialog.open, true);
+    let prevented = false;
+    dialog.listeners.get("keydown")({
+      key: " ", target: node(), altKey: false, ctrlKey: false, metaKey: false, shiftKey: false,
+      preventDefault: () => { prevented = true; },
+    });
+    assert.equal(prevented, true);
+    assert.equal(dialog.open, false);
+  } finally {
+    Object.assign(globalThis, previous);
+  }
+});
+
+test("Face review submits directly, then reopens and finishes without changing decisions", async () => {
+  const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };
+  const elements = new Map();
+  const windowListeners = new Map();
+  globalThis.document = {
+    getElementById: id => { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
+    createElement: () => node(), addEventListener() {},
+  };
+  globalThis.window = { addEventListener: (event, handler) => windowListeners.set(event, handler) };
   globalThis.localStorage = { getItem: () => null };
   const person = { id: "11111111-1111-4111-8111-111111111111", name: "Synthetic person", assetCount: 1 };
   const state = {
@@ -140,7 +227,18 @@ test("Face review submits directly, then reopens and finishes without changing d
     const button = document.getElementById("face-review-submit");
     const click = async () => { button.listeners.get("click")(); await new Promise(resolve => setImmediate(resolve)); };
 
-    await click();
+    windowListeners.get("keydown")({
+      key: "Enter", ctrlKey: true, metaKey: false, altKey: false, shiftKey: false,
+      target: { closest: () => ({}) }, preventDefault() { throw new Error("Input shortcut was intercepted"); },
+    });
+    assert.equal(calls.length, 0);
+    let prevented = false;
+    windowListeners.get("keydown")({
+      key: "Enter", ctrlKey: true, metaKey: false, altKey: false, shiftKey: false,
+      target: { closest: () => null }, preventDefault: () => { prevented = true; },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(prevented, true);
     assert.deepEqual(calls[0], ["/api/face-review/submit", { personId: person.id }]);
     assert.equal(button.textContent, "Reopen review");
     await click();
