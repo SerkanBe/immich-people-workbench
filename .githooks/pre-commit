@@ -1,0 +1,22 @@
+#!/bin/sh
+# Copyright (C) 2026 Serkan Bekdemir
+# SPDX-License-Identifier: AGPL-3.0-only
+# Shared commit guard. Installed by tools/agent_git.py configure.
+set -eu
+if ! git diff --cached --quiet --diff-filter=ACMR -- var ':(glob)**/var/**'; then
+  echo "Refusing to commit var/ contents. Unstage those paths; keep their files on disk." >&2
+  exit 1
+fi
+branch=$(git symbolic-ref --quiet --short HEAD || true)
+case "$branch" in
+  codex/*)
+    expected='people-workbench-agent[bot] <335216742+people-workbench-agent[bot]@users.noreply.github.com>'
+    for kind in AUTHOR COMMITTER; do
+      actual=$(git var "GIT_${kind}_IDENT")
+      case "$actual" in
+        "$expected "*) ;;
+        *) echo "Codex branches require the bot as author and committer. Use tools/agent_git.py commit." >&2; exit 1 ;;
+      esac
+    done
+    ;;
+esac

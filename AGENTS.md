@@ -7,6 +7,8 @@
   intentionally ignored by Git.
 - Check `git status` before editing. Preserve unrelated work already in the tree.
 - Keep agent plans, backlogs, handoffs, and scratch files in `var/`.
+  Never force-add or commit any `var/` contents. If accidentally tracked, remove
+  them from the index with `git rm --cached`, retaining files on disk.
 
 ## Privacy and Immich safety
 
@@ -77,6 +79,23 @@
 - Give a handoff with changed files, decisions, checks run, and unresolved
   issues. Do not overwrite another agent's edits or silently take over their
   files; coordinate a shared change first.
+
+## Agent commit identity
+
+- Every Codex commit must use **both** author and committer:
+  `people-workbench-agent[bot] <335216742+people-workbench-agent[bot]@users.noreply.github.com>`.
+  Never rely on a human's global/local Git identity or inherited author variables.
+- On a new clone, run `python3 tools/agent_git.py configure` once. It installs
+  shared defaults for `codex/**` branches and hooks for all worktrees of this clone.
+  It preserves the configured identity on human branches and refuses to replace
+  unrelated hooks. See `docs/development.md`.
+- Stage explicit files, review the staged diff, then commit with
+  `python3 tools/agent_git.py commit -m "Describe the change"`.
+  On Windows use the corresponding Python executable.
+- Verify `git show -s --format='%an <%ae> | %cn <%ce>' HEAD` before handoff
+  or pushing. Stop if either identity differs. Never bypass the hooks to commit.
+- Repository-local configuration is not shared by a fresh clone; repeat setup
+  there. Root AGENTS.md applies when starting in a subdirectory too.
 
 ## Git changes
 
