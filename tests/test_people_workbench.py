@@ -7,6 +7,7 @@ import unittest
 import urllib.error
 import urllib.request
 import json
+import sqlite3
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 import sys
@@ -15,7 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import people_workbench as workbench
-from people_workbench import AdminSession, AppState, Handler, Immich, Store, ToolError, name_fragment_matches, paginate, sort_people
+from people_workbench import AdminSession, AppState, Handler, Immich, Store, ToolError, group_asset_allowed, name_fragment_matches, paginate, sort_group_assets, sort_people
 
 
 class FakeImmich:
@@ -104,7 +105,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
         base = f"http://127.0.0.1:{port}"
         opener = urllib.request.build_opener()
         opener.addheaders = [("Cookie", "people_workbench_session=synthetic-session")]
-        for route in ("/", "/unnamed", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"):
+        for route in ("/", "/unnamed", "/naming/clusters", "/naming/group-photos", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"):
             with self.subTest(route=route), opener.open(base + route) as response:
                 self.assertEqual(response.status, 200)
                 self.assertIn(b'nav aria-label="People sections"', response.read())
@@ -112,6 +113,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
             ("/merge.js", b"export function createMergeWorkbench"),
             ("/face-review.js", b"export function createFaceReview"),
             ("/naming.js", b"export function createNaming"),
+            ("/group-photos.js", b"export function createGroupPhotos"),
             ("/investigate.js", b"export function createInvestigate"),
             ("/pending.js", b"export function createPending"),
             ("/browser-storage.js", b"export function readMergeCanvasState"),
@@ -154,6 +156,17 @@ class PeopleWorkbenchTests(unittest.TestCase):
         request = opened.call_args.args[0]
         self.assertEqual(request.get_header("X-immich-user-token"), "synthetic-token")
         self.assertIsNone(request.get_header("X-api-key"))
+
+    def test_group_photo_search_uses_person_lookup_with_archive_and_filters_assets_locally(self):
+        client = Immich("https://immich.example")
+        with mock.patch.object(client, "json", return_value={"assets": {"items": [], "total": 0}}) as searched:
+            client.person_assets_page("synthetic-person", group_photos=True)
+        payload = searched.call_args.args[2]
+        self.assertEqual(payload["personIds"], ["synthetic-person"])
+        self.assertTrue(payload["withArchived"])
+        self.assertNotIn("type", payload)
+        self.assertNotIn("visibility", payload)
+        self.assertNotIn("withDeleted", payload)
 
     def test_http_login_guards_pages_api_media_and_logout(self):
         class QuietHandler(Handler):
@@ -198,7 +211,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
                             headers["Cookie"] = cookie
                         return urllib.request.urlopen(urllib.request.Request(base + path, json.dumps(data).encode(), headers, method="POST"))
 
-                    for path in ("/api/state", "/media/person/11111111-1111-4111-8111-111111111111", "/app.js"):
+                    for path in ("/api/state", "/api/group-photos", "/api/group-photos/progress", "/media/person/11111111-1111-4111-8111-111111111111", "/app.js"):
                         with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as error:
                             urllib.request.urlopen(base + path)
                         self.assertEqual(error.exception.code, 401)
@@ -229,6 +242,9 @@ class PeopleWorkbenchTests(unittest.TestCase):
                         self.assertIn(b'nav aria-label="People sections"', response.read())
                     with urllib.request.urlopen(urllib.request.Request(base + "/api/state", headers={"Cookie": cookie})) as response:
                         self.assertEqual(response.status, 200)
+                    with urllib.request.urlopen(urllib.request.Request(base + "/api/group-photos", headers={"Cookie": cookie})) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertIn(b'"minFaces": 5', response.read())
                     with self.assertRaises(urllib.error.HTTPError) as error:
                         post("/api/login", {"url": "https://other.example", "email": "admin@example.test", "password": "synthetic"})
                     self.assertEqual(error.exception.code, 403)
@@ -874,6 +890,341 @@ class PeopleWorkbenchTests(unittest.TestCase):
             self.assertTrue(first_second["mutual"])
             self.assertEqual(first_second["weight"], 2.0)
             self.assertNotIn(named, {value for edge in graph["edges"] for value in (edge["source"], edge["target"])})
+
+
+class GroupPhotoTests(unittest.TestCase):
+    FIRST = "11111111-1111-4111-8111-111111111111"
+    SECOND = "33333333-3333-4333-8333-333333333333"
+    NAMED = "22222222-2222-4222-8222-222222222222"
+    IGNORED = "44444444-4444-4444-8444-444444444444"
+    PHOTO = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    ARCHIVE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        root = Path(self.directory.name)
+        self.path = root / "state.sqlite3"
+        self.store = Store(self.path)
+        self.app = AppState(self.store, root / "reports")
+        self.app.phase = "ready"
+        self.app.people = {
+            self.FIRST: {"id": self.FIRST, "name": "", "isHidden": False},
+            self.SECOND: {"id": self.SECOND, "name": "", "isHidden": False},
+            self.NAMED: {"id": self.NAMED, "name": "Known Person", "isHidden": False},
+            self.IGNORED: {"id": self.IGNORED, "name": "", "isHidden": True},
+        }
+        owner = self
+
+        class GroupFake:
+            def __init__(self):
+                self.calls = []
+                self.failed = False
+                self.hold = None
+                self.hold_search = None
+                self.assets = [
+                    {"id": owner.PHOTO, "type": "IMAGE", "visibility": "timeline", "updatedAt": "2026-01-02", "originalFileName": "group-one.jpg"},
+                    {"id": owner.ARCHIVE, "type": "IMAGE", "visibility": "archive", "updatedAt": "2026-01-01", "originalFileName": "group-two.jpg"},
+                ]
+                self.faces_by_asset = {
+                    owner.PHOTO: [self.face(f"face-{index}", person) for index, person in enumerate([owner.FIRST, owner.FIRST, owner.SECOND, owner.NAMED, owner.IGNORED, None])],
+                    owner.ARCHIVE: [self.face(f"arch-{index}", person) for index, person in enumerate([owner.SECOND, owner.NAMED, None, owner.IGNORED, owner.NAMED])],
+                }
+
+            @staticmethod
+            def face(face_id, person):
+                return {"id": face_id, "person": {"id": person} if person else None,
+                        "boundingBoxX1": 10, "boundingBoxY1": 15, "boundingBoxX2": 60, "boundingBoxY2": 75,
+                        "imageWidth": 200, "imageHeight": 150}
+
+            def person_assets_page(self, person_id, page=1, size=100, *, group_photos=False):
+                self.calls.append(("search", person_id, group_photos))
+                if self.hold_search:
+                    self.hold_search.wait(2)
+                return (self.assets if page == 1 else []), False, len(self.assets)
+
+            def faces(self, asset_id):
+                self.calls.append(("faces", asset_id))
+                if self.hold and asset_id == owner.ARCHIVE:
+                    self.hold.wait(2)
+                if self.failed and asset_id == owner.ARCHIVE:
+                    raise RuntimeError("synthetic scan failure")
+                return self.faces_by_asset[asset_id]
+
+            def asset(self, asset_id):
+                self.calls.append(("asset", asset_id))
+                return next(asset for asset in self.assets if asset["id"] == asset_id)
+
+            def update_person(self, person_id, payload):
+                self.calls.append(("update", person_id, payload))
+                owner.app.people[person_id].update(payload)
+
+            def all_people(self):
+                return list(owner.app.people.values())
+
+            def statistics(self, _person_id):
+                return 2
+
+        self.fake = GroupFake()
+        self.app.client = self.fake
+
+    def wait_scan(self):
+        for _ in range(300):
+            with self.app.lock:
+                if self.app.group_complete:
+                    return
+            time.sleep(.01)
+        self.fail("Group photo scan did not finish")
+
+    def test_group_asset_rules_and_ordering(self):
+        self.assertTrue(group_asset_allowed({"type": "IMAGE", "visibility": "archive"}, True))
+        self.assertFalse(group_asset_allowed({"type": "IMAGE", "visibility": "archive"}, False))
+        self.assertTrue(group_asset_allowed({"type": "IMAGE", "visibility": "timeline", "isArchived": True}, True))
+        self.assertFalse(group_asset_allowed({"type": "IMAGE", "visibility": "timeline", "isArchived": True}, False))
+        self.assertFalse(group_asset_allowed({"type": "IMAGE", "visibility": "hidden", "isArchived": True}, True))
+        for asset in ({"type": "VIDEO"}, {"visibility": "hidden"}, {"visibility": "locked"}, {"deletedAt": "now"}, {"isTrashed": True}):
+            self.assertFalse(group_asset_allowed(asset, True))
+        rows = [{"id": "a", "unnamedCount": 2, "updatedAt": "2026-01-01"}, {"id": "b", "unnamedCount": 1, "updatedAt": "2026-01-02"}]
+        self.assertEqual([row["id"] for row in sort_group_assets(rows, "most")], ["a", "b"])
+        self.assertEqual([row["id"] for row in sort_group_assets(rows, "fewest")], ["b", "a"])
+        self.assertEqual([row["id"] for row in sort_group_assets(rows, "updated-newest")], ["b", "a"])
+        self.assertEqual([row["id"] for row in sort_group_assets(rows, "updated-oldest")], ["a", "b"])
+        self.assertEqual(sort_group_assets(rows, "random"), sort_group_assets(rows, "random"))
+
+    def test_scan_explains_why_found_photos_are_not_eligible(self):
+        self.fake.assets.append({"id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "type": "VIDEO", "visibility": "timeline"})
+        self.fake.faces_by_asset[self.PHOTO] = self.fake.faces_by_asset[self.PHOTO][:4]
+        self.fake.faces_by_asset[self.ARCHIVE] = self.fake.faces_by_asset[self.ARCHIVE][:4]
+        self.app.start_group_scan(); self.wait_scan()
+        scan = self.app.group_photo_state()["scan"]
+        self.assertEqual(scan["sources"], 2)
+        self.assertEqual(scan["discovered"], 3)
+        self.assertEqual(scan["filtered"], 1)
+        self.assertEqual(scan["examined"], 2)
+        self.assertEqual(scan["belowMinimum"], 2)
+        self.assertEqual(scan["indexed"], 0)
+        self.assertTrue(self.app.group_photo_state()["checkpoint"])
+
+    def test_changing_discovery_settings_returns_to_unseen_pass(self):
+        self.store.group_advance(self.PHOTO, "deferred", [])
+        self.store.start_group_deferred()
+        self.assertEqual(self.store.group_progress()[self.PHOTO], "ready")
+        self.app.set_group_settings({"minFaces": 6, "includeArchived": True, "order": "most"})
+        self.assertEqual(self.store.setting("group_pass"), "initial")
+        self.assertEqual(self.store.group_progress()[self.PHOTO], "deferred")
+        for minimum in (1, 21):
+            with self.assertRaisesRegex(ToolError, "Invalid Group photos settings"):
+                self.app.set_group_settings({"minFaces": minimum, "includeArchived": True, "order": "most"})
+
+    def test_discovery_counts_all_faces_including_investigate_and_publishes_early(self):
+        self.store.mark_investigate(self.FIRST)
+        self.fake.hold = threading.Event()
+        self.app.start_group_scan()
+        for _ in range(200):
+            with self.app.lock:
+                if self.PHOTO in self.app.group_candidates:
+                    break
+            time.sleep(.01)
+        with self.app.lock:
+            self.assertIn(self.PHOTO, self.app.group_candidates)
+            self.assertTrue(self.app.group_scanning)
+        self.assertEqual(self.app.group_photo_state()["photo"]["id"], self.PHOTO)
+        self.fake.hold.set(); self.wait_scan()
+        state = self.app.group_photo_state()
+        self.assertEqual(state["photo"]["id"], self.PHOTO)
+        self.assertEqual(state["photo"]["faceCount"], 6)
+        self.assertEqual(state["photo"]["unnamedCount"], 3)
+        self.assertEqual([face["status"] for face in state["photo"]["faces"]], ["actionable", "actionable", "actionable", "named", "ignored", "unassigned"])
+        self.assertEqual(set(self.app.group_candidates), {self.PHOTO, self.ARCHIVE})
+        self.assertTrue(all(call[2] for call in self.fake.calls if call[0] == "search"))
+        self.assertEqual(sum(call == ("faces", self.PHOTO) for call in self.fake.calls[:4]), 1)
+
+    def test_saved_current_photo_appears_before_search_finishes(self):
+        self.store.set_setting("group_current", self.PHOTO)
+        self.fake.hold_search = threading.Event()
+        self.app.start_group_scan()
+        for _ in range(200):
+            with self.app.lock:
+                if self.PHOTO in self.app.group_candidates:
+                    break
+            time.sleep(.01)
+        with self.app.lock:
+            self.assertIn(self.PHOTO, self.app.group_candidates)
+            self.assertTrue(self.app.group_scanning)
+        self.assertEqual(self.app.group_photo_state()["photo"]["id"], self.PHOTO)
+        self.fake.hold_search.set(); self.wait_scan()
+        self.assertEqual(sum(call == ("faces", self.PHOTO) for call in self.fake.calls), 2)
+
+    def test_zero_partial_full_deferred_pass_and_persistence(self):
+        self.app.start_group_scan(); self.wait_scan()
+        first = self.app.group_photo_state()["photo"]
+        self.assertEqual(first["id"], self.PHOTO)
+        self.app.save_group_draft({"assetId": self.PHOTO, "personId": self.FIRST, "name": "Draft Name"})
+        reopened = AppState(Store(self.path), Path(self.directory.name) / "reports")
+        reopened.client = self.fake; reopened.phase = "ready"; reopened.people = self.app.people
+        reopened.start_group_scan();
+        for _ in range(300):
+            with reopened.lock:
+                if reopened.group_complete:
+                    break
+            time.sleep(.01)
+        self.assertEqual(reopened.group_photo_state()["photo"]["drafts"][0]["name"], "Draft Name")
+        self.assertEqual(reopened.advance_group_photo({"assetId": self.PHOTO, "decisions": []})["status"], "deferred")
+        self.assertEqual(self.store.pending(), [])
+        self.assertEqual(reopened.group_photo_state()["photo"]["id"], self.ARCHIVE)
+        self.assertEqual(reopened.advance_group_photo({"assetId": self.ARCHIVE, "decisions": [{"personId": self.SECOND, "name": "Another Name"}]})["status"], "done")
+        self.assertEqual(reopened.group_photo_state()["checkpoint"], True)
+        self.assertEqual(reopened.group_photo_state()["deferred"], 1)
+        reopened.start_group_deferred()
+        self.assertEqual(reopened.group_photo_state()["photo"]["id"], self.PHOTO)
+        self.assertEqual(reopened.advance_group_photo({"assetId": self.PHOTO, "decisions": [{"personId": self.FIRST, "name": "New Name"}]})["status"], "done")
+        self.assertEqual(len(self.store.pending()), 2)
+        self.assertEqual(reopened.group_photo_state()["checkpoint"], True)
+        self.assertEqual(reopened.group_photo_state()["deferred"], 0)
+        self.assertEqual(self.fake.calls.count(("update", self.FIRST)), 0)
+
+    def test_partial_submission_queues_name_and_defers_remaining_cluster(self):
+        self.app.start_group_scan(); self.wait_scan(); self.app.group_photo_state()
+        result = self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": [{"personId": self.FIRST, "name": "New Name"}]})
+        self.assertEqual(result, {"queued": 1, "status": "deferred"})
+        self.assertEqual(self.store.group_progress()[self.PHOTO], "deferred")
+        self.assertEqual([row["person_id"] for row in self.store.pending()], [self.FIRST])
+        self.assertEqual(self.app.pending_public()[0]["name"], "New Name")
+        self.assertFalse(any(call[0] == "update" for call in self.fake.calls))
+        result = self.app.sync()
+        self.assertEqual(result["failed"], 0)
+        self.assertIn(("update", self.FIRST, {"name": "New Name"}), self.fake.calls)
+
+    def test_batch_validates_every_decision_and_queues_atomically(self):
+        self.app.start_group_scan(); self.wait_scan(); self.app.group_photo_state()
+        bad = [{"personId": self.FIRST, "name": "One"}, {"personId": self.NAMED, "name": "Wrong"}]
+        with self.assertRaisesRegex(ToolError, "Stale"):
+            self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": bad})
+        self.assertEqual(self.store.pending(), [])
+        self.assertEqual(self.store.group_progress(), {})
+        with self.assertRaisesRegex(ToolError, "Photo changed"):
+            self.app.advance_group_photo({"assetId": self.ARCHIVE, "decisions": []})
+        result = self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": [
+            {"personId": self.FIRST, "name": "New Person"},
+            {"personId": self.SECOND, "name": "Known Person", "targetPersonId": self.NAMED},
+        ]})
+        self.assertEqual(result, {"queued": 2, "status": "done"})
+        self.assertEqual({row["operation"] for row in self.store.pending()}, {"rename", "merge"})
+        self.assertEqual(self.store.group_progress()[self.PHOTO], "done")
+        self.assertFalse(any(call[0] in {"update", "merge"} for call in self.fake.calls))
+
+    def test_ignore_suggestion_draft_and_batch_stay_pending_until_sync(self):
+        self.app.start_group_scan(); self.wait_scan(); self.app.group_photo_state()
+        self.app.save_group_draft({"assetId": self.PHOTO, "personId": self.FIRST,
+                                   "name": "Ignore", "operation": "hide", "targetPersonId": None})
+        saved = Store(self.path).group_drafts(self.PHOTO)
+        self.assertEqual(saved[0]["operation"], "hide")
+        with self.assertRaisesRegex(ToolError, "Invalid ignore decision"):
+            self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": [
+                {"personId": self.FIRST, "operation": "hide", "name": "Ignore"}]})
+        self.assertEqual(self.store.pending(), [])
+        result = self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": [
+            {"personId": self.FIRST, "operation": "hide", "name": ""},
+            {"personId": self.SECOND, "operation": "rename", "name": "Another Person"},
+        ]})
+        self.assertEqual(result, {"queued": 2, "status": "done"})
+        self.assertEqual({row["person_id"]: row["operation"] for row in self.store.pending()},
+                         {self.FIRST: "hide", self.SECOND: "rename"})
+        self.assertFalse(any(call[0] == "update" for call in self.fake.calls))
+        self.assertEqual(self.app.sync()["failed"], 0)
+        self.assertIn(("update", self.FIRST, {"isHidden": True}), self.fake.calls)
+
+    def test_literal_ignore_name_remains_a_rename(self):
+        self.app.start_group_scan(); self.wait_scan(); self.app.group_photo_state()
+        self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": [
+            {"personId": self.FIRST, "operation": "rename", "name": "Ignore"}]})
+        queued = self.store.pending()[0]
+        self.assertEqual((queued["operation"], queued["name"]), ("rename", "Ignore"))
+
+    def test_existing_group_drafts_migrate_to_rename_operation(self):
+        legacy_path = Path(self.directory.name) / "legacy.sqlite3"
+        with sqlite3.connect(legacy_path) as db:
+            db.execute("CREATE TABLE group_photo_drafts (asset_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL, target_person_id TEXT, PRIMARY KEY(asset_id,person_id))")
+            db.execute("INSERT INTO group_photo_drafts VALUES(?,?,?,NULL)", (self.PHOTO, self.FIRST, "Old Draft"))
+        migrated = Store(legacy_path)
+        self.assertEqual(migrated.group_drafts(self.PHOTO)[0]["operation"], "rename")
+
+    def test_failed_progress_write_rolls_back_pending_batch(self):
+        self.app.start_group_scan(); self.wait_scan(); self.app.group_photo_state()
+        with self.store.connect() as db:
+            db.execute("CREATE TRIGGER fail_group_progress BEFORE INSERT ON group_photo_progress BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END")
+        with self.assertRaisesRegex(Exception, "synthetic failure"):
+            self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": [{"personId": self.FIRST, "name": "New Name"}]})
+        self.assertEqual(self.store.pending(), [])
+        self.assertEqual(self.store.setting("group_current"), self.PHOTO)
+
+    def test_archive_setting_stale_eligibility_and_retry_failure(self):
+        self.app.set_group_settings({"minFaces": 5, "includeArchived": False, "order": "fewest"})
+        self.assertEqual(self.app.group_settings()["order"], "fewest")
+        self.assertEqual(self.store.setting("sort", "most"), "most")
+        self.app.start_group_scan(); self.wait_scan()
+        self.assertEqual(set(self.app.group_candidates), {self.PHOTO})
+        self.app.set_group_settings({"minFaces": 5, "includeArchived": True, "order": "most"})
+        self.assertEqual(Store(self.path).setting("group_archived"), "true")
+        self.fake.failed = True
+        self.app.start_group_scan(); self.wait_scan()
+        data = self.app.group_photo_state()
+        self.assertGreater(data["scan"]["failures"], 0)
+        self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": []})
+        self.assertFalse(self.app.group_photo_state()["checkpoint"])
+        self.fake.failed = False
+        self.app.start_group_scan(retry=True); self.wait_scan()
+        self.assertEqual(self.app.group_photo_state()["photo"]["id"], self.ARCHIVE)
+        self.store.upsert_pending({"personId": self.SECOND, "operation": "rename", "name": "Queued Elsewhere"})
+        self.assertTrue(self.app.group_photo_state()["checkpoint"])
+        self.assertEqual(self.store.group_progress()[self.ARCHIVE], "done")
+
+    def test_photo_visibility_is_rechecked_before_display_and_submission(self):
+        self.app.start_group_scan(); self.wait_scan()
+        self.assertEqual(self.app.group_photo_state()["photo"]["id"], self.PHOTO)
+        self.fake.assets[0]["visibility"] = "hidden"
+        with self.assertRaisesRegex(ToolError, "no longer eligible"):
+            self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": [{"personId": self.FIRST, "name": "New Name"}]})
+        self.assertEqual(self.store.pending(), [])
+        self.assertEqual(self.app.group_photo_state()["photo"]["id"], self.ARCHIVE)
+        self.assertEqual(self.store.group_progress()[self.PHOTO], "done")
+
+    def test_discarding_pending_reopens_group_photos_and_keeps_settings(self):
+        self.app.set_group_settings({"minFaces": 6, "includeArchived": True, "order": "fewest"})
+        self.app.start_group_scan(); self.wait_scan(); self.app.group_photo_state()
+        self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": [{"personId": self.FIRST, "name": "New Name"}]})
+        self.assertEqual(self.app.discard_pending(), 1)
+        self.assertEqual(self.store.group_progress(), {})
+        self.assertEqual(self.app.group_settings(), {"minFaces": 6, "includeArchived": True, "order": "fewest"})
+
+    def test_returned_pending_name_reopens_affected_photo_without_clearing_other_progress(self):
+        self.app.start_group_scan(); self.wait_scan(); self.app.group_photo_state()
+        self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": [
+            {"personId": self.FIRST, "name": "First Name"},
+            {"personId": self.SECOND, "name": "Second Name"},
+        ]})
+        unrelated = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        self.store.group_advance(unrelated, "done", [])
+        self.store.remove_pending(self.FIRST)
+        self.app.invalidate_group_scan()
+        self.app.start_group_scan(); self.wait_scan()
+        self.assertEqual(self.app.group_photo_state()["photo"]["id"], self.PHOTO)
+        self.assertNotIn(self.PHOTO, self.store.group_progress())
+        self.assertEqual(self.store.group_progress()[unrelated], "done")
+
+    def test_resolved_deferred_photo_does_not_leave_an_endless_checkpoint(self):
+        self.app.start_group_scan(); self.wait_scan(); self.app.group_photo_state()
+        self.app.advance_group_photo({"assetId": self.PHOTO, "decisions": []})
+        self.store.upsert_pending_many([
+            {"personId": self.FIRST, "operation": "rename", "name": "First Name"},
+            {"personId": self.SECOND, "operation": "rename", "name": "Second Name"},
+        ])
+        self.app.invalidate_group_scan()
+        self.app.start_group_scan(); self.wait_scan()
+        state = self.app.group_photo_state()
+        self.assertTrue(state["checkpoint"])
+        self.assertEqual(state["deferred"], 0)
+        self.assertEqual(self.store.group_progress()[self.PHOTO], "done")
 
 
 if __name__ == "__main__":

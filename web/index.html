@@ -15,7 +15,7 @@
       <p id="connection-status">Not connected</p>
     </div>
     <nav aria-label="People sections">
-      <a class="nav-button active" data-view="unnamed" href="/unnamed">Unnamed <span id="unnamed-count">0</span></a>
+      <a class="nav-button active" data-view="unnamed" href="/naming/clusters">Naming <span id="unnamed-count">0</span></a>
       <a class="nav-button" data-view="merge" href="/merge">Merge <span id="merge-count">0</span></a>
       <a class="nav-button" data-view="investigate" href="/investigate">Investigate <span id="investigate-count">0</span></a>
       <a class="nav-button" data-view="faces" href="/faces">Face review <span id="faces-count">0</span></a>
@@ -45,7 +45,7 @@
   <main>
     <section id="unnamed-view" class="view active" aria-labelledby="unnamed-heading">
       <div class="view-heading">
-        <div><h2 id="unnamed-heading">Unnamed people</h2><p>Name clusters quickly. Nothing changes in Immich until review and sync.</p></div>
+        <div><h2 id="unnamed-heading">Naming</h2><p>Name clusters quickly. Nothing changes in Immich until review and sync.</p></div>
         <label>Order
           <select id="sort-select">
             <option value="most">Most photos first</option>
@@ -56,6 +56,7 @@
           </select>
         </label>
       </div>
+      <div class="naming-tabs" aria-label="Naming views"><a class="active" href="/naming/clusters" data-view="unnamed">Clusters</a><a href="/naming/group-photos" data-view="group-photos">Group photos</a></div>
       <div id="round-banner" class="round-banner" hidden></div>
       <div id="unnamed-grid" class="people-grid"></div>
       <div id="unnamed-pagination" class="pagination" hidden></div>
@@ -64,6 +65,24 @@
         <p>Review the pending changes before syncing them to Immich.</p>
         <button class="primary-button" data-go="pending">Review pending changes</button>
       </div>
+    </section>
+
+    <section id="group-photos-view" class="view" aria-labelledby="group-photos-heading">
+      <div class="view-heading"><div><h2 id="group-photos-heading">Naming</h2><p>Use known people in a photo to identify unnamed faces. Names go to Pending until Sync.</p></div></div>
+      <div class="naming-tabs" aria-label="Naming views"><a href="/naming/clusters" data-view="unnamed">Clusters</a><a class="active" href="/naming/group-photos" data-view="group-photos">Group photos</a></div>
+      <div class="group-controls">
+        <label>Minimum detected faces <input id="group-min-faces" type="number" min="2" max="20" value="5"></label>
+        <label><input id="group-archived" type="checkbox" checked> Include archived photos</label>
+        <label>Order <select id="group-order"><option value="most">Most unnamed faces first</option><option value="fewest">Fewest unnamed faces first</option><option value="updated-newest">Recently updated</option><option value="updated-oldest">Least recently updated</option><option value="random">Random</option></select></label>
+        <button id="group-help" class="quiet-button" type="button">Shortcuts ?</button>
+      </div>
+      <p id="group-progress" role="status"></p>
+      <div id="group-workspace" class="group-workspace" hidden>
+        <div><div id="group-photo-stage" class="group-photo-stage"><img id="group-photo-image" alt="Group photo"><div id="group-markers"></div></div><p id="group-photo-caption"></p></div>
+        <aside class="group-sidebar"><canvas id="group-face-crop" width="320" height="320"></canvas><p id="group-face-position"></p><label for="group-name">Name for selected face</label><div class="autocomplete-wrap name-wrap"><div id="group-ghost" class="ghost" aria-hidden="true"></div><input id="group-name" autocomplete="off" spellcheck="false"><div id="group-suggestions" class="suggestions" role="listbox"></div></div><p id="group-face-note"></p><p class="name-keyboard-hint">Tab: next unnamed face, then submit · ↑/↓ choose · Enter confirm</p><button id="group-advance" class="primary-button" type="button">Submit Names</button></aside>
+      </div>
+      <div id="group-checkpoint" class="empty-state" hidden><h2>Pass complete</h2><p id="group-checkpoint-text"></p><button id="group-review-deferred" class="primary-button" type="button" hidden>Review deferred photos</button><button class="quiet-button" type="button" data-go="pending">Review Pending</button></div>
+      <div id="group-scan-error" class="empty-state" hidden><h2>Some photos could not be scanned</h2><p>Retry discovery before this pass can finish.</p><button id="group-retry" class="primary-button" type="button">Retry scan</button></div>
     </section>
 
     <section id="merge-view" class="view" aria-labelledby="merge-heading">
@@ -276,6 +295,8 @@
       </dl>
     </div>
   </dialog>
+
+  <dialog id="group-help-dialog"><div class="dialog-form"><div class="detail-heading"><h2>Group photos shortcuts</h2><button class="icon-button" data-close aria-label="Close">×</button></div><dl class="shortcut-list"><div><dt><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd></dt><dd>Accept a visible completion, then cycle through unnamed faces and Submit Names</dd></div><div><dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Choose a name suggestion</dd></div><div><dt><kbd>Enter</kbd></dt><dd>Confirm the active name and move to the next unnamed face</dd></div><div><dt><kbd>Ctrl+Enter</kbd></dt><dd>Queue all entered names to Pending and advance</dd></div><div><dt><kbd>H</kbd></dt><dd>Show or hide face rectangles outside a name field</dd></div><div><dt><kbd>?</kbd></dt><dd>Show this guide</dd></div></dl></div></dialog>
 
   <template id="person-card-template">
     <article class="person-card">

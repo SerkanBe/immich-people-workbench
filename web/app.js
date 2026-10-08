@@ -3,6 +3,7 @@
 import { createMergeWorkbench } from "./merge.js";
 import { createFaceReview } from "./face-review.js";
 import { createNaming } from "./naming.js";
+import { createGroupPhotos } from "./group-photos.js";
 import { createInvestigate } from "./investigate.js";
 import { createPending } from "./pending.js";
 import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM, readMergeCanvasState, readPageSize, savePageSize, saveMergeCanvasState } from "./browser-storage.js";
@@ -10,10 +11,14 @@ import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MA
 "use strict";
 
 const MERGE_CARD_WIDTH = 220, MERGE_CARD_HEIGHT = 260;
-const VIEW_ROUTES = new Set(["unnamed", "merge", "investigate", "faces", "pending", "named", "ignored"]);
+const VIEW_ROUTES = new Set(["unnamed", "group-photos", "merge", "investigate", "faces", "pending", "named", "ignored"]);
+
+function routeForView(view) { return view === "unnamed" ? "/naming/clusters" : view === "group-photos" ? "/naming/group-photos" : `/${view}`; }
 
 function viewFromPath(path) {
   const view = path.replace(/^\/|\/$/g, "");
+  if (view === "naming/clusters") return "unnamed";
+  if (view === "naming/group-photos") return "group-photos";
   return VIEW_ROUTES.has(view) ? view : "unnamed";
 }
 
@@ -158,10 +163,10 @@ async function waitUntilReady() {
 
 function switchView(view, pushHistory = true, render = true) {
   if (!VIEW_ROUTES.has(view)) return;
-  if (pushHistory && window.location.pathname !== `/${view}`) window.history.pushState(null, "", `/${view}`);
+  if (pushHistory && window.location.pathname !== routeForView(view)) window.history.pushState(null, "", routeForView(view));
   state.view = view;
   document.querySelectorAll(".nav-button").forEach(button => {
-    const active = button.dataset.view === view;
+    const active = button.dataset.view === view || button.dataset.view === "unnamed" && view === "group-photos";
     button.classList.toggle("active", active);
     if (active) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
   });
@@ -173,6 +178,7 @@ async function renderCurrentView(focusFirst = false, refresh = true) {
   if (refresh) await refreshSummary();
   if (state.summary.phase !== "ready") return;
   if (state.view === "unnamed") await renderPeopleGrid("unnamed", ui.grid, focusFirst);
+  if (state.view === "group-photos") await renderGroupPhotos();
   if (state.view === "merge") await renderMergeWorkbench(focusFirst);
   if (state.view === "investigate") await renderInvestigate();
   if (state.view === "faces") await renderFaceReview();
@@ -181,7 +187,9 @@ async function renderCurrentView(focusFirst = false, refresh = true) {
   if (state.view === "ignored") await renderIgnored();
 }
 
-const { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid, bindNamingControls } = createNaming({ api, assetThumb, cleanName, loadNames, personThumb, refreshSummary, renderInvestigate: (...args) => renderInvestigate(...args), renderPagination, showToast, state, ui });
+const { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid, bindNamingControls, openDuplicate } = createNaming({ api, assetThumb, cleanName, loadNames, personThumb, refreshSummary, renderInvestigate: (...args) => renderInvestigate(...args), renderPagination, showToast, state, ui });
+
+const { renderGroupPhotos, bindGroupPhotos } = createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openDuplicate, refreshSummary, showToast, state });
 
 const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState: () => saveMergeCanvasState(state, showToast), showSlide, showToast, resetListPages, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
 
@@ -216,7 +224,7 @@ async function renderIgnored() {
 }
 
 document.querySelector("#page-size-select").value = String(state.pageSize);
-document.querySelectorAll(".nav-button").forEach(button => button.addEventListener("click", event => {
+document.querySelectorAll(".nav-button, .naming-tabs a").forEach(button => button.addEventListener("click", event => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault(); switchView(button.dataset.view);
 }));
@@ -239,6 +247,7 @@ document.querySelector("#asset-preview-dialog").addEventListener("close", () => 
 initializeMergeCanvas();
 bindMergeControls();
 bindNamingControls();
+bindGroupPhotos();
 bindFaceReviewControls();
 bindInvestigateControls();
 bindPendingControls();
