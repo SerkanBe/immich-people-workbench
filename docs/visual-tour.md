@@ -7,11 +7,13 @@ This illustrated tour covers the main People Workbench workflows. Start with
 All screenshots use a synthetic local demo. The portraits depict fictional,
 AI-generated people, and the names, photo counts, and filenames are invented.
 Screenshots on different pages can show different demo states. No personal
-Immich library data was used.
+Immich library data was used. New Face review and Group photos screenshots show
+the actual app using the tracked synthetic mock; group photos are fictional composites.
 
 | Task | Where to go |
 | --- | --- |
 | Name a cluster, use suggestions, or skip it | [Naming people](tour/naming.md) |
+| Identify unnamed faces from known people in a group photo | [Group photos](tour/group-photos.md) |
 | Arrange clusters and review possible merges | [Merge canvas](tour/merge.md) |
 | Look at photo context before deciding | [Investigate](tour/investigate.md) |
 | Check individual faces and separate mistakes | [Face review](tour/face-review.md) |
@@ -20,3 +22,5 @@ Immich library data was used.
 
 Arranging and reviewing stay local. Workbench sends changes to Immich only after
 you review checked items in **Pending** and explicitly select **Sync**.
+
+For maintainers: [Writing guides and taking screenshots](writing-guides.md).

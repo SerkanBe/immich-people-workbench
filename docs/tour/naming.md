@@ -2,7 +2,7 @@
 
 [Visual tour](../visual-tour.md) · [User guide](../user-guide.md)
 
-**Unnamed** lists Immich's visible unnamed face clusters. Each card shows a
+**Naming → Clusters** lists Immich's visible unnamed face clusters. Each card shows a
 representative face and photo count. Use **Order** to change the sequence, and
 `Page Up` / `Page Down` to inspect other representative faces. Type a new name
 and press `Enter` to put a rename in Pending; focus moves to the next card.
@@ -41,6 +41,13 @@ only when the two people are intentionally different.
 
 These actions have different effects: skipping and Investigate only organize
 local work; hiding remains a Pending Immich change until Sync.
+
+## Use a group photo for context
+
+Switch to **Group photos** when known faces in the same image can help you name
+the unknown ones. It offers a photo, face markers, and one Pending batch per
+submission. See [Name faces with Group photos](group-photos.md) for the
+step-by-step workflow, settings, shortcuts, and deferred passes.
 
 Next: [Merge canvas](merge.md) for clusters that need grouping, or
 [Pending and Sync](pending.md) to review a queued name.

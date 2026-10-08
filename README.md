@@ -59,7 +59,8 @@ remote-access details, see the [getting-started guide](docs/getting-started.md).
 - [Getting started](docs/getting-started.md) — run locally, sign in, and understand local state.
 - [Visual tour](docs/visual-tour.md) — illustrated walkthrough of the main views and workflows.
 - [User guide](docs/user-guide.md) — naming, Merge, Investigate, Face review, and Pending.
-- [Development](docs/development.md) — source layout and tests.
+- [Development](docs/development.md) — source layout, tests, and agent commit setup.
+- [Writing guides](docs/writing-guides.md) — run the synthetic demo and capture safe screenshots.
 
 Project repository: [github.com/SerkanBe/immich-people-workbench](https://github.com/SerkanBe/immich-people-workbench).
 

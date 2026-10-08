@@ -3,11 +3,15 @@
 For an illustrated walkthrough of each main view, see the [Visual tour](visual-tour.md).
 
 Start with [Getting started](getting-started.md). The usual flow is to review
-unnamed people, use Merge or Investigate for difficult cases, check faces, and
+unnamed people in Naming, use Merge or Investigate for difficult cases, check faces, and
 then review Pending before Sync. Every Immich change requires that explicit
 Sync.
 
 ## Naming and keyboard flow
+
+**Naming → Clusters** is the former Unnamed view. `/naming/clusters` is its
+current URL; existing `/unnamed` bookmarks and history still open Clusters.
+Its cluster cards, sort order, and shortcuts work as before.
 
 - Type a name: autocomplete searches normal fragments of existing names.
 - `Tab`: accept the visible autocomplete completion when one is shown;
@@ -34,6 +38,31 @@ are applied only from the Pending page with the sync button. Unchecked pending
 items remain in the queue. While Sync runs, the button shows that it is busy
 and cannot start another Sync. A concurrent Sync request is rejected; failed
 items stay Pending for review and retry.
+
+### Group photos
+
+**Naming → Group photos** opens `/naming/group-photos`. It searches photos
+linked to visible unnamed clusters, including Investigate, and shows eligible
+photos as the background scan finds them. The minimum is five detected faces
+by default, adjustable from 2 to 20; archived photos are included by default.
+Group photos has its own order setting. Workbench reads Immich's face records
+and does not run face detection.
+
+Click a face marker to inspect it. `Tab` and `Shift+Tab` cycle through nameable
+faces and **Submit Names**, skipping named, Pending, ignored, and unassigned
+faces. Type names or choose an existing person. Typing `ignore` offers an
+explicit **Ignore this cluster** action; choosing it displays that text in the
+field. `H` toggles the face rectangles outside a text field.
+
+**Submit Names** or `Ctrl+Enter` (`⌘+Enter` on macOS) queues every entered name
+and ignore action in Pending, then opens the next photo. Blank nameable faces
+defer the photo. After the unseen pass ends, **Review deferred photos** starts
+a separate pass; it never loops automatically. The current photo, drafts,
+settings, and pass progress survive reloads and restarts. Only explicit Sync
+on Pending writes to Immich.
+
+See [Name faces with Group photos](tour/group-photos.md) for the full walkthrough,
+shortcuts, scan filters, and help when no photos appear.
 
 ## Merge Workbench
 
@@ -267,13 +296,14 @@ person.
 
 The Pending page also has **Discard all local changes and reload**. After an
 explicit confirmation it deletes every unsynced pending rename, merge, hide,
-restore, or face-detach operation, keeps skip rounds and settings, clears cached face samples,
-and reloads the current people and names from Immich. This does not undo
+restore, or face-detach operation. It keeps skip rounds and settings, clears
+cached face samples and Group photos drafts, restarts the Group photos pass,
+then reloads the current people and names from Immich. This does not undo
 changes that were already synced to Immich.
 
 ## Pagination and navigation
 
-Unnamed, Investigate, Pending, Named, Ignored, and the Face Review person list
+Clusters, Investigate, Pending, Named, Ignored, and the Face Review person list
 use server-side pagination. The header's **Per page** selector offers 12, 24,
 48, or 60 entries and stores the choice in this browser. The selected person's
 face grid loads sequential server batches as you scroll. Search filtering is
@@ -291,6 +321,7 @@ The Merge Workbench intentionally remains unpaginated: it is one persistent
 spatial canvas, so hiding most cards behind pages would break saved positions,
 buckets, groups, and similarity-map context.
 
-Each section has its own URL, such as `/merge` or `/faces`. Reloading the page
+Each section has its own URL, such as `/naming/clusters`, `/naming/group-photos`,
+`/merge`, or `/faces`. Reloading the page
 keeps the current section open, and browser Back and Forward navigate between
 sections.

@@ -30,11 +30,16 @@ Docker/NAS setup still need their own deployment work. Do not send Immich
 passwords over an untrusted HTTP link.
 
 Local progress is stored in `.people-workbench/state.sqlite3`. The database
-contains names, person IDs, skipped-round counters, and pending changes. Sync
+contains names, person IDs, skipped-round counters, Group photos settings,
+current photo, deferred pass, local name drafts, and pending changes. Sync
 reports are stored under the same state directory's `reports/`. The state
 directory is excluded from Git. It contains private data and should not be
 inspected, reset, or published casually. The browser also stores canvas
-positions. The server binds to localhost by default.
+positions, list settings, and Group photos rectangle visibility; existing
+`immichPeopleConsole.*` keys remain compatible. Group photos rebuilds its
+temporary candidate index after a server restart or Immich reload. The server
+binds to localhost by default.
 
 For a walkthrough of the main views, see the [Visual tour](visual-tour.md).
+For naming with photo context, see [Group photos](tour/group-photos.md).
 For the full workflow and shortcuts, see the [User guide](user-guide.md).

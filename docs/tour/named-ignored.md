@@ -14,8 +14,9 @@ ignored cluster, not a person hidden from a real library.
 
 ![Ignored view with a fictional cluster and Restore button](../images/visual-tour/ignored.png)
 
-The header counts help you move among the seven sections. **Per page** changes
-the page size for lists; the Merge canvas remains a single layout. Each section
+The header counts help you move among the main sections. Naming has **Clusters**
+and [**Group photos**](group-photos.md) subtabs. **Per page** changes the page
+size for lists; the Merge canvas remains a single layout. Each section
 has its own URL, so reload and browser Back or Forward keep your place. The
 **Reload** button refreshes people from Immich, while local Pending changes
 remain available for review.

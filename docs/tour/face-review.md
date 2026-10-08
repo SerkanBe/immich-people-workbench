@@ -2,62 +2,116 @@
 
 [Visual tour](../visual-tour.md) · [User guide](../user-guide.md)
 
-**Face review** checks the faces assigned to a person in Immich. People with
-unsynced names or merges remain available here, so you can correct an obvious
-mistake before sending the person change to Immich.
+Use **Face review** to check whether the faces assigned to a person really
+belong to them. Mark correct faces locally, and separate mistakes through
+Pending. A person with an unsynced name or merge can still be reviewed.
 
-Compact mode shows many face crops at once. Use the arrow keys to move focus,
-then mark **Accept face** (`A`) or **Dismiss face** (`D`). Press the same key
-again to reset that decision. Click, Shift-click, or use Shift+Arrow to select
-a group for the same actions. Detail mode gives each crop more room; click
-its image, or press `Space` on a focused tile in either mode, to open the photo
-with the reviewed face marked by a rectangle. The green and red
-borders are local review drafts, saved across reloads; they do not enter Pending
-or change Immich yet.
+## Find the person you want to check
 
-![Synthetic faces in compact Face review, with accepted and dismissed markings](../images/visual-tour/face-review.png)
+Open **Face review**, then select someone in the left-hand list. The list
+scrolls separately from the face grid.
 
-In the photo preview, `A` accepts and `D` dismisses the current face; press
-either key to mark the current face and advance. Use Left to return to it and
-press the same key again to reset its decision. Left/Right move between visible
-faces, and `S` skips ahead without a decision. The lightbox loads the next page
-when needed and returns grid focus to the current face when closed.
+The four compact controls above it help you find your next person:
 
-In the photo preview, **Rotate box** (`R`) turns the face rectangle 90° clockwise
-if Immich's coordinates do not match the preview orientation. The rectangle
-stays visible when image dimensions differ, and rotation resets for each photo.
-**Hide box** (`H`) removes the rectangle while you inspect the face. Click the
-photo to zoom in or return to fit. Use Ctrl+mouse-wheel to adjust zoom around
-the pointer, then drag the enlarged photo to pan. The `+`
-and `-` keys also adjust zoom; `0` returns to 100%.
+- **Magnifying glass:** search by name. An active query stays visible; clear
+  it before closing the field with the icon or `Escape`.
+- **Funnel:** choose All, Named, or Unnamed people. A name only queued in
+  Pending still counts as unnamed until Sync.
+- **Order:** sort by photo count, update time, or random order.
+- **Green check:** hide completed people, or press it again to show them.
+  It works independently of the name filter.
 
-![Photo preview with the current face marked and lightbox review controls](../images/visual-tour/face-review-lightbox.png)
+![Face review with an active search and the named-person filter open](../images/visual-tour/face-review-filters.jpg)
 
-Press **Hide decided** (`F`) in the grid to hide the green and red faces marked so far,
-including ones loaded on later pages. Marking another face leaves it visible
-until you press `F` again, giving you a chance to correct a mistake.
-**Show hidden** (`Shift+F`) brings them back.
+The sidebar shows photo counts separately from checked-face progress.
+Workbench counts assigned faces in the background. **Counting faces** can
+take time on a large library; partial counts survive a restart. **Face counts
+ready** means those inventories are available. A photo containing two faces
+assigned to this person needs two decisions.
 
-Choose **Submit review** to save the marked faces with one click. Accepted
-faces remain green. Dismissed faces leave this person's grid and become
-face-correction requests in Pending, where you can inspect, exclude, or remove
-them. Removing a request returns its face to Face review.
+Changing a filter keeps the current person's review open. Filtering the list
+does not discard their decisions.
 
-The sidebar's **Show people** filter lets you review named people first, then
-switch to unnamed people. **Hide completed people** keeps finished people out
-of the sidebar. The open person stays visible, and **Show completed people**
-brings finished people back. A person's completion count uses faces, so two
-faces on one photo need two decisions. Load all photo pages to establish the
-exact total before that person can be marked complete.
-**Reopen review** returns a completed person to the active list while keeping
-their accepted faces and Pending requests. **Finish review** marks them complete
-again once all faces have been handled.
+## Mark correct faces and mistakes
 
-![Face review after Submit, with a dismissed face awaiting Sync](../images/visual-tour/face-review-submitted.png)
+**Compact** fits many face crops on screen. **Detail** gives each crop more
+space and shows filenames. More faces load as you scroll; **Load more faces**
+also lets keyboard users move into the next batch.
 
-Only an explicit Pending Sync moves a dismissed face to a new unnamed person in
-Immich. When a rename or merge depends on that correction, Sync applies the
-face correction first. If it fails or is excluded, the dependent person change
-stays in Pending instead of being applied prematurely.
+Use the arrow keys to focus a tile. Press `A` for **Accept face** or `D`
+for **Dismiss face**. Press the same decision again to reset it. Click or
+press `Enter` to select a face; Shift-click or Shift+Arrow selects a range
+for the same action. Selection has a blue outline.
 
-Next: [Pending and Sync](pending.md) to review those requests.
+Here, one face has been accepted and a different fictional person has been
+dismissed. Both decisions are still drafts.
+
+![Compact grid with one green accepted draft and one red dismissed draft](../images/visual-tour/face-review-drafts.jpg)
+
+Drafts are saved locally across reloads. Wait for saving to finish before
+closing the app. They do not enter Pending or change Immich yet.
+
+**Hide decided** (`F`) hides the green and red drafts marked so far. New
+decisions stay visible until you press it again. **Show hidden**
+(`Shift+F`) brings those faces back. These controls only change the view.
+
+## Inspect a face in its photo
+
+Press `Space` on a focused tile to open the photo preview. In Detail mode,
+you can also click the crop. Workbench displays Immich's preview, with a
+rectangle around the current face; it does not download the original file.
+
+![Photo lightbox with the dismissed face, rectangle, and review controls](../images/visual-tour/face-review-photo-context.jpg)
+
+In the preview:
+
+- Left/Right move between visible faces; `S` skips without deciding.
+- `A` or `D` marks the current face and advances. Return with Left and
+  press the same decision to undo that marking.
+- `R` rotates the rectangle 90° if preview orientation differs; `H`
+  hides it. These do not edit Immich's coordinates.
+- Click the photo to zoom or return to fit. Ctrl+wheel adjusts zoom; drag
+  the enlarged image to pan. `+` / `-` also zoom and `0` returns to 100%.
+- `Space` or `Escape` closes the preview and returns focus to its current face.
+
+The lightbox loads the next page when needed. Hidden faces and corrections
+already in Pending are outside this sequence.
+
+## Submit the decisions
+
+Choose **Submit review**, or press `Ctrl+Enter` (`⌘+Enter` on macOS).
+This takes one action and keeps the person selected.
+
+- Accepted faces become locally checked and are hidden by default. Use
+  **Show checked** to inspect them again.
+- Dismissed faces leave the person's working grid and become face-correction
+  requests in **Pending**.
+- Untouched faces remain available to review.
+
+The example now shows **1 awaiting Sync**. The green face is visible because
+**Show checked** was enabled; the dismissed face is in Pending.
+
+![Submitted review with accepted faces shown and one correction awaiting Sync](../images/visual-tour/face-review-after-submit.jpg)
+
+Open [Pending](pending.md) to inspect, exclude, or remove a correction.
+Removing it returns the face to Face review. Only explicit **Sync** moves a
+dismissed face into a new unnamed person in Immich.
+
+When a pending name or merge depends on a wrong-face correction, Sync applies
+the correction first. A failed or excluded correction leaves the dependent
+person change in Pending.
+
+## Finish or reopen a person
+
+Completion is based on distinct assigned faces, not the number of photos.
+All photo pages must have been counted, with no untouched or unsubmitted
+decisions remaining, before the person can be complete.
+
+**Reopen review** returns a completed person to active review while retaining
+accepted faces and Pending requests. **Finish review** completes them again
+when their faces have been handled. New photos in Immich can reopen a person.
+
+Use **Shortcuts ?** for the full key reference.
+
+Next: [Pending and Sync](pending.md) to apply reviewed corrections, or
+[Group photos](group-photos.md) to identify unnamed clusters with photo context.
