@@ -6,6 +6,7 @@ import { createNaming } from "./naming.js";
 import { createGroupPhotos } from "./group-photos.js";
 import { createInvestigate } from "./investigate.js";
 import { createPending } from "./pending.js";
+import { createAssetPreview } from "./asset-preview.js";
 import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM, readMergeCanvasState, readPageSize, savePageSize, saveMergeCanvasState } from "./browser-storage.js";
 
 "use strict";
@@ -43,7 +44,7 @@ const state = {
   mergeReviewGroups: [], mergeReviewIndex: 0, mergeReviewBusy: false, mergeReviewQueued: 0, mergeReviewSkipped: 0, mergeReviewSupported: false,
   faceReviewPeople: [], faceReviewPersonId: null, faceReviewCurrentPerson: null, faceReviewPage: 1,
   faceReviewPageSize: 20, faceReviewLayout: { columns: 5, rows: 4 }, faceReviewResult: null, faceReviewResizeTimer: null,
-  faceReviewSelected: new Set(), faceReviewSelectedData: new Map(), faceReviewLoading: false,
+  faceReviewSelected: new Set(), faceReviewSelectedData: new Map(), faceReviewLoading: false, faceReviewSaving: false,
 };
 
 async function api(path, options = {}) {
@@ -115,11 +116,25 @@ function resetListPages() {
   state.faceReviewPage = 1;
 }
 
+function syncPeopleSortControls() {
+  document.querySelectorAll("select[data-people-sort]").forEach(select => { select.value = state.sort; });
+  for (const value of ["most", "fewest", "updated-newest", "updated-oldest", "random"]) {
+    document.querySelector(`#face-person-sort-${value}`).checked = value === state.sort;
+  }
+}
+
+async function changePeopleSort(value) {
+  state.sort = value;
+  syncPeopleSortControls();
+  resetListPages();
+  await renderCurrentView(true, false);
+}
+
 async function refreshSummary() {
   const summary = await api("/api/state");
   state.summary = summary;
   state.sort = summary.sort || state.sort;
-  document.querySelector("#sort-select").value = state.sort;
+  syncPeopleSortControls();
   document.querySelector("#connection-status").textContent = summary.connected ? `Immich ${summary.version} · local queue enabled` : "Not connected";
   document.querySelector("#reload-button").hidden = !summary.connected;
   for (const key of ["unnamed", "investigate", "faces", "pending", "named", "ignored"]) {
@@ -129,7 +144,6 @@ async function refreshSummary() {
   document.querySelector("#pending-count").textContent = summary.counts.pending ?? 0;
   document.querySelector("#reset-button").disabled = !summary.connected || !(summary.counts.pending > 0);
   document.querySelector("#investigate-return-all").disabled = !summary.connected || !(summary.counts.investigate > 0);
-  document.querySelector("#merge-sort-select").value = state.sort;
   const working = ["loading", "statistics"].includes(summary.phase);
   const panel = document.querySelector("#progress-panel");
   panel.hidden = !working;
@@ -191,20 +205,13 @@ const { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, rende
 
 const { renderGroupPhotos, bindGroupPhotos } = createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openDuplicate, refreshSummary, showToast, state });
 
-const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState: () => saveMergeCanvasState(state, showToast), showSlide, showToast, resetListPages, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
+const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState: () => saveMergeCanvasState(state, showToast), showSlide, showToast, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
 
-function openAssetPreview(assetId, fileName = "Photo preview") {
-  const dialog = document.querySelector("#asset-preview-dialog");
-  document.querySelector("#asset-preview-title").textContent = fileName || "Photo preview";
-  document.querySelector("#asset-preview-caption").textContent = "Immich preview — the original file is not downloaded.";
-  const image = document.querySelector("#asset-preview-image");
-  image.src = assetThumb(assetId); image.alt = fileName || "Photo preview";
-  dialog.showModal();
-}
+const openAssetPreview = createAssetPreview({ assetThumb });
 
 const { renderInvestigate, bindInvestigateControls } = createInvestigate({ api, assetThumb, attachNameBehavior, moveSlide, openAssetPreview, personThumb, refreshSummary, renderPagination, showSlide, showToast, state, ui });
 
-const { renderFaceReview, bindFaceReviewControls } = createFaceReview({ api, assetThumb, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui });
+const { renderFaceReview, bindFaceReviewControls } = createFaceReview({ api, assetThumb, changePeopleSort, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui });
 
 const { renderPending, bindPendingControls } = createPending({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui, waitUntilReady });
 
@@ -241,9 +248,9 @@ document.querySelector("#logout-button").addEventListener("click", async () => {
 document.querySelector("#page-size-select").addEventListener("change", event => {
   state.pageSize = Number(event.target.value) || 24; savePageSize(state.pageSize, showToast); resetListPages(); renderCurrentView(true).catch(error => showToast(error.message));
 });
-document.querySelector("#sort-select").addEventListener("change", event => { state.sort = event.target.value; resetListPages(); renderCurrentView(true, false).catch(error => showToast(error.message)); });
-document.querySelector("#asset-preview-dialog").addEventListener("close", () => document.querySelector("#asset-preview-image").removeAttribute("src"));
-
+document.querySelectorAll("select[data-people-sort]").forEach(select => select.addEventListener("change", event => {
+  changePeopleSort(event.target.value).catch(error => showToast(error.message));
+}));
 initializeMergeCanvas();
 bindMergeControls();
 bindNamingControls();

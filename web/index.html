@@ -47,7 +47,7 @@
       <div class="view-heading">
         <div><h2 id="unnamed-heading">Naming</h2><p>Name clusters quickly. Nothing changes in Immich until review and sync.</p></div>
         <label>Order
-          <select id="sort-select">
+          <select id="sort-select" data-people-sort>
             <option value="most">Most photos first</option>
             <option value="fewest">Fewest photos first</option>
             <option value="updated-newest">Recently updated</option>
@@ -89,7 +89,7 @@
       <div class="view-heading">
         <div><h2 id="merge-heading">Merge Workbench</h2><p>Build person groups, review their faces, and queue unnamed merges for the normal naming flow.</p></div>
         <label>Order
-          <select id="merge-sort-select">
+          <select id="merge-sort-select" data-people-sort>
             <option value="most">Most photos first</option>
             <option value="fewest">Fewest photos first</option>
             <option value="updated-newest">Recently updated</option>
@@ -153,7 +153,18 @@
     <section id="investigate-view" class="view" aria-labelledby="investigate-heading">
       <div class="view-heading">
         <div><h2 id="investigate-heading">Investigate difficult clusters</h2><p>Use Immich filenames and photo previews for more context before naming a person.</p></div>
-        <div class="pending-heading-actions"><button id="investigate-return-all" class="quiet-button" disabled>Return all to Unnamed</button></div>
+        <div class="pending-heading-actions">
+          <label>Order
+            <select id="investigate-sort-select" data-people-sort>
+              <option value="most">Most photos first</option>
+              <option value="fewest">Fewest photos first</option>
+              <option value="updated-newest">Recently updated</option>
+              <option value="updated-oldest">Least recently updated</option>
+              <option value="random">Random</option>
+            </select>
+          </label>
+          <button id="investigate-return-all" class="quiet-button" disabled>Return all to Unnamed</button>
+        </div>
       </div>
       <div id="investigate-grid" class="investigate-grid"></div>
       <div id="investigate-pagination" class="pagination" hidden></div>
@@ -166,7 +177,47 @@
       </div>
       <div class="face-review-layout">
         <aside class="face-person-panel">
-          <label>Find person <input id="face-person-search" type="search" autocomplete="off" placeholder="Name or unnamed"></label>
+          <div id="face-person-controls" class="face-person-controls">
+            <div class="face-person-toolbar" role="group" aria-label="People list controls">
+              <button id="face-person-search-toggle" class="face-person-tool" type="button" aria-label="Search people" title="Search people" aria-expanded="false" aria-controls="face-person-search-drawer">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
+              </button>
+              <button id="face-person-filter-toggle" class="face-person-tool" type="button" aria-label="Filter people by name" title="Filter people by name" aria-expanded="false" aria-controls="face-person-filter-drawer">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v5l-4 2v-7z"/></svg>
+              </button>
+              <button id="face-person-sort-toggle" class="face-person-tool" type="button" aria-label="Order people" title="Order people" aria-expanded="false" aria-controls="face-person-sort-drawer">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 20V4m-3 3 3-3 3 3m7-3v16m-3-3 3 3 3-3"/></svg>
+              </button>
+              <button id="face-person-toggle-completed" class="face-person-tool completed" type="button" aria-label="Hide completed people" title="Hide completed people" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>
+              </button>
+            </div>
+            <div id="face-person-search-drawer" class="face-person-drawer" inert>
+              <div class="face-person-drawer-inner face-person-search-row">
+                <input id="face-person-search" type="search" autocomplete="off" aria-label="Find person" placeholder="Find person">
+                <button id="face-person-search-clear" class="face-person-clear" type="button" aria-label="Clear search" title="Clear search">×</button>
+              </div>
+            </div>
+            <div id="face-person-filter-drawer" class="face-person-drawer" inert>
+              <fieldset id="face-person-name-filter" class="face-person-drawer-inner face-person-options">
+                <legend>Show people</legend>
+                <label><input id="face-person-name-all" type="radio" name="face-person-name" value="all" checked>All people</label>
+                <label><input id="face-person-name-named" type="radio" name="face-person-name" value="named">Named people</label>
+                <label><input id="face-person-name-unnamed" type="radio" name="face-person-name" value="unnamed">Unnamed people</label>
+              </fieldset>
+            </div>
+            <div id="face-person-sort-drawer" class="face-person-drawer" inert>
+              <fieldset id="face-person-sort-options" class="face-person-drawer-inner face-person-options">
+                <legend>Order people</legend>
+                <label><input id="face-person-sort-most" type="radio" name="face-person-sort" value="most" checked>Most photos first</label>
+                <label><input id="face-person-sort-fewest" type="radio" name="face-person-sort" value="fewest">Fewest photos first</label>
+                <label><input id="face-person-sort-updated-newest" type="radio" name="face-person-sort" value="updated-newest">Recently updated</label>
+                <label><input id="face-person-sort-updated-oldest" type="radio" name="face-person-sort" value="updated-oldest">Least recently updated</label>
+                <label><input id="face-person-sort-random" type="radio" name="face-person-sort" value="random">Random</label>
+              </fieldset>
+            </div>
+            <div class="face-person-scan"><small id="face-person-scan-status" class="muted" aria-live="polite"></small><button id="face-person-scan-retry" class="quiet-button" type="button" hidden>Retry counts</button></div>
+          </div>
           <div id="face-person-list" class="face-person-list" aria-label="People available for face review"></div>
           <div id="face-person-pagination" class="pagination compact" hidden></div>
         </aside>
@@ -177,26 +228,23 @@
               <div><h3 id="face-review-name"></h3><p id="face-review-meta" class="muted"></p></div>
               <div class="face-review-toolbar-options">
                 <div class="face-review-mode" role="group" aria-label="Face tile size"><button id="face-review-compact" class="quiet-button" type="button" aria-pressed="true">Compact</button><button id="face-review-detail" class="quiet-button" type="button" aria-pressed="false">Detail</button></div>
-                <label>Show <select id="face-review-filter"><option value="all">All faces</option><option value="untouched">Untouched only</option></select></label>
-                <button id="face-review-help" class="quiet-button" type="button" aria-expanded="false" aria-controls="face-review-shortcuts">Shortcuts <kbd>?</kbd></button>
+                <button id="face-review-help" class="quiet-button" type="button" aria-haspopup="dialog" aria-controls="face-review-help-dialog">Shortcuts <kbd>?</kbd></button>
               </div>
             </div>
             <div class="face-review-actions">
-              <button id="face-review-mark" class="quiet-button" type="button" disabled>Correct person <kbd>M</kbd></button>
-              <button id="face-review-queue" class="danger-button" type="button" disabled>Wrong person <kbd>W</kbd>/<kbd>Q</kbd></button>
-              <button id="face-review-reset" class="quiet-button" type="button" disabled>Reset marks <kbd>U</kbd></button>
-              <button id="face-review-hide" class="quiet-button" type="button" disabled>Hide selected <kbd>H</kbd></button>
-              <button id="face-review-show" class="quiet-button" type="button" disabled><span id="face-review-show-label">Show hidden</span> <kbd>Shift+H</kbd></button>
-              <button id="face-review-clear" class="quiet-button" type="button" disabled>Clear selection <kbd>C</kbd></button>
+              <button id="face-review-mark" class="quiet-button" type="button" disabled>Accept face <kbd>A</kbd></button>
+              <button id="face-review-queue" class="danger-button" type="button" disabled>Dismiss face <kbd>D</kbd></button>
+              <button id="face-review-show-checked" class="quiet-button" type="button" aria-pressed="false">Show checked</button>
+              <button id="face-review-hide" class="quiet-button" type="button" disabled>Hide decided <kbd>F</kbd></button>
+              <button id="face-review-show" class="quiet-button" type="button" disabled><span id="face-review-show-label">Show hidden</span> <kbd>Shift+F</kbd></button>
+              <button id="face-review-clear" class="quiet-button" type="button" disabled>Clear selection</button>
             </div>
-            <div id="face-review-shortcuts" class="face-review-shortcuts" hidden>Click, <kbd>Enter</kbd>, or <kbd>Space</kbd> selects a face · <kbd>Shift</kbd>+click selects a range · <kbd>R</kbd> toggles Correct person on the focused face · <kbd>M</kbd> marks selected faces Correct person · <kbd>W</kbd> or <kbd>Q</kbd> marks selected faces Wrong person · <kbd>U</kbd> resets selected marks · <kbd>P</kbd> opens the photo · <kbd>H</kbd> hides selected · <kbd>Shift+H</kbd> shows hidden · <kbd>C</kbd> clears selection · <kbd>?</kbd> toggles this help</div>
             <div id="face-review-grid" class="face-review-grid" role="listbox" aria-multiselectable="true" aria-label="Assigned face crops" tabindex="0"></div>
             <div class="face-review-load-row"><span id="face-review-load-status" class="muted" aria-live="polite"></span><button id="face-review-load-more" class="quiet-button" type="button" hidden>Retry loading</button></div>
-            <div class="face-review-submit-bar"><div><strong>Submit this review</strong><small>Correct faces are saved locally. Wrong faces leave this grid and enter Pending; Immich changes only after Sync.</small></div><button id="face-review-submit" class="primary-button" type="button" disabled>Review &amp; submit</button></div>
+            <div class="face-review-submit-bar"><div><strong>Face review</strong><small>Submit saves accepted faces locally and sends dismissed faces to Pending. Reopening keeps those decisions. Immich changes only after Sync.</small></div><button id="face-review-submit" class="primary-button" type="button" disabled>Submit review</button></div>
           </div>
         </section>
       </div>
-      <dialog id="face-review-submit-dialog" aria-labelledby="face-review-submit-heading"><h2 id="face-review-submit-heading">Review face decisions</h2><p id="face-review-submit-summary"></p><div class="dialog-actions"><button id="face-review-cancel-submit" class="quiet-button" type="button">Back to review</button><button id="face-review-confirm-submit" class="primary-button" type="button">Submit review</button></div></dialog>
     </section>
 
     <section id="pending-view" class="view" aria-labelledby="pending-heading">
@@ -215,20 +263,71 @@
     <section id="named-view" class="view" aria-labelledby="named-heading">
       <div class="view-heading">
         <div><h2 id="named-heading">Named people</h2><p>Search, rename, or merge existing Immich people.</p></div>
-        <label>Search <input id="named-search" type="search" autocomplete="off" placeholder="Name"></label>
+        <div class="view-heading-controls">
+          <label>Search <input id="named-search" type="search" autocomplete="off" placeholder="Name"></label>
+          <label>Order
+            <select id="named-sort-select" data-people-sort>
+              <option value="most">Most photos first</option>
+              <option value="fewest">Fewest photos first</option>
+              <option value="updated-newest">Recently updated</option>
+              <option value="updated-oldest">Least recently updated</option>
+              <option value="random">Random</option>
+            </select>
+          </label>
+        </div>
       </div>
       <div id="named-grid" class="people-grid"></div>
       <div id="named-pagination" class="pagination" hidden></div>
     </section>
 
     <section id="ignored-view" class="view" aria-labelledby="ignored-heading">
-      <div class="view-heading"><div><h2 id="ignored-heading">Ignored people</h2><p>These clusters are hidden in Immich and can be restored.</p></div></div>
+      <div class="view-heading">
+        <div><h2 id="ignored-heading">Ignored people</h2><p>These clusters are hidden in Immich and can be restored.</p></div>
+        <label>Order
+          <select id="ignored-sort-select" data-people-sort>
+            <option value="most">Most photos first</option>
+            <option value="fewest">Fewest photos first</option>
+            <option value="updated-newest">Recently updated</option>
+            <option value="updated-oldest">Least recently updated</option>
+            <option value="random">Random</option>
+          </select>
+        </label>
+      </div>
       <div id="ignored-grid" class="people-grid"></div>
       <div id="ignored-pagination" class="pagination" hidden></div>
     </section>
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="face-review-help-dialog" aria-labelledby="face-review-help-title">
+    <div class="dialog-form">
+      <div class="detail-heading"><div><h2 id="face-review-help-title">Face review shortcuts</h2><p>Decisions stay local until Submit review. Immich changes only after Pending Sync.</p></div><button class="icon-button" type="button" data-close aria-label="Close shortcuts">×</button></div>
+      <div class="face-review-help-columns">
+        <section aria-labelledby="face-review-grid-shortcuts-title">
+          <h3 id="face-review-grid-shortcuts-title">Face grid</h3>
+          <dl class="shortcut-list">
+            <div><dt><kbd>←</kbd> <kbd>↑</kbd> <kbd>↓</kbd> <kbd>→</kbd></dt><dd>Move between faces; hold <kbd>Shift</kbd> to select a range</dd></div>
+            <div><dt><kbd>Enter</kbd></dt><dd>Select the focused face; <kbd>Shift</kbd> + click selects a range</dd></div>
+            <div><dt><kbd>A</kbd> / <kbd>D</kbd></dt><dd>Accept or dismiss selected faces; press again to reset</dd></div>
+            <div><dt><kbd>F</kbd> / <kbd>Shift</kbd>+<kbd>F</kbd></dt><dd>Hide decided faces or show hidden faces</dd></div>
+            <div><dt><kbd>Space</kbd></dt><dd>Open the focused face photo</dd></div>
+            <div><dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd></dt><dd>Submit saved review decisions</dd></div>
+          </dl>
+        </section>
+        <section aria-labelledby="face-review-photo-shortcuts-title">
+          <h3 id="face-review-photo-shortcuts-title">Photo preview</h3>
+          <dl class="shortcut-list">
+            <div><dt><kbd>A</kbd> / <kbd>D</kbd></dt><dd>Accept or dismiss the face, then advance</dd></div>
+            <div><dt><kbd>←</kbd> / <kbd>→</kbd></dt><dd>Move to the previous or next face</dd></div>
+            <div><dt><kbd>S</kbd></dt><dd>Skip to the next face</dd></div>
+            <div><dt><kbd>H</kbd> / <kbd>R</kbd></dt><dd>Hide or rotate the face rectangle</dd></div>
+            <div><dt><kbd>Space</kbd> / <kbd>Esc</kbd></dt><dd>Close the photo</dd></div>
+          </dl>
+        </section>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="duplicate-dialog">
     <div class="dialog-form">
@@ -254,7 +353,16 @@
   <dialog id="asset-preview-dialog" class="asset-preview-dialog">
     <div class="dialog-form">
       <div class="detail-heading"><div><h2 id="asset-preview-title">Photo preview</h2><p id="asset-preview-caption" class="muted"></p></div><button class="icon-button" data-close aria-label="Close">×</button></div>
-      <img id="asset-preview-image" alt="Photo preview">
+      <div class="asset-preview-tools">
+        <button id="asset-preview-toggle-box" class="quiet-button" type="button" hidden><span id="asset-preview-toggle-label">Hide box</span> <kbd>H</kbd></button>
+        <button id="asset-preview-rotate-box" class="quiet-button" type="button" title="Rotate face rectangle 90 degrees clockwise" hidden>Rotate box <kbd>R</kbd> <span id="asset-preview-rotate-label">0°</span></button>
+        <span id="asset-preview-zoom-level" aria-live="polite">100%</span>
+      </div>
+      <div id="asset-preview-viewport" class="asset-preview-viewport" role="button" tabindex="0" title="Click to zoom in or fit. Ctrl+wheel to adjust zoom; drag to pan." aria-label="Photo preview. Press Enter to zoom in or fit; use plus and minus keys to adjust zoom."><div id="asset-preview-stage" class="asset-preview-stage"><img id="asset-preview-image" alt="Photo preview" draggable="false"><div id="asset-preview-face-box" aria-hidden="true" hidden></div></div></div>
+      <div id="asset-preview-review" class="asset-preview-review" hidden>
+        <div class="asset-preview-review-navigation"><button id="asset-preview-previous" class="quiet-button" type="button">Previous <kbd>←</kbd></button><span id="asset-preview-position" class="muted" aria-live="polite"></span><button id="asset-preview-next" class="quiet-button" type="button">Next <kbd>→</kbd></button></div>
+        <div class="asset-preview-review-decisions"><span id="asset-preview-review-status" class="asset-preview-review-status" aria-live="polite">Undecided</span><button id="asset-preview-accept" class="quiet-button" type="button" aria-pressed="false">Accept face <kbd>A</kbd></button><button id="asset-preview-dismiss" class="danger-button" type="button" aria-pressed="false">Dismiss face <kbd>D</kbd></button><button id="asset-preview-skip" class="quiet-button" type="button">Skip <kbd>S</kbd></button></div>
+      </div>
       <div class="dialog-actions"><button class="quiet-button" data-close>Close</button></div>
     </div>
   </dialog>

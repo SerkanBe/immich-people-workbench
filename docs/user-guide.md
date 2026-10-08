@@ -157,40 +157,106 @@ The filenames and previews in this view come from the current Immich API.
 
 The Face review page lists visible named and unnamed Immich people, including
 people with a name or merge already waiting in Pending. A Pending label beside
-the person shows that context. Select one to load its currently assigned faces
-into a continuous, ordered grid. More faces load
-as you scroll or choose **Load more faces**; keyboard users can use that button
-to focus the next batch. Only nearby tiles are rendered. Each tile is cropped to the
-face. **Compact** shows small crops without tile text; **Detail** enlarges them
-and shows filenames and a **Photo** button. The chosen size is saved in this
-browser. Hovering or focusing a compact tile, or the detail view's **Photo**
-button, shows a small surrounding-image preview. Click **Photo**, or press `P`
-on a focused tile, to open the larger Immich preview. The **Show** filter can
-limit the grid to untouched faces.
+the person shows that context. The sidebar list scrolls independently; its
+controls fit in one row above it. A person with some submitted faces remains
+listed while other faces still need review. The completed-person filter
+resets to showing everyone after a reload. Changing sidebar pages
+or searching starts its list at the top. The order control sorts the sidebar by
+Immich photo count or update time before pagination. Each person shows Immich's
+photo count and any locally saved checked-face count. While Face review is open, Workbench
+counts faces in the background with read-only Immich requests. Progress appears
+above the sidebar; large libraries can take time, and a failed count can be
+retried. The exact face total appears after all of that person's photo pages
+have been counted. Partial counts
+survive a reload, so the scan can resume later. Select a person to
+load their assigned faces into a continuous, ordered grid. More faces load as
+you scroll or choose
+**Load more faces**; keyboard users can use that button to focus the next batch.
+Only nearby tiles are rendered, and each tile is cropped to the face.
+**Compact** shows small crops without tile text; **Detail** enlarges them
+and shows filenames. The chosen size is saved in this browser. Hover over a
+compact tile for a small surrounding-image preview. In Detail mode, click the
+face crop to open the larger Immich preview. Press `Space` on a focused tile in
+either mode to open it, and press `Space` again to close it. The rectangle in
+that preview maps Immich's face coordinates onto the preview, even when their
+image dimensions differ. If the preview has a different orientation, use
+**Rotate box** (`R`) to turn the
+rectangle 90° clockwise at a time until it lines up. The rotation resets for
+each photo and does not change Immich data. Use **Hide box** (`H`) when it covers
+a small face. Click the photo to zoom in or return to fit, or use Ctrl+mouse-wheel
+to adjust zoom around the pointer. Drag the enlarged photo to pan. The `+` and `-`
+keys adjust zoom, and `0` resets it to 100%.
 
-Click a tile, or use `Enter` or `Space` on its focused tile, to select it.
-`Shift`+click selects a range. Selection has a blue outline. **Correct person**
-(`M`) marks selected faces green; **Wrong person** (`W` or the older `Q` shortcut)
-marks them red. `R` toggles a focused face's Correct person mark. **Reset marks**
-(`U`) returns selected faces to untouched. These decisions are drafts saved in
-local SQLite so you can leave the page or reload without losing them. They do
-not change Immich or enter Pending until **Review & submit** opens the batch
-summary and you choose **Submit review**.
+Inside that photo preview, **Accept face** (`A`) and **Dismiss face** (`D`)
+change only the current face's local draft decision, then advance to the next
+visible face. Use Left to return to a face and press the same decision again to
+reset it. Left/Right moves through the currently visible faces; `S` skips to
+the next one without changing a decision. The lightbox fetches the next page
+as needed and stays on the last face when there is no next face. If it cannot
+load that page, the marked photo stays open and Right retries. Closing the
+lightbox returns grid focus to its current face.
+Hidden faces and faces already queued in Pending are outside this sequence.
 
-Submission saves correct faces as locally reviewed and adds each wrong face's
-reassignment to Pending. Wrong faces then leave this person's Face review grid;
+Use the arrow keys to move focus between face tiles; moving focus clears any
+multi-face selection. Hold `Shift` with an arrow key to extend or shrink a
+selection from its starting face. **Accept face** (`A`) marks the focused
+face green; **Dismiss face** (`D`) marks it red. Press the same decision again
+to reset it. You can also click tiles or use `Enter` to select a
+focused tile, and `Shift`+click to select a range. The
+same actions apply to the selected faces when a selection exists; selection has
+a blue outline. Rapid key presses are saved in order, even if you choose another
+person before saving finishes. Pending Sync waits for local decisions to finish
+saving. These decisions are drafts saved in local SQLite; once saving finishes,
+you can reload without losing them. They do not change Immich or enter Pending
+until you choose **Submit review**. Submission takes one click, or press
+`Ctrl`+`Enter` (`⌘`+`Enter` on macOS) while working in Face review.
+
+Submission saves accepted faces as locally reviewed and adds each dismissed face's
+reassignment to Pending. Dismissed faces then leave this person's Face review grid;
 the current assignment still exists in Immich until Sync. The Pending list holds
 the *change request*, where you can preview, exclude, or remove it. Removing the
-request brings the face back into Face review. The counts distinguish correct
-faces, wrong faces waiting for submission, changes awaiting Sync, and untouched
-faces. New Immich photos reopen a person for review.
+request brings the face back into Face review. The counts distinguish accepted
+faces, dismissed faces waiting for submission, changes awaiting Sync, and untouched
+faces. Progress counts distinct assigned faces, even when several appear in one
+photo. The exact total is available after all of that person's photo pages have
+loaded; until then the sidebar keeps the person in the review list. The local
+face count is reused on later visits and invalidated when Immich reports a
+changed photo count or person update. Opening a person also detects new faces
+on loaded photos. On first use after this counting change, saved decisions remain,
+but each person's photo pages must load once before they can appear completed.
+New Immich photos reopen a person for review.
 
-**Hide selected** (`H`) temporarily hides selected faces without discarding the
-selection; **Show hidden** (`Shift+H`) restores them. **Clear selection** (`C`)
-removes the blue outline. Hidden faces and selection are session-only; draft
-decisions are durable. The **Shortcuts** button, or `?`, shows the key reference.
+The magnifying glass opens a search field. While a query is entered, the field
+stays visible alongside other controls; clear the query, then close the field
+with the icon or `Escape`. The funnel icon opens the All / Named / Unnamed
+filter, and the order icon opens the sort choices. The green check is a separate
+toggle for completed people, so it works with any name filter. Active icons
+show when a query, filter, or nondefault order is in effect. `Escape` closes
+an open choice panel; it leaves an active search visible. Named means they
+already have a name in Immich; a name only
+queued in Pending remains unnamed here. Search and pagination use the selected
+group. Changing filters leaves the person currently open on screen. The green
+check removes fully reviewed people from the sidebar until pressed again.
+**Reopen review** returns a completed
+person to the active list while keeping accepted faces and Pending requests.
+**Finish review** marks that person complete again when no faces remain
+untouched or awaiting submission.
 
-At explicit Pending Sync, wrong faces are reassigned before a pending name or
+Submitted accepted faces are hidden from the working grid by default. New draft
+decisions stay visible until **Submit review**; submitted dismissals remain in
+Pending. **Show checked** reveals submitted accepted faces, and **Hide checked**
+returns to the working grid. **Hide decided** (`F`) can also hide current green
+and red drafts. It does not hide a face when you mark it after pressing `F`:
+press `F` again when you are ready to hide new decisions. **Show hidden**
+(`Shift+F`) brings manually hidden faces back. These are
+view-only actions; they neither submit drafts nor change Immich. **Clear
+selection** removes the blue outline. Hidden faces stay hidden if you switch
+people and return, but reset on a page reload or after Pending changes refresh
+the face grid. Selection is session-only; draft decisions are durable. The
+**Shortcuts** button, or `?`, opens a dialog with the key reference; press
+`Escape` to close it.
+
+At explicit Pending Sync, dismissed faces are reassigned before a pending name or
 merge for their source person is applied. If a wrong-face correction fails, is
 excluded from Sync, or is still an unsubmitted draft, the dependent person
 change stays Pending rather than carrying the wrong face into its destination.
@@ -213,6 +279,13 @@ use server-side pagination. The header's **Per page** selector offers 12, 24,
 face grid loads sequential server batches as you scroll. Search filtering is
 applied before person-list pagination, and out-of-range pages are clamped after
 queue operations remove entries.
+
+The Unnamed, Investigate, Face review, Named, and Ignored people lists each have
+an **Order** selector with most or fewest photos first, plus update-time and
+random options. The selection carries between views and is applied before
+pagination. Pending is a list of queued operations, so it keeps its own review
+order. Merge also has an Order selector for initial card placement; saved canvas
+positions take precedence afterward.
 
 The Merge Workbench intentionally remains unpaginated: it is one persistent
 spatial canvas, so hiding most cards behind pages would break saved positions,

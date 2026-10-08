@@ -24,7 +24,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
     state.pages.pending = data.page;
     ui.pendingList.replaceChildren();
     document.querySelector("#pending-empty").hidden = data.total > 0;
-    document.querySelector("#sync-button").disabled = syncing || !(state.summary?.counts?.included > 0);
+    document.querySelector("#sync-button").disabled = syncing || state.faceReviewSaving || !(state.summary?.counts?.included > 0);
     renderPagination("pending-pagination", data, page => { state.pages.pending = page; return renderPending(); });
     for (const item of pending) {
       const row = document.createElement("article"); row.className = "pending-item" + (item.included ? "" : " excluded");
@@ -93,8 +93,12 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
 
   function bindPendingControls() {
     const syncButton = document.querySelector("#sync-button");
+    document.addEventListener("face-review-save-state", () => {
+      syncButton.disabled = syncing || state.faceReviewSaving || !(state.summary?.counts?.included > 0);
+    });
     syncButton.addEventListener("click", async () => {
       if (syncing) return;
+      if (state.faceReviewSaving) { showToast("Wait for Face Review decisions to finish saving before Sync."); return; }
       if (!confirm("Sync every checked pending change to Immich now?")) return;
       syncing = true;
       syncButton.disabled = true;
@@ -111,7 +115,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
         syncing = false;
         syncButton.textContent = "Sync checked changes to Immich";
         syncButton.removeAttribute("aria-busy");
-        syncButton.disabled = !(state.summary?.counts?.included > 0);
+        syncButton.disabled = state.faceReviewSaving || !(state.summary?.counts?.included > 0);
       }
     });
     document.querySelector("#reset-button").addEventListener("click", async () => {

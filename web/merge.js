@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Serkan Bekdemir
 // SPDX-License-Identifier: AGPL-3.0-only
 
-export function createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState, showSlide, showToast, resetListPages, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM }) {
+export function createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState, showSlide, showToast, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM }) {
   function selectedMergePeople() {
     const byId = new Map(state.mergePeople.map(person => [person.id, person]));
     return [...state.mergeSelected].map(id => byId.get(id)).filter(Boolean);
@@ -997,7 +997,6 @@ export function createMergeWorkbench({ api, cleanName, moveSlide, personThumb, r
   }
 
   function bindMergeControls() {
-    document.querySelector("#merge-sort-select").addEventListener("change", event => { state.sort = event.target.value; resetListPages(); document.querySelector("#sort-select").value = state.sort; renderMergeWorkbench(true).catch(error => showToast(error.message)); });
     document.querySelector("#merge-clear").addEventListener("click", clearMergeGroup);
     document.querySelector("#merge-queue").addEventListener("click", () => queueMergeGroup());
     document.querySelector("#merge-review-groups").addEventListener("click", openMergeGroupReview);
