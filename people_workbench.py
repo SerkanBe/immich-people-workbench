@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import hashlib
 import http.cookies
 import json
 import mimetypes
@@ -37,7 +38,7 @@ DEFAULT_STATE_DIR = ROOT / ".people-workbench"
 MAX_BODY = 1_000_000
 MAX_IMAGE = 20_000_000
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{20,50}$")
-PAGE_ROUTES = frozenset({"/unnamed", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"})
+PAGE_ROUTES = frozenset({"/unnamed", "/naming/clusters", "/naming/group-photos", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"})
 SESSION_SECONDS = 8 * 60 * 60
 ADMIN_CHECK_SECONDS = 60
 SESSION_COOKIE = "people_workbench_session"
@@ -75,6 +76,33 @@ def sort_people(people: Iterable[dict[str, Any]], order: str) -> list[dict[str, 
         random.Random(dt.date.today().isoformat()).shuffle(rows)
         return rows
     return sorted(rows, key=lambda p: (-(p.get("assetCount") or 0), p.get("id", "")))
+
+
+GROUP_ORDERS = {"most", "fewest", "updated-newest", "updated-oldest", "random"}
+
+
+def group_asset_allowed(asset: dict[str, Any], include_archived: bool) -> bool:
+    visibility = str(asset.get("visibility") or "timeline").lower()
+    return (str(asset.get("type") or "IMAGE").upper() == "IMAGE"
+            and visibility in ({"timeline", "archive", "archived"} if include_archived else {"timeline"})
+            and (include_archived or not asset.get("isArchived"))
+            and not asset.get("isTrashed") and not asset.get("deletedAt") and not asset.get("isDeleted")
+            and str(asset.get("status") or "").lower() not in {"trashed", "deleted"}
+            and not asset.get("isHidden") and not asset.get("isLocked"))
+
+
+def group_face_person_id(face: dict[str, Any]) -> str | None:
+    person = face.get("person")
+    return person.get("id") if isinstance(person, dict) and isinstance(person.get("id"), str) else face.get("personId") if isinstance(face.get("personId"), str) else None
+
+
+def sort_group_assets(rows: Iterable[dict[str, Any]], order: str) -> list[dict[str, Any]]:
+    assets = list(rows)
+    if order == "random":
+        return sorted(assets, key=lambda row: (hashlib.sha256((dt.date.today().isoformat() + row["id"]).encode()).hexdigest(), row["id"]))
+    if order.startswith("updated"):
+        return sorted(assets, key=lambda row: (row.get("updatedAt") or "", row["id"]), reverse=order == "updated-newest")
+    return sorted(assets, key=lambda row: ((row["unnamedCount"] if order == "fewest" else -row["unnamedCount"]), row["id"]))
 
 
 def paginate(rows: Iterable[dict[str, Any]], page: int, size: int, key: str) -> dict[str, Any]:
@@ -210,8 +238,10 @@ class Immich:
     def merge(self, target_person_id: str, source_person_id: str) -> None:
         self.json("POST", f"/people/{target_person_id}/merge", {"ids": [source_person_id]})
 
-    def person_assets_page(self, person_id: str, page: int = 1, size: int = 50) -> tuple[list[dict[str, Any]], bool, int | None]:
+    def person_assets_page(self, person_id: str, page: int = 1, size: int = 50, *, group_photos: bool = False) -> tuple[list[dict[str, Any]], bool, int | None]:
         payload = {"personIds": [person_id], "page": max(1, page), "size": max(1, min(size, 100))}
+        if group_photos:
+            payload["withArchived"] = True
         data = self.json("POST", "/search/metadata", payload)
         if isinstance(data, dict) and isinstance(data.get("assets"), dict):
             assets = data["assets"]
@@ -232,6 +262,12 @@ class Immich:
     def faces(self, asset_id: str) -> list[dict[str, Any]]:
         data = self.json("GET", "/faces?" + urllib.parse.urlencode({"id": asset_id}))
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+    def asset(self, asset_id: str) -> dict[str, Any]:
+        data = self.json("GET", f"/assets/{asset_id}")
+        if not isinstance(data, dict):
+            raise ToolError("Unexpected asset response from Immich")
+        return data
 
     def samples(self, person_id: str, limit: int = 12) -> list[dict[str, Any]]:
         samples: list[dict[str, Any]] = []
@@ -329,8 +365,23 @@ class Store:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS group_photo_progress (
+                    asset_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL CHECK(status IN ('deferred', 'ready', 'done')),
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS group_photo_drafts (
+                    asset_id TEXT NOT NULL,
+                    person_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    target_person_id TEXT,
+                    operation TEXT NOT NULL DEFAULT 'rename',
+                    PRIMARY KEY(asset_id, person_id)
+                );
                 """
             )
+            if "operation" not in {row["name"] for row in db.execute("PRAGMA table_info(group_photo_drafts)")}:
+                db.execute("ALTER TABLE group_photo_drafts ADD COLUMN operation TEXT NOT NULL DEFAULT 'rename'")
 
     def connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30)
@@ -395,16 +446,70 @@ class Store:
         if not rows:
             return
         with self.connect() as db:
-            db.executemany(
-                """INSERT INTO pending(person_id, operation, name, target_person_id, target_name,
-                       feature_asset_id, included, last_error, created_at, updated_at)
-                   VALUES(?,?,?,?,?,?,1,'',?,?)
-                   ON CONFLICT(person_id) DO UPDATE SET operation=excluded.operation, name=excluded.name,
-                       target_person_id=excluded.target_person_id, target_name=excluded.target_name,
-                       feature_asset_id=excluded.feature_asset_id, included=1, last_error='',
-                       updated_at=excluded.updated_at""",
-                rows,
-            )
+            self._upsert_pending_rows(db, rows)
+
+    @staticmethod
+    def _upsert_pending_rows(db: sqlite3.Connection, rows: list[tuple[Any, ...]]) -> None:
+        db.executemany(
+            """INSERT INTO pending(person_id, operation, name, target_person_id, target_name,
+                   feature_asset_id, included, last_error, created_at, updated_at)
+               VALUES(?,?,?,?,?,?,1,'',?,?)
+               ON CONFLICT(person_id) DO UPDATE SET operation=excluded.operation, name=excluded.name,
+                   target_person_id=excluded.target_person_id, target_name=excluded.target_name,
+                   feature_asset_id=excluded.feature_asset_id, included=1, last_error='',
+                   updated_at=excluded.updated_at""",
+            rows,
+        )
+
+    def group_progress(self) -> dict[str, str]:
+        with self.connect() as db:
+            return {row["asset_id"]: row["status"] for row in db.execute("SELECT asset_id,status FROM group_photo_progress")}
+
+    def clear_group_progress(self, asset_id: str) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM group_photo_progress WHERE asset_id=?", (asset_id,))
+
+    def group_drafts(self, asset_id: str) -> list[dict[str, Any]]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute("SELECT person_id,name,target_person_id,operation FROM group_photo_drafts WHERE asset_id=?", (asset_id,))]
+
+    def save_group_draft(self, asset_id: str, person_id: str, name: str, target_id: str | None, operation: str = "rename") -> None:
+        with self.connect() as db:
+            if name:
+                db.execute("INSERT INTO group_photo_drafts(asset_id,person_id,name,target_person_id,operation) VALUES(?,?,?,?,?) ON CONFLICT(asset_id,person_id) DO UPDATE SET name=excluded.name,target_person_id=excluded.target_person_id,operation=excluded.operation", (asset_id, person_id, name, target_id, operation))
+            else:
+                db.execute("DELETE FROM group_photo_drafts WHERE asset_id=? AND person_id=?", (asset_id, person_id))
+
+    def group_advance(self, asset_id: str, status: str, entries: list[dict[str, Any]]) -> None:
+        stamp = now()
+        rows = [(item["personId"], item["operation"], normalized_name(item.get("name")), item.get("targetPersonId"), normalized_name(item.get("targetName")), None, stamp, stamp) for item in entries]
+        with self.connect() as db:
+            if rows:
+                self._upsert_pending_rows(db, rows)
+                db.executemany("DELETE FROM investigate WHERE person_id=?", [(item["personId"],) for item in entries])
+                db.executemany("DELETE FROM progress WHERE person_id=?", [(item["personId"],) for item in entries])
+                db.executemany("DELETE FROM group_photo_drafts WHERE person_id=?", [(item["personId"],) for item in entries])
+            db.execute("INSERT INTO group_photo_progress(asset_id,status,updated_at) VALUES(?,?,?) ON CONFLICT(asset_id) DO UPDATE SET status=excluded.status,updated_at=excluded.updated_at", (asset_id, status, stamp))
+            db.execute("DELETE FROM group_photo_drafts WHERE asset_id=?", (asset_id,))
+            db.execute("UPDATE settings SET value='' WHERE key='group_current' AND value=?", (asset_id,))
+
+    def start_group_deferred(self) -> None:
+        with self.connect() as db:
+            db.execute("UPDATE group_photo_progress SET status='ready' WHERE status='deferred'")
+            db.execute("INSERT INTO settings(key,value) VALUES('group_pass','deferred') ON CONFLICT(key) DO UPDATE SET value='deferred'")
+            db.execute("INSERT INTO settings(key,value) VALUES('group_current','') ON CONFLICT(key) DO UPDATE SET value='' ")
+
+    def restart_group_initial(self) -> None:
+        with self.connect() as db:
+            db.execute("UPDATE group_photo_progress SET status='deferred' WHERE status='ready'")
+            db.execute("INSERT INTO settings(key,value) VALUES('group_pass','initial') ON CONFLICT(key) DO UPDATE SET value='initial'")
+            db.execute("INSERT INTO settings(key,value) VALUES('group_current','') ON CONFLICT(key) DO UPDATE SET value='' ")
+
+    def reset_group_pass(self) -> None:
+        with self.connect() as db:
+            db.execute("DELETE FROM group_photo_progress")
+            db.execute("DELETE FROM group_photo_drafts")
+            db.execute("DELETE FROM settings WHERE key IN ('group_current','group_pass')")
 
     def pending(self) -> list[dict[str, Any]]:
         with self.connect() as db:
@@ -619,6 +724,35 @@ class AppState:
         self.progress = {"current": 0, "total": None}
         self.sample_cache: dict[str, list[dict[str, Any]]] = {}
         self.similarity_cache: dict[int, tuple[tuple[str, ...], dict[str, Any]]] = {}
+        self.group_lock = threading.RLock()
+        self.group_face_slots = threading.BoundedSemaphore(4)
+        self.group_generation = 0
+        self.group_candidates: dict[str, dict[str, Any]] = {}
+        self.group_seen: set[str] = set()
+        self.group_scanning = False
+        self.group_complete = False
+        self.group_failures = 0
+        self.group_examined = 0
+        self.group_sources = 0
+        self.group_discovered = 0
+        self.group_filtered = 0
+        self.group_below_minimum = 0
+        self.group_without_actionable = 0
+
+    def invalidate_group_scan(self) -> None:
+        with self.lock:
+            self.group_generation += 1
+            self.group_candidates = {}
+            self.group_seen = set()
+            self.group_scanning = False
+            self.group_complete = False
+            self.group_failures = 0
+            self.group_examined = 0
+            self.group_sources = 0
+            self.group_discovered = 0
+            self.group_filtered = 0
+            self.group_below_minimum = 0
+            self.group_without_actionable = 0
 
     def disconnect(self) -> None:
         with self.lock:
@@ -627,6 +761,7 @@ class AppState:
             self.people = {}
             self.sample_cache = {}
             self.similarity_cache = {}
+            self.invalidate_group_scan()
             self.phase = "idle"
             self.message = "Sign in to Immich"
             self.progress = {"current": 0, "total": None}
@@ -654,6 +789,7 @@ class AppState:
         with self.lock:
             self.client, self.version = client, version
             self.people, self.sample_cache, self.similarity_cache = {}, {}, {}
+            self.invalidate_group_scan()
         self.set_status("connected", f"Connected to Immich {version}")
         return version
 
@@ -687,6 +823,7 @@ class AppState:
                     return
                 self.people = mapped
                 self.similarity_cache = {}
+                self.invalidate_group_scan()
                 self.set_status_for_client(client, "ready", f"Loaded {len(mapped)} people", len(mapped), len(mapped))
         except Exception as exc:
             if client is not None:
@@ -796,6 +933,343 @@ class AppState:
             if person.get("name") and not person.get("isHidden"):
                 rows.append(person)
         return sorted(rows, key=lambda p: (p["name"].casefold(), p["id"]))
+
+    def group_settings(self) -> dict[str, Any]:
+        try:
+            minimum = int(self.store.setting("group_min_faces", "5"))
+        except ValueError:
+            minimum = 5
+        order = self.store.setting("group_order", "most")
+        return {"minFaces": max(2, min(20, minimum)), "includeArchived": self.store.setting("group_archived", "true") != "false", "order": order if order in GROUP_ORDERS else "most"}
+
+    def set_group_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.group_lock:
+            try:
+                minimum = int(payload.get("minFaces"))
+            except (TypeError, ValueError) as exc:
+                raise ToolError("Minimum faces must be between 2 and 20") from exc
+            order = payload.get("order")
+            if minimum < 2 or minimum > 20 or order not in GROUP_ORDERS or not isinstance(payload.get("includeArchived"), bool):
+                raise ToolError("Invalid Group photos settings")
+            old = self.group_settings()
+            self.store.set_setting("group_min_faces", str(minimum))
+            self.store.set_setting("group_archived", "true" if payload["includeArchived"] else "false")
+            self.store.set_setting("group_order", order)
+            if minimum != old["minFaces"] or payload["includeArchived"] != old["includeArchived"]:
+                self.store.restart_group_initial()
+                self.invalidate_group_scan()
+            return self.group_settings()
+
+    def _group_actionable(self, person_id: str | None, pending_ids: set[str], merge_targets: set[str]) -> bool:
+        if not person_id or person_id in pending_ids or person_id in merge_targets:
+            return False
+        person = self.people.get(person_id)
+        return bool(person and not person.get("name") and not person.get("isHidden"))
+
+    def _group_face_data(self, faces: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], set[str]]:
+        pending = {row["person_id"]: row for row in self.store.pending()}
+        pending_ids = set(pending)
+        merge_targets = {row["target_person_id"] for row in pending.values() if row["operation"] == "merge" and row.get("target_person_id")}
+        with self.lock:
+            people = dict(self.people)
+        rows: list[dict[str, Any]] = []
+        actionable: set[str] = set()
+        for face in faces:
+            if not isinstance(face.get("id"), str):
+                continue
+            person_id = group_face_person_id(face)
+            person = people.get(person_id) if person_id else None
+            queued = pending.get(person_id)
+            if person and not person.get("name") and not person.get("isHidden") and person_id not in pending_ids and person_id not in merge_targets:
+                status, name = "actionable", ""
+                actionable.add(person_id)
+            elif queued:
+                status, name = "pending", queued.get("target_name") or queued.get("name") or "Pending"
+            elif person and person.get("name"):
+                status, name = "named", person["name"]
+            elif person and person.get("isHidden"):
+                status, name = "ignored", "Ignored"
+            elif person_id in merge_targets:
+                status, name = "pending", "Pending merge"
+            else:
+                status, name = "unassigned", "Unassigned"
+            rows.append({"id": face["id"], "personId": person_id, "status": status, "name": name,
+                         "box": {"x1": face.get("boundingBoxX1"), "y1": face.get("boundingBoxY1"),
+                                 "x2": face.get("boundingBoxX2"), "y2": face.get("boundingBoxY2"),
+                                 "width": face.get("imageWidth"), "height": face.get("imageHeight")}})
+        return rows, actionable
+
+    def _group_scan(self, generation: int, client: Immich, person_ids: list[str]) -> None:
+        def inspect(asset: dict[str, Any]) -> None:
+            try:
+                with self.group_face_slots:
+                    faces = client.faces(asset["id"])
+                _rows, actionable = self._group_face_data(faces)
+                with self.lock:
+                    if generation != self.group_generation:
+                        return
+                    self.group_examined += 1
+                    if len(faces) < self.group_settings()["minFaces"]:
+                        self.group_below_minimum += 1
+                    elif not actionable:
+                        self.group_without_actionable += 1
+                    else:
+                        counts = {person_id: sum(group_face_person_id(face) == person_id for face in faces) for person_id in actionable}
+                        self.group_candidates[asset["id"]] = {"id": asset["id"], "fileName": asset.get("originalFileName") or "Photo", "updatedAt": asset.get("updatedAt") or asset.get("fileModifiedAt") or "", "unnamedCount": sum(counts.values()), "clusterCounts": counts, "faceCount": len(faces)}
+            except Exception:
+                with self.lock:
+                    if generation == self.group_generation:
+                        self.group_failures += 1
+
+        try:
+            current_id = self.store.setting("group_current")
+            if current_id:
+                try:
+                    current_asset = client.asset(current_id)
+                    with self.lock:
+                        if generation != self.group_generation:
+                            return
+                        self.group_seen.add(current_id)
+                        self.group_discovered += 1
+                    if group_asset_allowed(current_asset, self.group_settings()["includeArchived"]):
+                        inspect(current_asset)
+                    else:
+                        with self.lock:
+                            if generation == self.group_generation:
+                                self.group_filtered += 1
+                except Exception:
+                    with self.lock:
+                        if generation == self.group_generation:
+                            self.group_failures += 1
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                waiting: set[concurrent.futures.Future[None]] = set()
+                for person_id in person_ids:
+                    page = 1
+                    while True:
+                        with self.lock:
+                            if generation != self.group_generation:
+                                return
+                        try:
+                            assets, more, _total = client.person_assets_page(person_id, page, 100, group_photos=True)
+                        except Exception:
+                            with self.lock:
+                                if generation == self.group_generation:
+                                    self.group_failures += 1
+                            break
+                        for asset in assets:
+                            with self.lock:
+                                if generation != self.group_generation:
+                                    return
+                                if asset["id"] in self.group_seen:
+                                    continue
+                                self.group_seen.add(asset["id"])
+                                self.group_discovered += 1
+                            if not group_asset_allowed(asset, self.group_settings()["includeArchived"]):
+                                with self.lock:
+                                    if generation == self.group_generation:
+                                        self.group_filtered += 1
+                                continue
+                            waiting.add(pool.submit(inspect, asset))
+                            if len(waiting) >= 8:
+                                done, waiting = concurrent.futures.wait(waiting, return_when=concurrent.futures.FIRST_COMPLETED)
+                                for future in done:
+                                    future.result()
+                        if not more:
+                            break
+                        page += 1
+                for future in concurrent.futures.as_completed(waiting):
+                    future.result()
+        except Exception:
+            with self.lock:
+                if generation == self.group_generation:
+                    self.group_failures += 1
+        finally:
+            with self.lock:
+                if generation == self.group_generation:
+                    self.group_scanning = False
+                    self.group_complete = True
+
+    def start_group_scan(self, retry: bool = False) -> None:
+        client = self.require_client()
+        with self.lock:
+            if self.phase != "ready":
+                return
+            if retry:
+                if self.group_scanning:
+                    raise ToolError("Wait for the current Group photos scan to finish before retrying")
+                self.invalidate_group_scan()
+            if self.group_scanning or self.group_complete:
+                return
+            pending = self.store.pending()
+            excluded = {row["person_id"] for row in pending}
+            excluded.update(row["target_person_id"] for row in pending if row["operation"] == "merge" and row.get("target_person_id"))
+            person_ids = [person_id for person_id, person in self.people.items() if not person.get("name") and not person.get("isHidden") and person_id not in excluded]
+            self.group_sources = len(person_ids)
+            self.group_scanning = True
+            generation = self.group_generation
+        threading.Thread(target=self._group_scan, args=(generation, client, person_ids), daemon=True).start()
+
+    def group_photo_state(self) -> dict[str, Any]:
+        self.start_group_scan()
+        with self.group_lock:
+            settings = self.group_settings()
+            pending = self.store.pending()
+            blocked = {row["person_id"] for row in pending}
+            blocked.update(row["target_person_id"] for row in pending if row["operation"] == "merge" and row.get("target_person_id"))
+            with self.lock:
+                candidates = sort_group_assets(
+                    ({**row, "unnamedCount": sum(count for person_id, count in row["clusterCounts"].items()
+                         if self._group_actionable(person_id, blocked, blocked))} for row in self.group_candidates.values()),
+                    settings["order"])
+                scanning, complete = self.group_scanning, self.group_complete
+                examined, failures = self.group_examined, self.group_failures
+                sources, discovered, filtered = self.group_sources, self.group_discovered, self.group_filtered
+                below_minimum, without_actionable = self.group_below_minimum, self.group_without_actionable
+            progress = self.store.group_progress()
+            deferred_pass = self.store.setting("group_pass", "initial") == "deferred"
+            current = self.store.setting("group_current")
+            indexed_ids = {row["id"] for row in candidates}
+            reopened = False
+            for candidate in candidates:
+                status = progress.get(candidate["id"])
+                if status == "done" and candidate["unnamedCount"]:
+                    self.store.clear_group_progress(candidate["id"])
+                    progress.pop(candidate["id"], None)
+                    reopened = True
+                elif status != "done" and not candidate["unnamedCount"]:
+                    self.store.group_advance(candidate["id"], "done", [])
+                    progress[candidate["id"]] = "done"
+            if complete and not failures:
+                for asset_id, status in list(progress.items()):
+                    if status in {"deferred", "ready"} and asset_id not in indexed_ids:
+                        self.store.group_advance(asset_id, "done", [])
+                        progress[asset_id] = "done"
+            if reopened and deferred_pass:
+                self.store.restart_group_initial()
+                progress = self.store.group_progress()
+                deferred_pass = False
+                current = ""
+            eligible = [row for row in candidates if (progress.get(row["id"]) == "ready" if deferred_pass else row["id"] not in progress)]
+            if current:
+                eligible.sort(key=lambda row: row["id"] != current)
+            photo = None
+            for candidate in eligible:
+                try:
+                    client = self.require_client()
+                    asset = client.asset(candidate["id"])
+                    if not group_asset_allowed(asset, settings["includeArchived"]):
+                        self.store.group_advance(candidate["id"], "done", [])
+                        continue
+                    faces, actionable = self._group_face_data(client.faces(candidate["id"]))
+                except Exception:
+                    with self.lock:
+                        self.group_failures += 1
+                    break
+                if len(faces) < settings["minFaces"] or not actionable:
+                    self.store.group_advance(candidate["id"], "done", [])
+                    continue
+                if current != candidate["id"]:
+                    self.store.set_setting("group_current", candidate["id"])
+                photo = {key: value for key, value in candidate.items() if key != "clusterCounts"}
+                photo.update({"faces": faces, "drafts": self.store.group_drafts(candidate["id"]), "unnamedCount": sum(face["status"] == "actionable" for face in faces)})
+                break
+            progress = self.store.group_progress()
+            deferred = sum(status == "deferred" for status in progress.values())
+            with self.lock:
+                failures = self.group_failures
+                indexed = len(self.group_candidates)
+            checkpoint = photo is None and complete and failures == 0
+            return {"settings": settings, "photo": photo, "scan": {"scanning": scanning, "complete": complete,
+                    "examined": examined, "indexed": indexed, "failures": failures, "provisional": not complete,
+                    "sources": sources, "discovered": discovered, "filtered": filtered,
+                    "belowMinimum": below_minimum, "withoutActionable": without_actionable},
+                    "pass": "deferred" if deferred_pass else "initial", "deferred": deferred, "checkpoint": checkpoint}
+
+    def group_scan_progress(self) -> dict[str, Any]:
+        self.start_group_scan()
+        with self.lock:
+            return {"scanning": self.group_scanning, "complete": self.group_complete,
+                    "examined": self.group_examined, "indexed": len(self.group_candidates),
+                    "failures": self.group_failures, "provisional": not self.group_complete,
+                    "sources": self.group_sources, "discovered": self.group_discovered,
+                    "filtered": self.group_filtered, "belowMinimum": self.group_below_minimum,
+                    "withoutActionable": self.group_without_actionable}
+
+    def save_group_draft(self, payload: dict[str, Any]) -> None:
+        with self.group_lock:
+            asset_id, person_id = payload.get("assetId"), payload.get("personId")
+            if not isinstance(asset_id, str) or not UUID_RE.fullmatch(asset_id) or not isinstance(person_id, str) or not UUID_RE.fullmatch(person_id):
+                raise ToolError("Invalid photo or cluster ID")
+            if asset_id != self.store.setting("group_current"):
+                raise ToolError("Photo changed; reload Group photos")
+            pending = self.store.pending()
+            pending_ids = {row["person_id"] for row in pending}
+            merge_targets = {row["target_person_id"] for row in pending if row["operation"] == "merge" and row.get("target_person_id")}
+            with self.lock:
+                candidate = self.group_candidates.get(asset_id)
+                actionable = bool(candidate and person_id in candidate["clusterCounts"] and self._group_actionable(person_id, pending_ids, merge_targets))
+            if not actionable:
+                raise ToolError("Cluster is no longer available for naming")
+            name = normalized_name(payload.get("name"))
+            target = payload.get("targetPersonId")
+            operation = payload.get("operation", "rename")
+            if operation not in {"rename", "hide"} or len(name) > 256 or (target is not None and (not isinstance(target, str) or not UUID_RE.fullmatch(target))):
+                raise ToolError("Invalid name draft")
+            if operation == "hide" and (name.casefold() != "ignore" or target is not None):
+                raise ToolError("Invalid ignore draft")
+            self.store.save_group_draft(asset_id, person_id, name, target, operation)
+
+    def advance_group_photo(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self.group_lock:
+            asset_id = payload.get("assetId")
+            if not isinstance(asset_id, str) or asset_id != self.store.setting("group_current"):
+                raise ToolError("Photo changed; reload Group photos")
+            decisions = payload.get("decisions")
+            if not isinstance(decisions, list):
+                raise ToolError("Invalid photo decisions")
+            if not group_asset_allowed(self.require_client().asset(asset_id), self.group_settings()["includeArchived"]):
+                raise ToolError("Photo is no longer eligible; reload Group photos")
+            faces, actionable = self._group_face_data(self.require_client().faces(asset_id))
+            if len(faces) < self.group_settings()["minFaces"] or not actionable:
+                raise ToolError("Photo is no longer eligible; reload Group photos")
+            entries = []
+            used: set[str] = set()
+            named = {person["id"]: person for person in self.named_people()}
+            for decision in decisions:
+                if not isinstance(decision, dict):
+                    raise ToolError("Invalid photo decision")
+                person_id = decision.get("personId")
+                name = normalized_name(decision.get("name"))
+                target_id = decision.get("targetPersonId")
+                operation = decision.get("operation", "rename")
+                if person_id not in actionable or person_id in used or operation not in {"rename", "hide"} or len(name) > 256:
+                    raise ToolError("Stale or duplicate photo decision")
+                used.add(person_id)
+                if operation == "hide":
+                    if name or target_id is not None:
+                        raise ToolError("Invalid ignore decision")
+                    entries.append({"personId": person_id, "operation": "hide", "name": ""})
+                    continue
+                if not name:
+                    raise ToolError("Name is required")
+                if target_id is not None:
+                    target = named.get(target_id)
+                    if not target or target_id == person_id or target["name"] != name:
+                        raise ToolError("Merge target changed; review the name again")
+                    entries.append({"personId": person_id, "operation": "merge", "name": name, "targetPersonId": target_id, "targetName": name})
+                else:
+                    entries.append({"personId": person_id, "operation": "rename", "name": name})
+            status = "done" if actionable == used else "deferred"
+            self.store.group_advance(asset_id, status, entries)
+            return {"queued": len(entries), "status": status}
+
+    def start_group_deferred(self) -> dict[str, Any]:
+        with self.group_lock:
+            state = self.group_photo_state()
+            if not state["checkpoint"] or state["deferred"] == 0:
+                raise ToolError("Deferred photos are not ready for review")
+            self.store.start_group_deferred()
+            return {"ok": True}
 
     def queue(self, payload: dict[str, Any]) -> None:
         person_id = str(payload.get("personId", ""))
@@ -1098,10 +1572,13 @@ class AppState:
         self.store.set_face_reviewed(face_id, person_id, False)
 
     def discard_pending(self) -> int:
-        discarded = self.store.clear_pending()
-        with self.lock:
-            self.sample_cache = {}
-        return discarded
+        with self.group_lock:
+            discarded = self.store.clear_pending()
+            self.store.reset_group_pass()
+            self.invalidate_group_scan()
+            with self.lock:
+                self.sample_cache = {}
+            return discarded
 
     def samples(self, person_id: str) -> list[dict[str, Any]]:
         with self.lock:
@@ -1475,7 +1952,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                 self.static("index.html")
-            elif path in {"/app.js", "/merge.js", "/face-review.js", "/naming.js", "/investigate.js", "/pending.js", "/browser-storage.js"}:
+            elif path in {"/app.js", "/merge.js", "/face-review.js", "/naming.js", "/group-photos.js", "/investigate.js", "/pending.js", "/browser-storage.js"}:
                 self.static(path[1:])
             elif path == "/api/state":
                 self.send_json(STATE.summary())
@@ -1494,6 +1971,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"people": STATE.list_people(kind, order)})
             elif path == "/api/names":
                 self.send_json({"people": STATE.named_people()})
+            elif path == "/api/group-photos":
+                self.send_json(STATE.group_photo_state())
+            elif path == "/api/group-photos/progress":
+                self.send_json(STATE.group_scan_progress())
             elif path == "/api/pending":
                 if "page" in query or "size" in query:
                     try:
@@ -1602,13 +2083,27 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             elif path == "/api/queue/group":
                 self.send_json({"ok": True, **STATE.queue_merge_group(payload)})
+            elif path == "/api/group-photos/settings":
+                self.send_json(STATE.set_group_settings(payload))
+            elif path == "/api/group-photos/draft":
+                STATE.save_group_draft(payload)
+                self.send_json({"ok": True})
+            elif path == "/api/group-photos/advance":
+                self.send_json(STATE.advance_group_photo(payload))
+            elif path == "/api/group-photos/deferred":
+                self.send_json(STATE.start_group_deferred())
+            elif path == "/api/group-photos/retry":
+                STATE.start_group_scan(retry=True)
+                self.send_json({"ok": True})
             elif path == "/api/pending/include":
                 STATE.store.set_included(str(payload.get("personId", "")), bool(payload.get("included")))
                 self.send_json({"ok": True})
             elif path == "/api/pending/return":
                 person_id = str(payload.get("personId", ""))
-                STATE.store.remove_pending(person_id)
-                STATE.store.skip(person_id)
+                with STATE.group_lock:
+                    STATE.store.remove_pending(person_id)
+                    STATE.store.skip(person_id)
+                    STATE.invalidate_group_scan()
                 self.send_json({"ok": True})
             elif path == "/api/face-detach/queue":
                 STATE.queue_face_detach(payload)

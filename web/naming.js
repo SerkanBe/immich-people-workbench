@@ -292,11 +292,17 @@ export function createNaming({ api, assetThumb, cleanName, loadNames, personThum
       clearTimeout(namedSearchTimer); state.pages.named = 1;
       namedSearchTimer = setTimeout(() => renderPeopleGrid("named", ui.namedGrid).catch(error => showToast(error.message)), 180);
     });
-    document.querySelector("#duplicate-confirm").addEventListener("click", async () => { ui.duplicate.close(); try { await state.duplicateAction?.(); } catch (error) { showToast(error.message); } finally { state.duplicateAction = null; } });
-    document.querySelector("#duplicate-cancel").addEventListener("click", () => { ui.duplicate.close(); requestAnimationFrame(() => state.duplicateInput?.focus()); });
-    ui.duplicate.addEventListener("cancel", event => { event.preventDefault(); ui.duplicate.close(); requestAnimationFrame(() => state.duplicateInput?.focus()); });
+    document.querySelector("#duplicate-confirm").addEventListener("click", async () => {
+      const action = state.duplicateAction;
+      state.duplicateAction = null; state.duplicateCancel = null;
+      ui.duplicate.close();
+      try { await action?.(); } catch (error) { showToast(error.message); }
+    });
+    function cancelDuplicate() { ui.duplicate.close(); state.duplicateCancel?.(); state.duplicateAction = null; state.duplicateCancel = null; requestAnimationFrame(() => state.duplicateInput?.focus()); }
+    document.querySelector("#duplicate-cancel").addEventListener("click", cancelDuplicate);
+    ui.duplicate.addEventListener("cancel", event => { event.preventDefault(); cancelDuplicate(); });
     ui.duplicate.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); document.querySelector("#duplicate-confirm").click(); } });
   }
 
-  return { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid, bindNamingControls };
+  return { matchingNames, drawFace, moveSlide, showSlide, attachNameBehavior, renderPeopleGrid, bindNamingControls, openDuplicate };
 }
