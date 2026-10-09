@@ -34,8 +34,8 @@ contains names, person IDs, skipped-round counters, Group photos settings,
 current photo, deferred pass, local name drafts, and pending changes. Sync
 reports are stored under the same state directory's `reports/`. The state
 directory is excluded from Git. It contains private data and should not be
-inspected, reset, or published casually. The browser also stores canvas
-positions, list settings, and Group photos rectangle visibility; existing
+inspected, reset, or published casually. The browser also stores list settings
+and Group photos rectangle visibility; existing
 `immichPeopleConsole.*` keys remain compatible. Group photos rebuilds its
 temporary candidate index after a server restart or Immich reload. The server
 binds to localhost by default.

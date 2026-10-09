@@ -11,12 +11,16 @@ decide which items the next Sync includes. Unchecking one leaves it in Pending
 for later. **Inspect** lets you review a cluster and correct its queued name
 or return it to naming.
 
-![Four fictional renames in Pending with checkboxes and Inspect actions](../images/visual-tour/pending-list.png)
+<a href="../images/visual-tour/pending-list.png">
+  <img src="../images/visual-tour/pending-list.png" alt="Four fictional renames in Pending with checkboxes and Inspect actions" width="840">
+</a>
 
 Choosing an existing person from name suggestions produces a merge item like
 this one. The example uses two synthetic clusters for Asha Bell.
 
-![Pending merge from an unnamed cluster into Asha Bell](../images/visual-tour/merge-pending.png)
+<a href="../images/visual-tour/merge-pending.png">
+  <img src="../images/visual-tour/merge-pending.png" alt="Pending merge from an unnamed cluster into Asha Bell" width="840">
+</a>
 
 **Sync checked changes to Immich** is the explicit write step. Review the
 checked items first; unchecked items stay queued. If an operation fails,

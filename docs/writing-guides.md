@@ -108,6 +108,11 @@ clear only this synthetic origin's settings when an exact starting view matters.
   its supported browser screenshot API, save the returned bytes, and visually
   inspect the result. Do not fabricate controls or alter screenshot content.
 - Add meaningful alt text. Place each image next to the instructions it supports.
+- Cap displayed screenshots at 840 px wide and 600 px tall, keeping their
+  aspect ratio. Use an HTML image with a width attribute inside a link to its
+  original file, as the existing tour pages do. Keep the original image at
+  full resolution so readers can open it to inspect small controls.
+  Allow images to shrink on narrow screens; never stretch smaller captures.
 - Preview rendered Markdown, check all links/images, and check actual button
   labels and shortcuts against the running app.
 - Verify the mock audit still shows zero writes after drafting/submitting,

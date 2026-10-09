@@ -20,7 +20,9 @@ Change **Minimum detected faces** to 2 to include smaller groups. Uncheck
 **Include archived photos** to leave archived photos out. **Order** sorts by
 the number of unnamed detections, update time, or random order.
 
-![Group photos with six numbered faces and the selected unnamed face in the sidebar](../images/visual-tour/group-photos-overview.jpg)
+<a href="../images/visual-tour/group-photos-overview.jpg">
+  <img src="../images/visual-tour/group-photos-overview.jpg" alt="Group photos with six numbered faces and the selected unnamed face in the sidebar" width="738">
+</a>
 
 The progress line distinguishes photos found, checked, and eligible. Workbench
 uses faces already detected by Immich; it does not run face detection. A photo
@@ -43,7 +45,9 @@ you are naming the cluster, not just this occurrence in the photo.
 Type a new name, or choose an existing person from the suggestions. In this
 example, `Do` offers **Dorian Reed**, whose face matches the selected cluster.
 
-![Existing-person suggestion beside the selected fictional face](../images/visual-tour/group-photos-name.jpg)
+<a href="../images/visual-tour/group-photos-name.jpg">
+  <img src="../images/visual-tour/group-photos-name.jpg" alt="Existing-person suggestion beside the selected fictional face" width="738">
+</a>
 
 `Tab` accepts a visible completion; press it again to move on. Up/Down choose
 suggestions. `Enter` moves on from a nonempty field; it does not submit the
@@ -57,7 +61,9 @@ To ignore a cluster, type `ignore` and explicitly choose **Ignore this
 cluster**. The field displays that full label so the choice is clear. Merely
 typing “Ignore” without choosing the action is treated as a person's name.
 
-![Explicit Ignore this cluster selection before submitting the photo](../images/visual-tour/group-photos-ignore.jpg)
+<a href="../images/visual-tour/group-photos-ignore.jpg">
+  <img src="../images/visual-tour/group-photos-ignore.jpg" alt="Explicit Ignore this cluster selection before submitting the photo" width="738">
+</a>
 
 Press `H` outside a text field to hide/show the face rectangles. Use
 **Shortcuts ?** for the key reference.
@@ -84,7 +90,9 @@ After the initial pass, **Pass complete** shows the deferred count. Choose
 **Review deferred photos** when you want another pass. Workbench does not
 loop back automatically.
 
-![Pass complete with three deferred synthetic photos and an explicit review button](../images/visual-tour/group-photos-deferred.jpg)
+<a href="../images/visual-tour/group-photos-deferred.jpg">
+  <img src="../images/visual-tour/group-photos-deferred.jpg" alt="Pass complete with three deferred synthetic photos and an explicit review button" width="840">
+</a>
 
 Previously queued names can serve as clues when you return, but those fields
 remain read-only. Go to Pending if you need to change or remove a queued

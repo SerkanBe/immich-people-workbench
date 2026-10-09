@@ -21,7 +21,9 @@ The four compact controls above it help you find your next person:
 - **Green check:** hide completed people, or press it again to show them.
   It works independently of the name filter.
 
-![Face review with an active search and the named-person filter open](../images/visual-tour/face-review-filters.jpg)
+<a href="../images/visual-tour/face-review-filters.jpg">
+  <img src="../images/visual-tour/face-review-filters.jpg" alt="Face review with an active search and the named-person filter open" width="738">
+</a>
 
 The sidebar shows photo counts separately from checked-face progress.
 Workbench counts assigned faces in the background. **Counting faces** can
@@ -46,7 +48,9 @@ for the same action. Selection has a blue outline.
 Here, one face has been accepted and a different fictional person has been
 dismissed. Both decisions are still drafts.
 
-![Compact grid with one green accepted draft and one red dismissed draft](../images/visual-tour/face-review-drafts.jpg)
+<a href="../images/visual-tour/face-review-drafts.jpg">
+  <img src="../images/visual-tour/face-review-drafts.jpg" alt="Compact grid with one green accepted draft and one red dismissed draft" width="738">
+</a>
 
 Drafts are saved locally across reloads. Wait for saving to finish before
 closing the app. They do not enter Pending or change Immich yet.
@@ -61,7 +65,9 @@ Press `Space` on a focused tile to open the photo preview. In Detail mode,
 you can also click the crop. Workbench displays Immich's preview, with a
 rectangle around the current face; it does not download the original file.
 
-![Photo lightbox with the dismissed face, rectangle, and review controls](../images/visual-tour/face-review-photo-context.jpg)
+<a href="../images/visual-tour/face-review-photo-context.jpg">
+  <img src="../images/visual-tour/face-review-photo-context.jpg" alt="Photo lightbox with the dismissed face, rectangle, and review controls" width="738">
+</a>
 
 In the preview:
 
@@ -91,7 +97,9 @@ This takes one action and keeps the person selected.
 The example now shows **1 awaiting Sync**. The green face is visible because
 **Show checked** was enabled; the dismissed face is in Pending.
 
-![Submitted review with accepted faces shown and one correction awaiting Sync](../images/visual-tour/face-review-after-submit.jpg)
+<a href="../images/visual-tour/face-review-after-submit.jpg">
+  <img src="../images/visual-tour/face-review-after-submit.jpg" alt="Submitted review with accepted faces shown and one correction awaiting Sync" width="738">
+</a>
 
 Open [Pending](pending.md) to inspect, exclude, or remove a correction.
 Removing it returns the face to Face review. Only explicit **Sync** moves a
