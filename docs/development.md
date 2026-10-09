@@ -16,7 +16,52 @@ Group photos keeps candidate asset metadata in memory while a bounded background
 scan reads each photo's faces. SQLite saves its settings, active photo, draft
 names, and initial/deferred pass progress. Reload and Sync rebuild the candidate
 index. Group photo submission saves Pending changes and pass progress in one
-transaction; the scan and submission never write to Immich.
+transaction; the scan and submission never write to Immich. Failed local draft
+saves remain in an in-memory snapshot map; explicit Submit Names retries those
+saves before advancing. Refreshing the face context does not overwrite unsaved
+names. Only successfully saved drafts survive a browser reload.
+
+## Sync and mutation safety
+
+Sync holds the Store's shared mutation lock until completion, including its
+people refresh. Pending/review/group edits use the same reentrant lock and
+reject competing requests with HTTP 409; they are not silently replayed after
+a remote write. Read-only face scans and people/Pending/media reads remain
+available. Group-photo view preparation also holds the lock because it may
+repair progress and delete resolved drafts. Retry that view after a busy
+response. These locks coordinate request threads in one Workbench process;
+run one process per state directory.
+
+A Pending response includes a `reviewToken` computed from its entire person and
+face Pending snapshot in one SQLite read transaction, including operation
+payloads, inclusion and checkpoints. HTTP Sync requires this token and compares
+it after acquiring both Sync and mutation locks, before any upstream write. A
+missing or stale token returns 409 and the browser reloads Pending for another
+explicit confirmation. Pagination shares the token for the whole queue. Internal
+AppState test/helper callers can omit it; the HTTP route never bypasses it.
+
+The browser's in-app Sync dialog captures the token when it opens. Its explicit
+Apply uses that captured token even if a later refresh changes Pending. Cancel
+and Escape make no Sync request. Confirmation never retries automatically.
+
+Each pending merge has a durable `merge_step`: ready, inflight, uncertain, or
+complete. Persist inflight before the upstream request and complete after
+validating its result. A confirmed merge's failed photo update resumes from
+complete; inflight after a restart and uncertain outcomes require human
+reconciliation, never blind replay. Inclusion toggles preserve that checkpoint;
+a started merge cannot be overwritten by a different queued operation.
+
+The transport accepts the source-only legacy merge response for known Immich
+versions before 3.3.0, and requires both source and target for 3.3.0 onward or an
+unknown version. Only a source NO_PERMISSION with a successful intended target
+(or the separately checked legacy target) is classified as a retryable refusal.
+NOT_FOUND and failed-target outcomes remain uncertain because partial effects
+can occur without a success result. It rejects duplicate/unrelated/missing IDs,
+malformed success flags, explicit failures, and inconsistent success/error
+rows. Contracts were
+checked against official 2.0.0, 3.0.0, 3.2.0, 3.2.1, 3.3.0 and 3.3.1 source;
+this source inspection and synthetic coverage do not establish live compatibility
+with every version. The guide mock uses the current two-result contract.
 
 ## Tests
 

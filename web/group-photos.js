@@ -5,6 +5,7 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
   const $ = selector => document.querySelector(selector);
   let photo = null, active = 0, drafts = new Map(), matches = [], selectedIndex = -1;
   let pollTimer = null, saving = Promise.resolve(), busy = false;
+  const unsavedDrafts = new Map();
   const input = $("#group-name"), list = $("#group-suggestions"), ghost = $("#group-ghost");
   const submitButton = $("#group-advance"), markerLayer = $("#group-markers");
   const markerVisibilityKey = "immichPeopleWorkbench.groupMarkersVisible.v1";
@@ -41,12 +42,29 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
     return "No photos met the current filters. Check Include archived photos or lower Minimum detected faces.";
   }
 
+  async function persistDraft(key, snapshot) {
+    await api("/api/group-photos/draft", { method: "POST", body: snapshot });
+    if (unsavedDrafts.get(key) === snapshot) unsavedDrafts.delete(key);
+  }
+
   function saveDraft(personId, draft) {
-    if (!personId || !photo) return;
+    if (!personId || !photo || busy) return;
     drafts.set(personId, draft);
-    const assetId = photo.id;
-    saving = saving.catch(() => {}).then(() => api("/api/group-photos/draft", { method: "POST", body: { assetId, personId, name: draft.name, targetPersonId: draft.targetPersonId, operation: draft.operation || "rename" } }));
-    saving.catch(error => showToast(`Could not save the name draft: ${error.message}`));
+    const snapshot = Object.freeze({ assetId: photo.id, personId, name: draft.name,
+      targetPersonId: draft.targetPersonId, operation: draft.operation || "rename" });
+    const key = `${photo.id}:${personId}`;
+    unsavedDrafts.set(key, snapshot);
+    saving = saving.catch(() => {}).then(() => persistDraft(key, snapshot));
+    saving.catch(error => showToast(`Could not save the name draft: ${error.message} Submit Names will retry saving it.`));
+  }
+
+  async function retryDrafts(assetId) {
+    await saving.catch(() => {});
+    // Retry the exact latest unsaved local snapshots before any advance. Failed
+    // attempts retain their draft; a lost response is safe to save again locally.
+    for (const [key, snapshot] of [...unsavedDrafts]) {
+      if (snapshot.assetId === assetId) await persistDraft(key, snapshot);
+    }
   }
 
   function updateSuggestions() {
@@ -85,6 +103,7 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
   }
 
   function chooseSuggestion(index) {
+    if (busy) return;
     if (index < 0) {
       selectedIndex = -1;
       const draft = activeDraft();
@@ -152,6 +171,11 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
       targetPersonId: state.names.some(person => person.id === row.target_person_id && person.name === row.name) ? row.target_person_id : null,
       operation: row.operation === "hide" ? "hide" : "rename",
     }]));
+    for (const snapshot of unsavedDrafts.values()) {
+      if (snapshot.assetId === next.id) drafts.set(snapshot.personId, {
+        name: snapshot.name, targetPersonId: snapshot.targetPersonId, operation: snapshot.operation,
+      });
+    }
     $("#group-workspace").hidden = false; $("#group-checkpoint").hidden = true;
     const image = $("#group-photo-image"); image.src = assetThumb(next.id); image.alt = next.fileName;
     $("#group-photo-caption").textContent = `${next.fileName} · ${next.faceCount} detected faces · ${next.unnamedCount} unnamed detections`;
@@ -227,8 +251,11 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
   async function advance() {
     if (busy || !photo) return;
     busy = true;
+    const assetId = photo.id;
+    input.disabled = true; submitButton.disabled = true;
     try {
-      await saving;
+      await retryDrafts(assetId);
+      if (photo?.id !== assetId) throw new Error("Photo changed; review it again before submitting names.");
       const actionable = new Set(photo.faces.filter(face => face.status === "actionable").map(face => face.personId));
       const decisions = [...actionable].map(personId => ({ personId, ...(drafts.get(personId) || {}) })).filter(row => row.operation === "hide" || cleanName(row.name || ""));
       decisions.forEach(row => {
@@ -237,7 +264,8 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
         delete row.unfinished;
       });
       if (!(await confirmDuplicates(decisions))) return;
-      const result = await api("/api/group-photos/advance", { method: "POST", body: { assetId: photo.id, decisions } });
+      if (photo?.id !== assetId) throw new Error("Photo changed; review it again before submitting names.");
+      const result = await api("/api/group-photos/advance", { method: "POST", body: { assetId, decisions } });
       showToast(result.queued ? `${result.queued} changes queued in Pending` : "Photo deferred");
       photo = null;
       await loadNames(); await refreshSummary(); await renderGroupPhotos();
@@ -248,20 +276,23 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
         await renderGroupPhotos();
       }
       throw error;
-    } finally { busy = false; }
+    } finally {
+      busy = false; submitButton.disabled = false;
+      if (photo) selectFace(active, false);
+    }
   }
 
   function bindGroupPhotos() {
     for (const selector of ["#group-min-faces", "#group-archived", "#group-order"]) $(selector).addEventListener("change", async () => {
       try {
-        await saving;
+        await retryDrafts(photo?.id);
         await api("/api/group-photos/settings", { method: "POST", body: { minFaces: Number($("#group-min-faces").value), includeArchived: $("#group-archived").checked, order: $("#group-order").value } });
         photo = null; await renderGroupPhotos();
       } catch (error) { showToast(error.message); }
     });
     input.addEventListener("focus", updateSuggestions);
     input.addEventListener("blur", () => setTimeout(() => list.classList.remove("open"), 100));
-    input.addEventListener("input", () => { selectedIndex = -1; saveDraft(activeFace()?.personId, { name: input.value, targetPersonId: null, operation: "rename" }); updateSuggestions(); });
+    input.addEventListener("input", () => { if (busy) { input.value = draftLabel(activeDraft()); return; } selectedIndex = -1; saveDraft(activeFace()?.personId, { name: input.value, targetPersonId: null, operation: "rename" }); updateSuggestions(); });
     input.addEventListener("keydown", event => {
       if (event.key === "Tab") {
         const ignoreIndex = !event.shiftKey ? matches.findIndex(item => item.kind === "ignore") : -1;

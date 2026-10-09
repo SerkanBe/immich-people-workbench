@@ -28,6 +28,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from contextlib import contextmanager, nullcontext
+from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
@@ -50,6 +52,39 @@ class ToolError(RuntimeError):
 
 class SyncInProgress(ToolError):
     pass
+
+
+class MergeRejected(ToolError):
+    """A valid response explicitly refused the requested merge."""
+
+
+class MergeUncertain(ToolError):
+    """The response cannot establish whether the requested merge completed."""
+
+
+@contextmanager
+def mutation_guard(lock):
+    # Reentrant for Sync's own Store writes. Competing request threads never wait
+    # and replay an edit after a job has changed its meaning.
+    if not lock.acquire(blocking=False):
+        raise SyncInProgress("Local changes are busy. Wait for Sync or the current save to finish, then retry.")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def local_mutation(method):
+    @wraps(method)
+    def guarded(self, *args, **kwargs):
+        with mutation_guard(self.mutation_lock):
+            return method(self, *args, **kwargs)
+    return guarded
+
+
+def pending_review_token(rows: list[dict[str, Any]], faces: list[dict[str, Any]]) -> str:
+    payload = json.dumps({"people": rows, "faces": faces}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def now() -> str:
@@ -138,6 +173,7 @@ class Immich:
         self.credential = credential.strip()
         self.session = session
         self.context = ssl._create_unverified_context() if insecure else None
+        self.server_version = "unknown"
 
     def request(self, method: str, path: str, payload: Any = None) -> tuple[bytes, str]:
         data = json.dumps(payload).encode() if payload is not None else None
@@ -170,10 +206,12 @@ class Immich:
         data = self.json("GET", "/server/version")
         if isinstance(data, dict):
             if isinstance(data.get("version"), str):
-                return data["version"]
+                self.server_version = data["version"]
+                return self.server_version
             values = [data.get(field) for field in ("major", "minor", "patch")]
             if all(isinstance(value, int) for value in values):
-                return ".".join(str(value) for value in values)
+                self.server_version = ".".join(str(value) for value in values)
+                return self.server_version
         return "unknown"
 
     def login(self, email: str, password: str) -> tuple[str, str]:
@@ -236,7 +274,35 @@ class Immich:
         self.json("PUT", f"/faces/{person_id}", {"id": face_id})
 
     def merge(self, target_person_id: str, source_person_id: str) -> None:
-        self.json("POST", f"/people/{target_person_id}/merge", {"ids": [source_person_id]})
+        try:
+            data = self.json("POST", f"/people/{target_person_id}/merge", {"ids": [source_person_id]})
+        except Exception as exc:
+            raise MergeUncertain("Merge outcome could not be confirmed. Check both people in Immich before removing or retrying this request.") from exc
+        expected = {target_person_id, source_person_id}
+        # Through v3.2.1 success responses contain source rows only. v3.3
+        # adds a target row, whose failure can mean a different survivor was used.
+        version = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$", self.server_version)
+        legacy = bool(version and tuple(map(int, version.groups())) < (3, 3, 0))
+        required = {source_person_id} if legacy else expected
+        if (not isinstance(data, list) or not data
+                or any(not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                       or item["id"] not in expected or type(item.get("success")) is not bool
+                       or (item["success"] and item.get("error") is not None) for item in data)
+                or len({item["id"] for item in data}) != len(data)
+                or not required.issubset({item["id"] for item in data})):
+            raise MergeUncertain("Unexpected merge response. Check both people in Immich; this request has not been marked successful.")
+        failures = [item for item in data if not item["success"]]
+        if failures:
+            source = next(item for item in data if item["id"] == source_person_id)
+            target = next((item for item in data if item["id"] == target_person_id), None)
+            # NOT_FOUND is also a default result in newer Immich implementations:
+            # group/other-owner effects may have happened without a success row.
+            # Only a source permission refusal with a confirmed intended target
+            # establishes that the source was excluded before merge processing.
+            if (not source["success"] and source.get("error") == "NO_PERMISSION"
+                    and ((target is not None and target["success"]) or (legacy and target is None))):
+                raise MergeRejected("Immich refused the source merge: NO_PERMISSION")
+            raise MergeUncertain("Immich could not confirm the complete merge. Check both people in Immich before removing or retrying this request.")
 
     def person_assets_page(self, person_id: str, page: int = 1, size: int = 50, *, group_photos: bool = False) -> tuple[list[dict[str, Any]], bool, int | None]:
         payload = {"personIds": [person_id], "page": max(1, page), "size": max(1, min(size, 100))}
@@ -309,6 +375,7 @@ class Immich:
 class Store:
     def __init__(self, path: Path):
         self.path = path
+        self.mutation_lock = threading.RLock()
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(
@@ -397,6 +464,8 @@ class Store:
                 );
                 """
             )
+            if "merge_step" not in {row["name"] for row in db.execute("PRAGMA table_info(pending)")}:
+                db.execute("ALTER TABLE pending ADD COLUMN merge_step TEXT NOT NULL DEFAULT 'ready'")
             if "operation" not in {row["name"] for row in db.execute("PRAGMA table_info(group_photo_drafts)")}:
                 db.execute("ALTER TABLE group_photo_drafts ADD COLUMN operation TEXT NOT NULL DEFAULT 'rename'")
 
@@ -409,6 +478,7 @@ class Store:
         with self.connect() as db:
             return {row["person_id"]: row["skip_count"] for row in db.execute("SELECT person_id, skip_count FROM progress")}
 
+    @local_mutation
     def skip(self, person_id: str) -> int:
         stamp = now()
         with self.connect() as db:
@@ -420,6 +490,7 @@ class Store:
             row = db.execute("SELECT skip_count FROM progress WHERE person_id=?", (person_id,)).fetchone()
         return int(row["skip_count"])
 
+    @local_mutation
     def clear_progress(self, person_id: str) -> None:
         with self.connect() as db:
             db.execute("DELETE FROM progress WHERE person_id=?", (person_id,))
@@ -428,6 +499,7 @@ class Store:
         with self.connect() as db:
             return {row["person_id"] for row in db.execute("SELECT person_id FROM investigate")}
 
+    @local_mutation
     def mark_investigate(self, person_id: str) -> None:
         with self.connect() as db:
             db.execute(
@@ -435,18 +507,22 @@ class Store:
                 (person_id, now()),
             )
 
+    @local_mutation
     def unmark_investigate(self, person_id: str) -> None:
         with self.connect() as db:
             db.execute("DELETE FROM investigate WHERE person_id=?", (person_id,))
 
+    @local_mutation
     def clear_investigate(self) -> int:
         with self.connect() as db:
             cursor = db.execute("DELETE FROM investigate")
             return max(0, cursor.rowcount)
 
+    @local_mutation
     def upsert_pending(self, item: dict[str, Any]) -> None:
         self.upsert_pending_many([item])
 
+    @local_mutation
     def upsert_pending_many(self, items: Iterable[dict[str, Any]]) -> None:
         stamp = now()
         rows = []
@@ -467,6 +543,10 @@ class Store:
 
     @staticmethod
     def _upsert_pending_rows(db: sqlite3.Connection, rows: list[tuple[Any, ...]]) -> None:
+        for row in rows:
+            existing = db.execute("SELECT merge_step FROM pending WHERE person_id=?", (row[0],)).fetchone()
+            if existing and existing["merge_step"] != "ready":
+                raise ToolError("This merge has already started. Review its outcome in Immich and remove the request explicitly before replacing it.")
         db.executemany(
             """INSERT INTO pending(person_id, operation, name, target_person_id, target_name,
                    feature_asset_id, included, last_error, created_at, updated_at)
@@ -482,6 +562,7 @@ class Store:
         with self.connect() as db:
             return {row["asset_id"]: row["status"] for row in db.execute("SELECT asset_id,status FROM group_photo_progress")}
 
+    @local_mutation
     def clear_group_progress(self, asset_id: str) -> None:
         with self.connect() as db:
             db.execute("DELETE FROM group_photo_progress WHERE asset_id=?", (asset_id,))
@@ -490,6 +571,7 @@ class Store:
         with self.connect() as db:
             return [dict(row) for row in db.execute("SELECT person_id,name,target_person_id,operation FROM group_photo_drafts WHERE asset_id=?", (asset_id,))]
 
+    @local_mutation
     def save_group_draft(self, asset_id: str, person_id: str, name: str, target_id: str | None, operation: str = "rename") -> None:
         with self.connect() as db:
             if name:
@@ -497,6 +579,7 @@ class Store:
             else:
                 db.execute("DELETE FROM group_photo_drafts WHERE asset_id=? AND person_id=?", (asset_id, person_id))
 
+    @local_mutation
     def group_advance(self, asset_id: str, status: str, entries: list[dict[str, Any]]) -> None:
         stamp = now()
         rows = [(item["personId"], item["operation"], normalized_name(item.get("name")), item.get("targetPersonId"), normalized_name(item.get("targetName")), None, stamp, stamp) for item in entries]
@@ -510,23 +593,35 @@ class Store:
             db.execute("DELETE FROM group_photo_drafts WHERE asset_id=?", (asset_id,))
             db.execute("UPDATE settings SET value='' WHERE key='group_current' AND value=?", (asset_id,))
 
+    @local_mutation
     def start_group_deferred(self) -> None:
         with self.connect() as db:
             db.execute("UPDATE group_photo_progress SET status='ready' WHERE status='deferred'")
             db.execute("INSERT INTO settings(key,value) VALUES('group_pass','deferred') ON CONFLICT(key) DO UPDATE SET value='deferred'")
             db.execute("INSERT INTO settings(key,value) VALUES('group_current','') ON CONFLICT(key) DO UPDATE SET value='' ")
 
+    @local_mutation
     def restart_group_initial(self) -> None:
         with self.connect() as db:
             db.execute("UPDATE group_photo_progress SET status='deferred' WHERE status='ready'")
             db.execute("INSERT INTO settings(key,value) VALUES('group_pass','initial') ON CONFLICT(key) DO UPDATE SET value='initial'")
             db.execute("INSERT INTO settings(key,value) VALUES('group_current','') ON CONFLICT(key) DO UPDATE SET value='' ")
 
+    @local_mutation
     def reset_group_pass(self) -> None:
         with self.connect() as db:
             db.execute("DELETE FROM group_photo_progress")
             db.execute("DELETE FROM group_photo_drafts")
             db.execute("DELETE FROM settings WHERE key IN ('group_current','group_pass')")
+
+    def pending_snapshot(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        # One SQLite read transaction binds both queues to the token. A write
+        # between separate reads must not produce a token for a mixed snapshot.
+        with self.connect() as db:
+            db.execute("BEGIN")
+            rows = db.execute("SELECT * FROM pending ORDER BY created_at, person_id").fetchall()
+            faces = db.execute("SELECT * FROM face_detach_pending ORDER BY created_at, face_id").fetchall()
+        return [dict(row) for row in rows], [dict(row) for row in faces]
 
     def pending(self) -> list[dict[str, Any]]:
         with self.connect() as db:
@@ -536,24 +631,36 @@ class Store:
     def pending_ids(self) -> set[str]:
         return {item["person_id"] for item in self.pending()}
 
+    @local_mutation
     def set_included(self, person_id: str, included: bool) -> None:
         with self.connect() as db:
             db.execute("UPDATE pending SET included=?, updated_at=? WHERE person_id=?", (int(included), now(), person_id))
 
+    @local_mutation
     def remove_pending(self, person_id: str) -> None:
         with self.connect() as db:
             db.execute("DELETE FROM pending WHERE person_id=?", (person_id,))
 
+    @local_mutation
     def clear_pending(self) -> int:
         with self.connect() as db:
             people = db.execute("DELETE FROM pending").rowcount
             faces = db.execute("DELETE FROM face_detach_pending").rowcount
             return max(0, people) + max(0, faces)
 
+    @local_mutation
+    def set_merge_step(self, person_id: str, step: str) -> None:
+        if step not in {"ready", "inflight", "uncertain", "complete"}:
+            raise ToolError("Invalid merge checkpoint")
+        with self.connect() as db:
+            db.execute("UPDATE pending SET merge_step=?, updated_at=? WHERE person_id=?", (step, now(), person_id))
+
+    @local_mutation
     def set_error(self, person_id: str, error: str) -> None:
         with self.connect() as db:
             db.execute("UPDATE pending SET last_error=?, updated_at=? WHERE person_id=?", (error[:2000], now(), person_id))
 
+    @local_mutation
     def queue_face_detach(self, face_id: str, source_person_id: str, asset_id: str, file_name: str) -> None:
         stamp = now()
         with self.connect() as db:
@@ -588,6 +695,7 @@ class Store:
             rows = db.execute("SELECT person_id FROM face_review_reopened").fetchall()
         return {row["person_id"] for row in rows}
 
+    @local_mutation
     def set_review_reopened(self, person_id: str, reopened: bool) -> None:
         with self.connect() as db:
             if reopened:
@@ -599,6 +707,7 @@ class Store:
             else:
                 db.execute("DELETE FROM face_review_reopened WHERE person_id=?", (person_id,))
 
+    @local_mutation
     def set_face_review_drafts(self, person_id: str, items: list[dict[str, str]]) -> None:
         stamp = now()
         with self.connect() as db:
@@ -614,6 +723,7 @@ class Store:
                         (item["faceId"], person_id, item["assetId"], item["fileName"], item["verdict"], stamp),
                     )
 
+    @local_mutation
     def submit_face_review(self, person_id: str, expected: list[dict[str, Any]]) -> dict[str, int]:
         counts = {"correct": 0, "wrong": 0, "unreviewed": 0}
         with self.connect() as db:
@@ -652,6 +762,7 @@ class Store:
             db.execute("DELETE FROM face_review_reopened WHERE person_id=?", (person_id,))
         return counts
 
+    @local_mutation
     def set_face_detach_included(self, face_id: str, included: bool) -> None:
         with self.connect() as db:
             db.execute(
@@ -659,6 +770,7 @@ class Store:
                 (int(included), now(), face_id),
             )
 
+    @local_mutation
     def set_face_detach_target(self, face_id: str, target_person_id: str) -> None:
         with self.connect() as db:
             db.execute(
@@ -666,6 +778,7 @@ class Store:
                 (target_person_id, now(), face_id),
             )
 
+    @local_mutation
     def set_face_detach_error(self, face_id: str, error: str) -> None:
         with self.connect() as db:
             db.execute(
@@ -673,11 +786,13 @@ class Store:
                 (error[:2000], now(), face_id),
             )
 
+    @local_mutation
     def remove_face_detach(self, face_id: str) -> None:
         with self.connect() as db:
             db.execute("DELETE FROM face_detach_pending WHERE face_id=?", (face_id,))
             db.execute("DELETE FROM face_reviews WHERE face_id=?", (face_id,))
 
+    @local_mutation
     def set_face_reviewed(self, face_id: str, person_id: str, reviewed: bool) -> None:
         with self.connect() as db:
             if reviewed:
@@ -690,6 +805,7 @@ class Store:
             else:
                 db.execute("DELETE FROM face_reviews WHERE face_id=? AND person_id=?", (face_id, person_id))
 
+    @local_mutation
     def set_faces_reviewed(self, face_ids: list[str], person_id: str, reviewed: bool) -> None:
         with self.connect() as db:
             if reviewed:
@@ -705,6 +821,7 @@ class Store:
                     [(face_id, person_id) for face_id in face_ids],
                 )
 
+    @local_mutation
     def remove_face_review(self, face_id: str) -> None:
         with self.connect() as db:
             db.execute("DELETE FROM face_reviews WHERE face_id=?", (face_id,))
@@ -814,6 +931,7 @@ class AppState:
         self.reports = reports
         self.lock = threading.RLock()
         self.sync_lock = threading.Lock()
+        self.mutation_lock = store.mutation_lock
         self.face_scan_lock = threading.Lock()
         self.face_inventory_locks: dict[str, threading.Lock] = {}
         self.face_scan_failures: set[str] = set()
@@ -1065,6 +1183,7 @@ class AppState:
         order = self.store.setting("group_order", "most")
         return {"minFaces": max(2, min(20, minimum)), "includeArchived": self.store.setting("group_archived", "true") != "false", "order": order if order in GROUP_ORDERS else "most"}
 
+    @local_mutation
     def set_group_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.group_lock:
             try:
@@ -1232,6 +1351,7 @@ class AppState:
             generation = self.group_generation
         threading.Thread(target=self._group_scan, args=(generation, client, person_ids), daemon=True).start()
 
+    @local_mutation
     def group_photo_state(self) -> dict[str, Any]:
         self.start_group_scan()
         with self.group_lock:
@@ -1318,6 +1438,7 @@ class AppState:
                     "filtered": self.group_filtered, "belowMinimum": self.group_below_minimum,
                     "withoutActionable": self.group_without_actionable}
 
+    @local_mutation
     def save_group_draft(self, payload: dict[str, Any]) -> None:
         with self.group_lock:
             asset_id, person_id = payload.get("assetId"), payload.get("personId")
@@ -1342,6 +1463,7 @@ class AppState:
                 raise ToolError("Invalid ignore draft")
             self.store.save_group_draft(asset_id, person_id, name, target, operation)
 
+    @local_mutation
     def advance_group_photo(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self.group_lock:
             asset_id = payload.get("assetId")
@@ -1386,6 +1508,7 @@ class AppState:
             self.store.group_advance(asset_id, status, entries)
             return {"queued": len(entries), "status": status}
 
+    @local_mutation
     def start_group_deferred(self) -> dict[str, Any]:
         with self.group_lock:
             state = self.group_photo_state()
@@ -1394,6 +1517,7 @@ class AppState:
             self.store.start_group_deferred()
             return {"ok": True}
 
+    @local_mutation
     def queue(self, payload: dict[str, Any]) -> None:
         person_id = str(payload.get("personId", ""))
         with self.lock:
@@ -1425,6 +1549,7 @@ class AppState:
         self.store.unmark_investigate(person_id)
         self.store.clear_progress(person_id)
 
+    @local_mutation
     def queue_merge_group(self, payload: dict[str, Any]) -> dict[str, Any]:
         raw_ids = payload.get("personIds")
         if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 100:
@@ -1486,23 +1611,31 @@ class AppState:
             self.store.clear_progress(person_id)
         return result
 
-    def pending_public(self) -> list[dict[str, Any]]:
-        rows = self.store.pending()
+    def pending_public(self, rows: list[dict[str, Any]] | None = None,
+                       face_rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        if rows is None or face_rows is None:
+            rows, face_rows = self.store.pending_snapshot()
         with self.lock:
             people = self.people.copy()
         result = []
         for row in rows:
             person = people.get(row["person_id"], {})
             target = people.get(row.get("target_person_id"), {}) if row.get("target_person_id") else {}
+            recovery = ""
+            if row["merge_step"] in {"inflight", "uncertain"}:
+                recovery = "Merge outcome is uncertain. Check both people in Immich before removing this request. Sync will not repeat the merge automatically."
+            elif row["merge_step"] == "complete":
+                recovery = "Merge completed. Sync will finish any remaining representative photo update and local cleanup without merging again."
             result.append({
                 "kind": "person",
                 "personId": row["person_id"], "operation": row["operation"], "name": row["name"],
                 "targetPersonId": row.get("target_person_id"), "targetName": row["target_name"],
                 "featureAssetId": row.get("feature_asset_id"), "included": bool(row["included"]),
-                "lastError": row["last_error"], "assetCount": person.get("assetCount"),
+                "lastError": row["last_error"] or recovery, "assetCount": person.get("assetCount"),
+                "mergeStep": row["merge_step"],
                 "currentName": person.get("name", ""), "targetAssetCount": target.get("assetCount"),
             })
-        for row in self.store.face_detaches():
+        for row in face_rows:
             person = people.get(row["source_person_id"], {})
             result.append({
                 "kind": "face", "operation": "detach-face", "faceId": row["face_id"],
@@ -1513,8 +1646,13 @@ class AppState:
             })
         return result
 
+    def pending_data(self) -> dict[str, Any]:
+        rows, faces = self.store.pending_snapshot()
+        return {"pending": self.pending_public(rows, faces), "reviewToken": pending_review_token(rows, faces)}
+
     def pending_page(self, page: int, size: int) -> dict[str, Any]:
-        return paginate(self.pending_public(), page, size, "pending")
+        data = self.pending_data()
+        return {**paginate(data["pending"], page, size, "pending"), "reviewToken": data["reviewToken"]}
 
     def scan_face_review_page(self, active_person_id: str = "", retry_failed: bool = False) -> dict[str, Any]:
         if active_person_id and not UUID_RE.fullmatch(active_person_id):
@@ -1635,6 +1773,7 @@ class AppState:
             **counts,
         }
 
+    @local_mutation
     def set_face_reviewed(self, payload: dict[str, Any]) -> dict[str, Any]:
         person_id = str(payload.get("personId", ""))
         face_id = str(payload.get("faceId", ""))
@@ -1671,6 +1810,7 @@ class AppState:
             "reviewReopened": reopened,
         }
 
+    @local_mutation
     def set_review_reopened(self, payload: dict[str, Any]) -> dict[str, Any]:
         person_id = str(payload.get("personId", ""))
         reopened = payload.get("reopened")
@@ -1689,6 +1829,7 @@ class AppState:
         self.store.set_review_reopened(person_id, reopened)
         return self.face_review_progress(person_id, person)
 
+    @local_mutation
     def set_face_review_drafts(self, payload: dict[str, Any]) -> dict[str, Any]:
         person_id = str(payload.get("personId", ""))
         items = payload.get("items")
@@ -1718,6 +1859,7 @@ class AppState:
         self.store.set_face_review_drafts(person_id, normalized)
         return self.face_review_progress(person_id, person)
 
+    @local_mutation
     def submit_face_review(self, payload: dict[str, Any]) -> dict[str, Any]:
         person_id = str(payload.get("personId", ""))
         if not UUID_RE.fullmatch(person_id):
@@ -1750,6 +1892,7 @@ class AppState:
         decisions = [{"faceId": row["face_id"], "verdict": row["verdict"]} for row in drafts]
         return {"submitted": submitted, "submittedFaces": decisions, **self.face_review_progress(person_id, person)}
 
+    @local_mutation
     def set_faces_reviewed(self, payload: dict[str, Any]) -> dict[str, Any]:
         person_id = str(payload.get("personId", ""))
         face_ids = payload.get("faceIds")
@@ -1764,6 +1907,7 @@ class AppState:
         self.store.set_faces_reviewed(face_ids, person_id, bool(payload.get("reviewed")))
         return self.face_review_progress(person_id, person)
 
+    @local_mutation
     def queue_face_detach(self, payload: dict[str, Any]) -> None:
         person_id = str(payload.get("personId", ""))
         face_id = str(payload.get("faceId", ""))
@@ -1785,6 +1929,7 @@ class AppState:
         self.store.queue_face_detach(face_id, person_id, asset_id, str(payload.get("fileName") or ""))
         self.store.set_face_reviewed(face_id, person_id, False)
 
+    @local_mutation
     def discard_pending(self) -> int:
         with self.group_lock:
             discarded = self.store.clear_pending()
@@ -1896,18 +2041,22 @@ class AppState:
             self.similarity_cache[neighbors] = (signature, result)
         return dict(result)
 
-    def sync(self) -> dict[str, Any]:
+    def sync(self, review_token: str | None = None) -> dict[str, Any]:
         if not self.sync_lock.acquire(blocking=False):
             raise SyncInProgress("Sync already in progress")
         try:
-            return self._sync()
+            with mutation_guard(self.mutation_lock):
+                return self._sync(review_token)
         finally:
             self.sync_lock.release()
 
-    def _sync(self) -> dict[str, Any]:
+    def _sync(self, review_token: str | None = None) -> dict[str, Any]:
+        all_pending, all_face_pending = self.store.pending_snapshot()
+        if review_token is not None and (not isinstance(review_token, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", review_token)
+                or not secrets.compare_digest(review_token, pending_review_token(all_pending, all_face_pending))):
+            raise SyncInProgress("Pending changed; review updated selections before syncing again.")
         client = self.require_client()
-        all_pending = self.store.pending()
-        all_face_pending = self.store.face_detaches()
         draft_people = {row["person_id"] for row in self.store.face_review_drafts()}
         pending_by_id = {row["person_id"]: row for row in all_pending}
         rows = [row for row in all_pending if row["included"]]
@@ -1965,9 +2114,28 @@ class AppState:
                         raise ToolError("Merge target's pending name failed to sync")
                     self.store.invalidate_face_review_inventory(person_id)
                     self.store.invalidate_face_review_inventory(target_id)
-                    client.merge(target_id, person_id)
+                    step = row["merge_step"]
+                    if step in {"inflight", "uncertain"}:
+                        self.store.set_merge_step(person_id, "uncertain")
+                        raise MergeUncertain("Merge outcome is uncertain. Check source and destination in Immich; remove this request only after reconciling the result. Sync will not repeat the merge automatically.")
+                    if step != "complete":
+                        # Commit before the request: a crash or lost reply must not
+                        # automatically replay a possibly completed upstream merge.
+                        self.store.set_merge_step(person_id, "inflight")
+                        try:
+                            client.merge(target_id, person_id)
+                        except MergeRejected:
+                            self.store.set_merge_step(person_id, "ready")
+                            raise
+                        except Exception:
+                            self.store.set_merge_step(person_id, "uncertain")
+                            raise
+                        self.store.set_merge_step(person_id, "complete")
                     if row.get("feature_asset_id"):
-                        client.update_person(target_id, {"featureFaceAssetId": row["feature_asset_id"]})
+                        try:
+                            client.update_person(target_id, {"featureFaceAssetId": row["feature_asset_id"]})
+                        except Exception as exc:
+                            raise ToolError("Merge completed; representative photo update failed. Retry Sync to apply only the photo update. " + str(exc)) from exc
                 elif operation == "hide":
                     client.update_person(person_id, {"isHidden": True})
                 elif operation == "unhide":
@@ -2207,7 +2375,7 @@ class Handler(BaseHTTPRequestHandler):
                         raise ToolError("Invalid pending page") from exc
                     self.send_json(STATE.pending_page(page, size))
                 else:
-                    self.send_json({"pending": STATE.pending_public()})
+                    self.send_json(STATE.pending_data())
             elif path.startswith("/api/samples/"):
                 person_id = path.rsplit("/", 1)[-1]
                 if not UUID_RE.fullmatch(person_id):
@@ -2255,6 +2423,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.image(*STATE.require_client().request("GET", f"/assets/{asset_id}/thumbnail?size=preview"))
             else:
                 self.send_error(404)
+        except SyncInProgress as exc:
+            self.send_json({"error": str(exc)}, 409)
         except Exception as exc:
             self.send_json({"error": str(exc)}, 502)
 
@@ -2270,118 +2440,121 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Sign in required"}, 401)
             return
         try:
-            payload = self.body()
-            if path == "/api/login":
-                try:
-                    version, session_cookie = AUTH.login(str(payload.get("url", "")), str(payload.get("email", "")), str(payload.get("password", "")), bool(payload.get("insecureTls")))
-                except Exception as exc:
-                    message = str(exc) if str(exc).startswith(("Only Immich admins", "This local state", "Immich email")) else "Immich login failed"
-                    self.send_json({"error": message}, 403)
-                    return
-                threading.Thread(target=STATE.load, daemon=True).start()
-                secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else ""
-                cookie = f"{SESSION_COOKIE}={session_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}{secure}"
-                self.send_json({"ok": True, "version": version}, 200, cookie)
-            elif path == "/api/logout":
-                AUTH.logout(self.session_cookie())
-                self.send_json({"ok": True}, cookie=f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
-            elif path == "/api/reload":
-                STATE.set_status("loading", "Reloading people from Immich")
-                threading.Thread(target=STATE.load, daemon=True).start()
-                self.send_json({"ok": True}, 202)
-            elif path == "/api/reset":
-                if payload.get("confirmation") != "DISCARD":
-                    raise ToolError("Discard confirmation missing")
-                discarded = STATE.discard_pending()
-                STATE.set_status("loading", "Discarded local changes; reloading people from Immich")
-                threading.Thread(target=STATE.load, daemon=True).start()
-                self.send_json({"ok": True, "discarded": discarded}, 202)
-            elif path == "/api/skip":
-                person_id = str(payload.get("personId", ""))
-                if not UUID_RE.fullmatch(person_id):
-                    raise ToolError("Invalid person ID")
-                self.send_json({"skipCount": STATE.store.skip(person_id)})
-            elif path == "/api/queue":
-                STATE.queue(payload)
-                self.send_json({"ok": True})
-            elif path == "/api/queue/group":
-                self.send_json({"ok": True, **STATE.queue_merge_group(payload)})
-            elif path == "/api/group-photos/settings":
-                self.send_json(STATE.set_group_settings(payload))
-            elif path == "/api/group-photos/draft":
-                STATE.save_group_draft(payload)
-                self.send_json({"ok": True})
-            elif path == "/api/group-photos/advance":
-                self.send_json(STATE.advance_group_photo(payload))
-            elif path == "/api/group-photos/deferred":
-                self.send_json(STATE.start_group_deferred())
-            elif path == "/api/group-photos/retry":
-                STATE.start_group_scan(retry=True)
-                self.send_json({"ok": True})
-            elif path == "/api/pending/include":
-                STATE.store.set_included(str(payload.get("personId", "")), bool(payload.get("included")))
-                self.send_json({"ok": True})
-            elif path == "/api/pending/return":
-                person_id = str(payload.get("personId", ""))
-                with STATE.group_lock:
-                    STATE.store.remove_pending(person_id)
-                    STATE.store.skip(person_id)
-                    STATE.invalidate_group_scan()
-                self.send_json({"ok": True})
-            elif path == "/api/face-detach/queue":
-                STATE.queue_face_detach(payload)
-                self.send_json({"ok": True})
-            elif path == "/api/face-review/reviewed":
-                self.send_json({"ok": True, **STATE.set_face_reviewed(payload)})
-            elif path == "/api/face-review/reviewed/bulk":
-                self.send_json({"ok": True, **STATE.set_faces_reviewed(payload)})
-            elif path == "/api/face-review/draft":
-                self.send_json({"ok": True, **STATE.set_face_review_drafts(payload)})
-            elif path == "/api/face-review/submit":
-                self.send_json({"ok": True, **STATE.submit_face_review(payload)})
-            elif path == "/api/face-review/reopen":
-                self.send_json({"ok": True, **STATE.set_review_reopened(payload)})
-            elif path == "/api/face-review/scan-next":
-                self.send_json(STATE.scan_face_review_page(str(payload.get("activePersonId") or ""),
-                                                           payload.get("retryFailed") is True))
-            elif path == "/api/face-detach/include":
-                face_id = str(payload.get("faceId", ""))
-                if not UUID_RE.fullmatch(face_id):
-                    raise ToolError("Invalid face ID")
-                STATE.store.set_face_detach_included(face_id, bool(payload.get("included")))
-                self.send_json({"ok": True})
-            elif path == "/api/face-detach/return":
-                face_id = str(payload.get("faceId", ""))
-                if not UUID_RE.fullmatch(face_id):
-                    raise ToolError("Invalid face ID")
-                STATE.store.remove_face_detach(face_id)
-                self.send_json({"ok": True})
-            elif path == "/api/investigate/add":
-                person_id = str(payload.get("personId", ""))
-                if not UUID_RE.fullmatch(person_id):
-                    raise ToolError("Invalid person ID")
-                with STATE.lock:
-                    person = STATE.people.get(person_id)
-                if not person or person.get("isHidden"):
-                    raise ToolError("Person is not available for investigation")
-                STATE.store.mark_investigate(person_id)
-                self.send_json({"ok": True})
-            elif path == "/api/investigate/remove":
-                person_id = str(payload.get("personId", ""))
-                if not UUID_RE.fullmatch(person_id):
-                    raise ToolError("Invalid person ID")
-                STATE.store.unmark_investigate(person_id)
-                self.send_json({"ok": True})
-            elif path == "/api/investigate/clear":
-                if payload.get("confirmation") != "RETURN_ALL":
-                    raise ToolError("Return-all confirmation missing")
-                self.send_json({"ok": True, "returned": STATE.store.clear_investigate()})
-            elif path == "/api/sync":
-                if payload.get("confirmation") != "SYNC":
-                    raise ToolError("Sync confirmation missing")
-                self.send_json(STATE.sync())
-            else:
-                self.send_error(404)
+            guard = nullcontext() if path in {"/api/sync", "/api/face-review/scan-next", "/api/group-photos/retry"} else mutation_guard(STATE.mutation_lock)
+            with guard:
+                payload = self.body()
+                if path == "/api/login":
+                    try:
+                        version, session_cookie = AUTH.login(str(payload.get("url", "")), str(payload.get("email", "")), str(payload.get("password", "")), bool(payload.get("insecureTls")))
+                    except Exception as exc:
+                        message = str(exc) if str(exc).startswith(("Only Immich admins", "This local state", "Immich email")) else "Immich login failed"
+                        self.send_json({"error": message}, 403)
+                        return
+                    threading.Thread(target=STATE.load, daemon=True).start()
+                    secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else ""
+                    cookie = f"{SESSION_COOKIE}={session_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}{secure}"
+                    self.send_json({"ok": True, "version": version}, 200, cookie)
+                elif path == "/api/logout":
+                    AUTH.logout(self.session_cookie())
+                    self.send_json({"ok": True}, cookie=f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+                elif path == "/api/reload":
+                    STATE.set_status("loading", "Reloading people from Immich")
+                    threading.Thread(target=STATE.load, daemon=True).start()
+                    self.send_json({"ok": True}, 202)
+                elif path == "/api/reset":
+                    if payload.get("confirmation") != "DISCARD":
+                        raise ToolError("Discard confirmation missing")
+                    discarded = STATE.discard_pending()
+                    STATE.set_status("loading", "Discarded local changes; reloading people from Immich")
+                    threading.Thread(target=STATE.load, daemon=True).start()
+                    self.send_json({"ok": True, "discarded": discarded}, 202)
+                elif path == "/api/skip":
+                    person_id = str(payload.get("personId", ""))
+                    if not UUID_RE.fullmatch(person_id):
+                        raise ToolError("Invalid person ID")
+                    self.send_json({"skipCount": STATE.store.skip(person_id)})
+                elif path == "/api/queue":
+                    STATE.queue(payload)
+                    self.send_json({"ok": True})
+                elif path == "/api/queue/group":
+                    self.send_json({"ok": True, **STATE.queue_merge_group(payload)})
+                elif path == "/api/group-photos/settings":
+                    self.send_json(STATE.set_group_settings(payload))
+                elif path == "/api/group-photos/draft":
+                    STATE.save_group_draft(payload)
+                    self.send_json({"ok": True})
+                elif path == "/api/group-photos/advance":
+                    self.send_json(STATE.advance_group_photo(payload))
+                elif path == "/api/group-photos/deferred":
+                    self.send_json(STATE.start_group_deferred())
+                elif path == "/api/group-photos/retry":
+                    STATE.start_group_scan(retry=True)
+                    self.send_json({"ok": True})
+                elif path == "/api/pending/include":
+                    STATE.store.set_included(str(payload.get("personId", "")), bool(payload.get("included")))
+                    self.send_json({"ok": True})
+                elif path == "/api/pending/return":
+                    person_id = str(payload.get("personId", ""))
+                    with STATE.group_lock:
+                        STATE.store.remove_pending(person_id)
+                        STATE.store.skip(person_id)
+                        STATE.invalidate_group_scan()
+                    self.send_json({"ok": True})
+                elif path == "/api/face-detach/queue":
+                    STATE.queue_face_detach(payload)
+                    self.send_json({"ok": True})
+                elif path == "/api/face-review/reviewed":
+                    self.send_json({"ok": True, **STATE.set_face_reviewed(payload)})
+                elif path == "/api/face-review/reviewed/bulk":
+                    self.send_json({"ok": True, **STATE.set_faces_reviewed(payload)})
+                elif path == "/api/face-review/draft":
+                    self.send_json({"ok": True, **STATE.set_face_review_drafts(payload)})
+                elif path == "/api/face-review/submit":
+                    self.send_json({"ok": True, **STATE.submit_face_review(payload)})
+                elif path == "/api/face-review/reopen":
+                    self.send_json({"ok": True, **STATE.set_review_reopened(payload)})
+                elif path == "/api/face-review/scan-next":
+                    self.send_json(STATE.scan_face_review_page(str(payload.get("activePersonId") or ""),
+                                                               payload.get("retryFailed") is True))
+                elif path == "/api/face-detach/include":
+                    face_id = str(payload.get("faceId", ""))
+                    if not UUID_RE.fullmatch(face_id):
+                        raise ToolError("Invalid face ID")
+                    STATE.store.set_face_detach_included(face_id, bool(payload.get("included")))
+                    self.send_json({"ok": True})
+                elif path == "/api/face-detach/return":
+                    face_id = str(payload.get("faceId", ""))
+                    if not UUID_RE.fullmatch(face_id):
+                        raise ToolError("Invalid face ID")
+                    STATE.store.remove_face_detach(face_id)
+                    self.send_json({"ok": True})
+                elif path == "/api/investigate/add":
+                    person_id = str(payload.get("personId", ""))
+                    if not UUID_RE.fullmatch(person_id):
+                        raise ToolError("Invalid person ID")
+                    with STATE.lock:
+                        person = STATE.people.get(person_id)
+                    if not person or person.get("isHidden"):
+                        raise ToolError("Person is not available for investigation")
+                    STATE.store.mark_investigate(person_id)
+                    self.send_json({"ok": True})
+                elif path == "/api/investigate/remove":
+                    person_id = str(payload.get("personId", ""))
+                    if not UUID_RE.fullmatch(person_id):
+                        raise ToolError("Invalid person ID")
+                    STATE.store.unmark_investigate(person_id)
+                    self.send_json({"ok": True})
+                elif path == "/api/investigate/clear":
+                    if payload.get("confirmation") != "RETURN_ALL":
+                        raise ToolError("Return-all confirmation missing")
+                    self.send_json({"ok": True, "returned": STATE.store.clear_investigate()})
+                elif path == "/api/sync":
+                    if payload.get("confirmation") != "SYNC":
+                        raise ToolError("Sync confirmation missing")
+                    review_token = payload.get("reviewToken")
+                    self.send_json(STATE.sync(review_token if isinstance(review_token, str) else ""))
+                else:
+                    self.send_error(404)
         except SyncInProgress as exc:
             self.send_json({"error": str(exc)}, 409)
         except Exception as exc:

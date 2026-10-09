@@ -35,9 +35,42 @@ returns to the field. Choosing the autocomplete entry queues a merge instead.
 
 No action changes Immich immediately. Pending operations survive restarts and
 are applied only from the Pending page with the sync button. Unchecked pending
-items remain in the queue. While Sync runs, the button shows that it is busy
-and cannot start another Sync. A concurrent Sync request is rejected; failed
-items stay Pending for review and retry.
+items remain in the queue. Sync opens a confirmation dialog inside Workbench.
+Choose **Sync to Immich** (or `Enter` on its focused button) to apply every
+checked change across all Pending pages. **Cancel** or `Esc` closes the dialog
+without applying anything; `Tab` moves between its buttons.
+
+While Sync runs, the button shows that it is busy and cannot start another
+Sync. Pending waits for checkbox saves to finish. If
+saving a selection fails, Workbench reloads the saved selection and shows an
+error; if it cannot verify that selection, Sync stays disabled until Pending
+reloads successfully. Sync also checks that the entire Pending queue matches
+the reviewed snapshot, including other pages. If a late save or another tab
+changes it, no writes start: Pending reloads and asks you to review the updated
+selection and press Sync again. An unchanged **Save correction** leaves the
+operation as it was, including a merge, ignore, or restore.
+
+During Sync, local changes are temporarily locked across every browser tab:
+queueing, removing, including/excluding, discarding, and saving or submitting
+Face review and Group photos decisions return a busy error. Wait for Sync to
+finish, then retry the action. Browsing people, Pending, previews, and face
+counts remains available. Opening or refreshing Group photos may also ask you
+to wait because it maintains the local review pass. A concurrent Sync request
+is rejected; failed items stay Pending with an error.
+
+A failed merge is never treated as successful just because Immich replied
+HTTP 200. If the merge completed but its representative-photo update failed,
+the error says so: retry Sync to apply only the photo update, including after
+a restart. Workbench will not merge the people again.
+
+If a merge reply is lost, malformed, or does not confirm the full outcome,
+Pending says the outcome is uncertain and prevents automatic repetition.
+Check the source and destination in Immich before **Return to naming** or
+**Discard all local changes** removes that request. Removing it does not undo
+an already completed merge. Requeue a merge only if inspection establishes
+that it is still needed. An interrupted merge after a Workbench restart is
+handled in the same way; Workbench does not guess success from a missing
+source person. Started merge requests cannot be replaced using Save correction.
 
 ### Group photos
 
@@ -55,7 +88,11 @@ explicit **Ignore this cluster** action; choosing it displays that text in the
 field. `H` toggles the face rectangles outside a text field.
 
 **Submit Names** or `Ctrl+Enter` (`⌘+Enter` on macOS) queues every entered name
-and ignore action in Pending, then opens the next photo. Blank nameable faces
+and ignore action in Pending, then opens the next photo. If a name draft could
+not be saved, it remains visible in the current browser; **Submit Names**
+retries its local save and stays on the photo until persistence succeeds.
+Keep the tab open until the save succeeds; unsaved text cannot survive closing
+or reloading the browser. Blank nameable faces
 defer the photo. After the unseen pass ends, **Review deferred photos** starts
 a separate pass; it never loops automatically. The current photo, drafts,
 settings, and pass progress survive reloads and restarts. Only explicit Sync

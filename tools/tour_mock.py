@@ -203,6 +203,7 @@ class Handler(BaseHTTPRequestHandler):
                                 if f["person"]["id"] == source:
                                     f["person"] = {"id": pid}
                             F.people.pop(source, None)
+                        return self.send([{ "id": identity, "success": True } for identity in [pid, *payload.get("ids", [])]])
                     else:
                         p.update({k: v for k, v in payload.items() if k in {"name", "isHidden", "featureFaceAssetId"}})
                     return self.send(F.public_person(p))

@@ -1055,7 +1055,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
 
                 def post_sync():
                     request = urllib.request.Request(
-                        base + "/api/sync", data=b'{"confirmation":"SYNC"}', method="POST",
+                        base + "/api/sync", data=json.dumps({"confirmation":"SYNC", "reviewToken":app.pending_data()["reviewToken"]}).encode(), method="POST",
                         headers={"Content-Type": "application/json", "Origin": base,
                                  "Cookie": "people_workbench_session=synthetic-session"},
                     )
@@ -1502,6 +1502,315 @@ class GroupPhotoTests(unittest.TestCase):
         self.assertTrue(state["checkpoint"])
         self.assertEqual(state["deferred"], 0)
         self.assertEqual(self.store.group_progress()[self.PHOTO], "done")
+
+
+class ReleaseSafetyTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.store = Store(self.root / "state.sqlite3")
+        self.app = AppState(self.store, self.root / "reports")
+        self.fake = FakeImmich()
+        self.app.client = self.fake
+        self.app.people = {row["id"]: {**row, "assetCount": 7} for row in self.fake.rows}
+        self.source, self.target = [row["id"] for row in self.fake.rows]
+
+    def queue_merge(self, feature=None):
+        self.app.queue({"personId": self.source, "operation": "merge", "targetPersonId": self.target,
+                        "name": "Existing Person", "featureAssetId": feature})
+
+    def transport(self, response, version="3.3.1"):
+        client = Immich("http://synthetic.invalid", "synthetic")
+        client.server_version = version
+        client.json = mock.Mock(return_value=response)
+        return client
+
+    def test_merge_validates_source_target_and_legacy_contract(self):
+        source = {"id": self.source, "success": True}
+        target = {"id": self.target, "success": True}
+        for version, response in [("3.3.1", [target, source]), ("2.0.0", [source]),
+                                  ("2.0.0", [source, target]), ("3.0.0", [source]),
+                                  ("3.2.0", [source]), ("3.2.1", [source]), ("3.3.0", [target, source])]:
+            with self.subTest(version=version, response=response):
+                self.transport(response, version).merge(self.target, self.source)
+        invalid = [None, {}, [], [target], [source], [source, source],
+                   [source, {"id": "unrelated", "success": True}],
+                   [target, {"id": self.source, "success": "true"}],
+                   [target, {"id": self.source, "success": 1}],
+                   [target, {"id": self.source, "success": True, "error": "UNKNOWN"}],
+                   [target, {"id": self.source, "success": False, "error": "UNKNOWN"}],
+                   [source, {"id": self.target, "success": False, "error": "NO_PERMISSION"}],
+                   [target, source, {"id": "other", "success": True}],
+                   [target, {"id": [], "success": True}]]
+        for response in invalid:
+            with self.subTest(response=response), self.assertRaises(ToolError):
+                self.transport(response).merge(self.target, self.source)
+        with self.assertRaises(ToolError):
+            self.transport([source, {"id": self.target, "success": False, "error": "NO_PERMISSION"}], "2.0.0").merge(self.target, self.source)
+
+    def test_failed_merge_response_stays_pending_and_can_retry_definite_refusal(self):
+        self.queue_merge()
+        client = self.transport([{"id": self.target, "success": True},
+                                 {"id": self.source, "success": False, "error": "NO_PERMISSION"}])
+        self.fake.merge = client.merge
+        first = self.app.sync()
+        self.assertEqual(first["failed"], 1)
+        self.assertEqual(self.store.pending()[0]["merge_step"], "ready")
+        self.assertIn("NO_PERMISSION", self.store.pending()[0]["last_error"])
+        client.json.return_value = [{"id": self.target, "success": True}, {"id": self.source, "success": True}]
+        self.assertEqual(self.app.sync()["failed"], 0)
+        self.assertEqual(self.store.pending(), [])
+
+    def test_uncertain_merge_is_not_replayed_after_restart(self):
+        for response in [[], [{"id": self.target, "success": True},
+                               {"id": self.source, "success": False, "error": "UNKNOWN"}], None]:
+            with self.subTest(response=response):
+                self.store.clear_pending(); self.queue_merge()
+                client = self.transport(response)
+                if response is None:
+                    client.json.side_effect = TimeoutError("synthetic lost reply")
+                self.fake.merge = client.merge
+                self.assertEqual(self.app.sync()["failed"], 1)
+                self.assertEqual(self.store.pending()[0]["merge_step"], "uncertain")
+                restarted = AppState(Store(self.store.path), self.root / "reports")
+                restarted.client = self.fake; restarted.people = self.app.people.copy()
+                self.assertEqual(restarted.sync()["failed"], 1)
+                self.assertEqual(client.json.call_count, 1)
+                self.assertEqual(restarted.pending_public()[0]["mergeStep"], "uncertain")
+                with self.assertRaises(ToolError):
+                    restarted.queue({"personId": self.source, "operation": "rename", "name": "Changed"})
+
+    def test_not_found_or_failed_target_is_uncertain_and_never_replayed(self):
+        responses = [
+            [{"id": self.target, "success": True}, {"id": self.source, "success": False, "error": "NOT_FOUND"}],
+            [{"id": self.target, "success": False, "error": "NOT_FOUND"}, {"id": self.source, "success": True}],
+            [{"id": self.target, "success": False, "error": "NO_PERMISSION"}, {"id": self.source, "success": True}],
+            [{"id": self.target, "success": False, "error": "NO_PERMISSION"}, {"id": self.source, "success": False, "error": "NO_PERMISSION"}],
+        ]
+        for response in responses:
+            with self.subTest(response=response):
+                self.store.clear_pending(); self.queue_merge()
+                client = self.transport(response); self.fake.merge = client.merge
+                self.assertEqual(self.app.sync()["failed"], 1)
+                self.assertEqual(self.store.pending()[0]["merge_step"], "uncertain")
+                self.assertEqual(self.app.sync()["failed"], 1)
+                self.assertEqual(client.json.call_count, 1)
+        legacy = self.transport([{"id": self.source, "success": False, "error": "NO_PERMISSION"}], "2.0.0")
+        with self.assertRaises(workbench.MergeRejected): legacy.merge(self.target, self.source)
+
+    def test_crash_checkpoint_requires_reconciliation(self):
+        self.queue_merge()
+        self.store.set_merge_step(self.source, "inflight")
+        restarted = AppState(Store(self.store.path), self.root / "reports")
+        restarted.client = self.fake; restarted.people = self.app.people.copy()
+        self.assertIn("uncertain", restarted.pending_public()[0]["lastError"])
+        self.assertEqual(restarted.sync()["failed"], 1)
+        self.assertEqual(restarted.store.pending()[0]["merge_step"], "uncertain")
+        self.assertFalse(self.fake.calls)
+
+    def test_confirmed_merge_retries_only_photo_step_after_restart(self):
+        self.queue_merge("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        original_merge = self.fake.merge
+        def merge(target, source):
+            original_merge(target, source)
+            self.fake.rows = [row for row in self.fake.rows if row["id"] != source]
+        self.fake.merge = merge
+        self.fake.update_person = mock.Mock(side_effect=ToolError("synthetic photo error"))
+        self.assertEqual(self.app.sync()["failed"], 1)
+        self.assertEqual(self.store.pending()[0]["merge_step"], "complete")
+        self.assertNotIn(self.source, self.app.people)
+        self.assertIn("Merge completed", self.store.pending()[0]["last_error"])
+        self.store.set_included(self.source, False)
+        self.store.set_included(self.source, True)
+        self.assertEqual(self.store.pending()[0]["merge_step"], "complete")
+        with self.assertRaises(ToolError):
+            self.store.upsert_pending({"personId": self.source, "operation": "rename", "name": "Different"})
+        restarted = AppState(Store(self.store.path), self.root / "reports")
+        restarted.client = self.fake; restarted.people = self.app.people.copy()
+        self.fake.update_person.side_effect = None
+        self.assertEqual(restarted.sync()["failed"], 0)
+        self.assertEqual(len([call for call in self.fake.calls if call[0] == "merge"]), 1)
+        self.assertEqual(restarted.store.pending(), [])
+
+    def test_legacy_pending_schema_migrates_without_changing_operation(self):
+        legacy = self.root / "legacy.sqlite3"
+        with sqlite3.connect(legacy) as db:
+            db.execute("CREATE TABLE pending(person_id TEXT PRIMARY KEY, operation TEXT, name TEXT DEFAULT '', target_person_id TEXT, target_name TEXT DEFAULT '', feature_asset_id TEXT, included INTEGER DEFAULT 1, last_error TEXT DEFAULT '', created_at TEXT, updated_at TEXT)")
+            db.execute("INSERT INTO pending(person_id,operation,created_at,updated_at) VALUES(?,?,?,?)", (self.source,"hide","old","old"))
+        store = Store(legacy)
+        self.assertEqual(store.pending()[0]["operation"], "hide")
+        self.assertEqual(store.pending()[0]["merge_step"], "ready")
+
+    def test_review_token_covers_all_pages_payloads_and_both_queues(self):
+        self.queue_merge()
+        first = self.app.pending_page(1, 1)
+        self.assertEqual(first["reviewToken"], self.app.pending_data()["reviewToken"])
+        self.store.queue_face_detach("cccccccc-cccc-4ccc-8ccc-cccccccccccc", self.source,
+                                     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "synthetic.jpg")
+        second = self.app.pending_page(2, 1)
+        self.assertNotEqual(first["reviewToken"], second["reviewToken"])
+        self.assertEqual(second["reviewToken"], self.app.pending_page(1, 1)["reviewToken"])
+        token = second["reviewToken"]
+        self.store.set_face_detach_included("cccccccc-cccc-4ccc-8ccc-cccccccccccc", False)
+        self.assertNotEqual(token, self.app.pending_data()["reviewToken"])
+        token = self.app.pending_data()["reviewToken"]
+        self.store.upsert_pending({"personId": self.source, "operation": "rename", "name": "New payload"})
+        self.assertNotEqual(token, self.app.pending_data()["reviewToken"])
+        token = self.app.pending_data()["reviewToken"]
+        self.store.set_merge_step(self.source, "uncertain")
+        self.assertNotEqual(token, self.app.pending_data()["reviewToken"])
+        self.assertFalse(self.fake.calls)
+
+    def test_review_token_rejects_late_include_and_second_client_queue_before_write(self):
+        self.app.queue({"personId": self.source, "operation": "rename", "name": "Original"})
+        self.store.set_included(self.source, False)
+        token = self.app.pending_data()["reviewToken"]
+        # An ambiguous failed reply may be followed by a stale read, then the
+        # delayed original include commits. The stale token cannot authorize it.
+        self.store.set_included(self.source, True)
+        with self.assertRaisesRegex(workbench.SyncInProgress, "Pending changed"):
+            self.app.sync(token)
+        self.assertFalse(self.fake.calls)
+        token = self.app.pending_data()["reviewToken"]
+        self.app.queue({"personId": self.target, "operation": "hide"})
+        with self.assertRaisesRegex(workbench.SyncInProgress, "Pending changed"):
+            self.app.sync(token)
+        self.assertFalse(self.fake.calls)
+        self.assertEqual(self.app.sync(self.app.pending_data()["reviewToken"])["failed"], 0)
+
+    def test_pending_token_and_visible_data_use_one_sqlite_snapshot(self):
+        self.app.queue({"personId": self.source, "operation": "hide"})
+        face = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        self.store.queue_face_detach(face, self.source, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "synthetic.jpg")
+        before_rows, before_faces = self.store.pending_snapshot()
+        original_connect = self.store.connect
+        store = self.store
+        class InterleavedConnection:
+            def __init__(self): self.db = original_connect()
+            def __enter__(self): self.db.__enter__(); return self
+            def __exit__(self, *args): return self.db.__exit__(*args)
+            def execute(self, sql, *args):
+                if "SELECT * FROM face_detach_pending" in sql:
+                    with sqlite3.connect(store.path) as writer:
+                        writer.execute("UPDATE pending SET included=0")
+                        writer.execute("UPDATE face_detach_pending SET included=0")
+                return self.db.execute(sql, *args)
+        with mock.patch.object(self.store, "connect", side_effect=InterleavedConnection):
+            shown = self.app.pending_data()
+        self.assertTrue(all(row["included"] for row in shown["pending"]))
+        self.assertEqual(shown["reviewToken"], workbench.pending_review_token(before_rows, before_faces))
+        self.assertFalse(any(row["included"] for row in self.app.pending_data()["pending"]))
+        self.assertNotEqual(shown["reviewToken"], self.app.pending_data()["reviewToken"])
+
+    def test_http_sync_requires_current_non_null_review_token(self):
+        self.app.queue({"personId": self.source, "operation": "hide"})
+        class QuietHandler(Handler):
+            def log_message(self, *_args): pass
+        auth = AdminSession(self.app)
+        auth.cookie = "synthetic-session"; auth.expires=time.monotonic()+1000; auth.checked=time.monotonic()
+        with mock.patch.object(workbench, "STATE", self.app, create=True), mock.patch.object(workbench, "AUTH", auth, create=True):
+            server=ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+            thread=threading.Thread(target=server.serve_forever);thread.start()
+            base=f"http://127.0.0.1:{server.server_port}"
+            def post(body):
+                return urllib.request.urlopen(urllib.request.Request(base+"/api/sync", data=json.dumps(body).encode(), method="POST",
+                    headers={"Origin":base, "Content-Type":"application/json", "Cookie":"people_workbench_session=synthetic-session"}))
+            try:
+                stale=self.app.pending_data()["reviewToken"]
+                self.store.set_included(self.source, False)
+                for value in [None, "", stale, "malformed", "nonascii-\u2192", {}, []]:
+                    with self.subTest(value=value), self.assertRaises(urllib.error.HTTPError) as caught:
+                        post({"confirmation":"SYNC", "reviewToken":value})
+                    self.assertEqual(caught.exception.code, 409)
+                    self.assertIn("Pending changed", json.loads(caught.exception.read())["error"])
+                with self.assertRaises(urllib.error.HTTPError) as caught: post({"confirmation":"SYNC"})
+                self.assertEqual(caught.exception.code, 409);self.assertFalse(self.fake.calls)
+                self.store.set_included(self.source, True)
+                with post({"confirmation":"SYNC", "reviewToken":self.app.pending_data()["reviewToken"]}) as response:
+                    self.assertEqual(json.load(response)["failed"], 0)
+                self.assertEqual(self.fake.calls, [("update", self.source, {"isHidden": True})])
+            finally:
+                server.shutdown();server.server_close();thread.join(5)
+
+    def begin_delayed_sync(self):
+        started, release = threading.Event(), threading.Event()
+        def update(person_id, payload):
+            started.set()
+            if not release.wait(10):
+                raise RuntimeError("synthetic test release timed out")
+            self.fake.calls.append(("update", person_id, payload))
+        self.fake.update_person = update
+        self.app.queue({"personId": self.source, "operation": "rename", "name": "Original"})
+        results = []
+        errors = []
+        def run():
+            try: results.append(self.app.sync())
+            except Exception as exc: errors.append(exc)
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.assertTrue(started.wait(5))
+        self.addCleanup(lambda: (release.set(), thread.join(10)))
+        return release, thread, results, errors
+
+    def test_all_direct_pending_review_group_mutations_reject_active_sync(self):
+        release, thread, results, errors = self.begin_delayed_sync()
+        mutations = [
+            lambda: self.app.queue({"personId": self.source, "operation": "rename", "name": "Replacement"}),
+            lambda: self.app.queue_merge_group({}), lambda: self.app.queue_face_detach({}),
+            lambda: self.app.discard_pending(), lambda: self.app.set_group_settings({}),
+            lambda: self.app.save_group_draft({}), lambda: self.app.advance_group_photo({}),
+            lambda: self.app.start_group_deferred(), lambda: self.app.set_face_review_drafts({}),
+            lambda: self.app.submit_face_review({}), lambda: self.app.set_faces_reviewed({}),
+            lambda: self.app.set_review_reopened({}),
+            lambda: self.store.set_included(self.source, False), lambda: self.store.remove_pending(self.source),
+            lambda: self.store.clear_pending(), lambda: self.store.set_face_detach_included("synthetic", False),
+            lambda: self.store.remove_face_detach("synthetic"),
+            lambda: self.store.group_advance("synthetic", "done", []),
+            lambda: self.store.upsert_pending({"personId": self.source, "operation": "hide"}),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index), self.assertRaises(workbench.SyncInProgress): mutate()
+        self.assertEqual(self.store.pending()[0]["name"], "Original")
+        self.assertEqual(self.store.pending()[0]["included"], 1)
+        release.set(); thread.join(10)
+        self.assertFalse(thread.is_alive()); self.assertFalse(errors)
+        self.assertEqual(results[0]["failed"], 0)
+        self.assertEqual(self.fake.calls, [("update", self.source, {"name": "Original"})])
+        self.app.queue({"personId": self.source, "operation": "rename", "name": "Replacement"})
+        self.assertEqual(self.store.pending()[0]["name"], "Replacement")
+
+    def test_multiple_http_clients_get_busy_while_reads_remain_available(self):
+        release, sync_thread, results, errors = self.begin_delayed_sync()
+        class QuietHandler(Handler):
+            def log_message(self, *_args): pass
+        auth = AdminSession(self.app)
+        auth.cookie = "synthetic-session"; auth.expires = time.monotonic()+1000; auth.checked = time.monotonic()
+        with mock.patch.object(workbench, "STATE", self.app, create=True), mock.patch.object(workbench, "AUTH", auth, create=True):
+            server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
+            server_thread = threading.Thread(target=server.serve_forever); server_thread.start()
+            base = f"http://127.0.0.1:{server.server_port}"
+            try:
+                paths = ["/api/queue", "/api/pending/include", "/api/pending/return", "/api/reset",
+                         "/api/face-detach/queue", "/api/face-detach/include", "/api/face-detach/return",
+                         "/api/face-review/draft", "/api/face-review/submit", "/api/face-review/reviewed/bulk",
+                         "/api/group-photos/settings", "/api/group-photos/draft", "/api/group-photos/advance",
+                         "/api/group-photos/deferred", "/api/queue/group", "/api/investigate/add",
+                         "/api/logout", "/api/login", "/api/reload", "/api/sync"]
+                for path in paths:
+                    with self.subTest(path=path):
+                        request = urllib.request.Request(base+path, data=json.dumps({"confirmation":"SYNC"}).encode(),
+                            headers={"Origin": base, "Cookie":"people_workbench_session=synthetic-session", "Content-Type":"application/json"}, method="POST")
+                        with self.assertRaises(urllib.error.HTTPError) as caught: urllib.request.urlopen(request)
+                        self.assertEqual(caught.exception.code, 409)
+                        self.assertIn("error", json.loads(caught.exception.read()))
+                for path in ["/api/state", "/api/pending", "/api/people", "/api/names"]:
+                    with urllib.request.urlopen(urllib.request.Request(base+path, headers={"Cookie":"people_workbench_session=synthetic-session"})) as response:
+                        self.assertEqual(response.status, 200)
+            finally:
+                server.shutdown(); server.server_close(); server_thread.join(5)
+        release.set(); sync_thread.join(10)
+        self.assertFalse(errors); self.assertEqual(results[0]["failed"], 0)
 
 
 if __name__ == "__main__":

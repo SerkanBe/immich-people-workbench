@@ -339,6 +339,15 @@
     </div>
   </dialog>
 
+  <dialog id="sync-confirm-dialog" aria-labelledby="sync-confirm-title" aria-describedby="sync-confirm-description">
+    <div class="dialog-form">
+      <h2 id="sync-confirm-title">Sync checked changes to Immich?</h2>
+      <p id="sync-confirm-description">This applies all checked changes across every Pending page. Unchecked changes stay queued.</p>
+      <p class="muted">Review the selected changes before continuing.</p>
+      <div class="dialog-actions"><button id="sync-confirm-cancel" class="quiet-button" type="button">Cancel</button><button id="sync-confirm-apply" class="primary-button" type="button">Sync to Immich</button></div>
+    </div>
+  </dialog>
+
   <dialog id="detail-dialog" class="detail-dialog">
     <div class="dialog-form">
       <div class="detail-heading"><div><h2>Inspect pending cluster</h2><p id="detail-kind"></p></div><button class="icon-button" data-close aria-label="Close">×</button></div>

@@ -29,7 +29,7 @@ class Element {
   getContext() { return { clearRect() {}, drawImage() {} }; }
 }
 
-function setup(photo, scanOverride = {}, nextPhoto = null) {
+function setup(photo, scanOverride = {}, nextPhoto = null, mode = {}) {
   const elements = new Map();
   const selectors = ["group-name", "group-suggestions", "group-ghost", "group-progress", "group-scan-error",
     "group-face-position", "group-face-note", "group-markers", "group-face-crop", "group-workspace",
@@ -63,6 +63,7 @@ function setup(photo, scanOverride = {}, nextPhoto = null) {
     };
     if (path === "/api/group-photos/draft") {
       const row = options.body;
+      if (mode.draft) await mode.draft(row);
       drafts.set(row.personId, { person_id: row.personId, name: row.name,
         target_person_id: row.targetPersonId, operation: row.operation });
       return { ok: true };
@@ -80,7 +81,7 @@ function setup(photo, scanOverride = {}, nextPhoto = null) {
     drawFace: async () => {}, loadNames: async () => {},
     matchingNames: value => state.names.filter(row => row.name.toLowerCase().includes(value.trim().toLowerCase())),
     openDuplicate: (_model, _name, _target, onConfirm) => { duplicateCount += 1; onConfirm(); },
-    refreshSummary: async () => {}, showToast: () => {}, state,
+    refreshSummary: async () => {}, showToast: message => mode.toast?.(message), state,
   });
   controls.bindGroupPhotos();
   return { controls, elements, calls, drafts, state, duplicateCount: () => duplicateCount };
@@ -302,4 +303,31 @@ test("empty scan explains when every found asset is filtered", async () => {
   const run = setup(null, { indexed: 0, examined: 0, discovered: 3, filtered: 3 });
   await run.controls.renderGroupPhotos();
   assert.match(run.elements.get("#group-checkpoint-text").textContent, /All 3 linked assets were excluded/);
+});
+
+
+test("failed Group-photo draft stays visible and explicit Submit retries before advance", async () => {
+  let failing = true; const toasts = [];
+  const retryPhoto = structuredClone(photo);
+  const run = setup(retryPhoto, {}, null, { draft: async () => { if (failing) throw Error("Local changes are busy during Sync"); }, toast: message => toasts.push(message) });
+  await run.controls.renderGroupPhotos();
+  const input = run.elements.get("#group-name"); input.value = "Synthetic retry name"; input.dispatch("input");
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(run.drafts.size, 0); assert.match(toasts.at(-1), /Submit Names will retry/);
+  // A newly loaded face signature must not overwrite the unsaved local snapshot.
+  retryPhoto.faces[3].name = "New context label";
+  await run.controls.renderGroupPhotos();
+  assert.equal(input.value, "Synthetic retry name");
+  run.elements.get("#group-advance").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(run.calls.some(([path]) => path === "/api/group-photos/advance"), false);
+  assert.equal(input.value, "Synthetic retry name");
+  failing = false; run.elements.get("#group-advance").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const advanceIndex = run.calls.findIndex(([path]) => path === "/api/group-photos/advance");
+  assert.ok(advanceIndex > 0);
+  assert.equal(run.calls[advanceIndex-1][0], "/api/group-photos/draft");
+  assert.equal(run.calls[advanceIndex][1].decisions[0].name, "Synthetic retry name");
+  assert.equal(run.drafts.get("cluster").name, "Synthetic retry name");
+  assert.equal(run.calls.some(([path]) => path === "/api/sync"), false);
 });
