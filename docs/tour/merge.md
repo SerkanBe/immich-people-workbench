@@ -1,6 +1,13 @@
-# Merge canvas
+# Merge canvas (deferred)
 
 [Visual tour](../visual-tour.md) · [User guide](../user-guide.md)
+
+The dedicated Merge page is hidden for this release. This page documents a
+previous experimental canvas for future reference. For an available merge
+workflow, choose an existing person while [naming a cluster](naming.md), review
+the source and destination in [Pending](pending.md), then explicitly Sync.
+
+## Archived canvas walkthrough
 
 **Merge** shows available unnamed clusters on a spatial canvas. Drag cards to
 organize them, drag empty space to pan, use `+` / `-` to zoom, and press `F`

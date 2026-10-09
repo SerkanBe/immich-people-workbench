@@ -42,5 +42,4 @@ only when the two people are intentionally different.
 These actions have different effects: skipping and Investigate only organize
 local work; hiding remains a Pending Immich change until Sync.
 
-Next: [Merge canvas](merge.md) for clusters that need grouping, or
-[Pending and Sync](pending.md) to review a queued name.
+Next: [Pending and Sync](pending.md) to review a queued name or merge.

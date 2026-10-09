@@ -31,7 +31,7 @@ Right now it runs with python and allows you to sign in only with your immich ad
 You can:
 - Name people quickly
 - Create new people (by typing a name that doesn't exist yet)
-- Merge people (by selecting the name or using a fancy canvas... which is experimental at best)
+- Merge an unnamed cluster into an existing person by selecting their name, then reviewing it in Pending before Sync
 - Review persons to see if there is any wrong face in there (still needs work though)
 
 Future plans:
@@ -58,7 +58,7 @@ remote-access details, see the [getting-started guide](docs/getting-started.md).
 
 - [Getting started](docs/getting-started.md) — run locally, sign in, and understand local state.
 - [Visual tour](docs/visual-tour.md) — illustrated walkthrough of the main views and workflows.
-- [User guide](docs/user-guide.md) — naming, Merge, Investigate, Face review, and Pending.
+- [User guide](docs/user-guide.md) — naming, Investigate, Face review, and Pending.
 - [Development](docs/development.md) — source layout and tests.
 
 Project repository: [github.com/SerkanBe/immich-people-workbench](https://github.com/SerkanBe/immich-people-workbench).

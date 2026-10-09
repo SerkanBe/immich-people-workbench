@@ -2153,6 +2153,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
         try:
+            if path.rstrip("/") == "/merge":
+                self.redirect("/naming/clusters")
+                return
             if path == "/login":
                 if AUTH.authorized(self.session_cookie()):
                     self.redirect("/")

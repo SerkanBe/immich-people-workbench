@@ -12,7 +12,6 @@ Immich library data was used.
 | Task | Where to go |
 | --- | --- |
 | Name a cluster, use suggestions, or skip it | [Naming people](tour/naming.md) |
-| Arrange clusters and review possible merges | [Merge canvas](tour/merge.md) |
 | Look at photo context before deciding | [Investigate](tour/investigate.md) |
 | Check individual faces and separate mistakes | [Face review](tour/face-review.md) |
 | Check queued changes before they reach Immich | [Pending and Sync](tour/pending.md) |
