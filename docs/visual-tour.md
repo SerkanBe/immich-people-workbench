@@ -7,8 +7,8 @@ This illustrated tour covers the main People Workbench workflows. Start with
 All screenshots use a synthetic local demo. The portraits depict fictional,
 AI-generated people, and the names, photo counts, and filenames are invented.
 Screenshots on different pages can show different demo states. No personal
-Immich library data was used. New Face review and Group photos screenshots show
-the actual app using the tracked synthetic mock; group photos are fictional composites.
+Immich library data was used. These screenshots show the current app using the tracked synthetic mock;
+group photos are fictional composites.
 Select a screenshot to open the full-resolution image.
 
 | Task | Where to go |

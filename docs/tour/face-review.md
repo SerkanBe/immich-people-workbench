@@ -22,7 +22,7 @@ The four compact controls above it help you find your next person:
   It works independently of the name filter.
 
 <a href="../images/visual-tour/face-review-filters.jpg">
-  <img src="../images/visual-tour/face-review-filters.jpg" alt="Face review with an active search and the named-person filter open" width="738">
+  <img src="../images/visual-tour/face-review-filters.jpg" alt="Face review with an active search and the named-person filter open" width="840">
 </a>
 
 The sidebar shows photo counts separately from checked-face progress.
@@ -49,7 +49,7 @@ Here, one face has been accepted and a different fictional person has been
 dismissed. Both decisions are still drafts.
 
 <a href="../images/visual-tour/face-review-drafts.jpg">
-  <img src="../images/visual-tour/face-review-drafts.jpg" alt="Compact grid with one green accepted draft and one red dismissed draft" width="738">
+  <img src="../images/visual-tour/face-review-drafts.jpg" alt="Compact grid with one green accepted draft and one red dismissed draft" width="840">
 </a>
 
 Drafts are saved locally across reloads. Wait for saving to finish before
@@ -66,7 +66,7 @@ you can also click the crop. Workbench displays Immich's preview, with a
 rectangle around the current face; it does not download the original file.
 
 <a href="../images/visual-tour/face-review-photo-context.jpg">
-  <img src="../images/visual-tour/face-review-photo-context.jpg" alt="Photo lightbox with the dismissed face, rectangle, and review controls" width="738">
+  <img src="../images/visual-tour/face-review-photo-context.jpg" alt="Photo lightbox with the dismissed face, rectangle, and review controls" width="840">
 </a>
 
 In the preview:
@@ -98,7 +98,7 @@ The example now shows **1 awaiting Sync**. The green face is visible because
 **Show checked** was enabled; the dismissed face is in Pending.
 
 <a href="../images/visual-tour/face-review-after-submit.jpg">
-  <img src="../images/visual-tour/face-review-after-submit.jpg" alt="Submitted review with accepted faces shown and one correction awaiting Sync" width="738">
+  <img src="../images/visual-tour/face-review-after-submit.jpg" alt="Submitted review with accepted faces shown and one correction awaiting Sync" width="840">
 </a>
 
 Open [Pending](pending.md) to inspect, exclude, or remove a correction.

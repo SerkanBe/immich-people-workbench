@@ -85,8 +85,8 @@ photo and face counts intentionally differ.
    photos qualify at the default five-face minimum; one is archived.
 2. Select a matching unnamed cluster, type a fragment such as `Do`, and
    capture its existing-person suggestion.
-3. Accept the suggestion. On another unnamed face, choose the explicit
-   Ignore this cluster action and capture the selected label.
+3. Accept the suggestion. On another unnamed face, type `ignore` and capture
+   the explicit Ignore this cluster suggestion, then select it.
 4. Leave other entries blank, submit, then submit the remaining photos blank
    to reach Pass complete. Capture the deferred count and deliberate next pass.
 
@@ -101,18 +101,27 @@ clear only this synthetic origin's settings when an exact starting view matters.
   and any relevant settings in an ignored local handoff.
 - Wait for images, scan progress, and save/submission operations to settle.
 - Capture app content, including enough context to identify the page and
-  result. Avoid account credentials, browser chrome, and unrelated tabs.
+  result. Focus can scroll a field into view: return to the top and let scrolling
+  settle, or capture the full page/panel so headings and controls stay visible.
+  Avoid account credentials, browser chrome, and unrelated tabs.
 - Save final images under `docs/images/visual-tour/` with descriptive names.
   Browser screenshot tools that return JPEG must use `.jpg`, not `.png`.
 - Browser developer tools offer a page screenshot command. Codex should use
   its supported browser screenshot API, save the returned bytes, and visually
   inspect the result. Do not fabricate controls or alter screenshot content.
 - Add meaningful alt text. Place each image next to the instructions it supports.
-- Cap displayed screenshots at 840 px wide and 600 px tall, keeping their
-  aspect ratio. Use an HTML image with a width attribute inside a link to its
-  original file, as the existing tour pages do. Keep the original image at
-  full resolution so readers can open it to inspect small controls.
+- In HTML-aware Markdown previews, target at most 840 px wide and 600 px
+  tall while keeping the aspect ratio. Set the HTML image width to the integer rounded
+  down from `min(840, 600 * original_width / original_height, original_width)`,
+  inside a link to its original file, as the tour pages do. This is a display
+  size; the original file remains full resolution for inspecting small controls.
   Allow images to shrink on narrow screens; never stretch smaller captures.
+- Check the exact file open in the editor: a primary-checkout guide can differ
+  from its worktree copy. In PyCharm, compare the Markdown preview with its
+  image width attribute. Clicking a screenshot opens the full-resolution file
+  in the image editor, where the Markdown display size does not apply. If the
+  updated Markdown preview still ignores the width, check its custom CSS and
+  renderer settings; do not infer a file-size limit from the HTML attribute.
 - Preview rendered Markdown, check all links/images, and check actual button
   labels and shortcuts against the running app.
 - Verify the mock audit still shows zero writes after drafting/submitting,

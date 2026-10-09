@@ -6,16 +6,16 @@ After explicit Sync, named people appear in **Named**. Search by name, edit a
 name, or choose an existing person from suggestions to queue a merge. These
 edits also go through Pending before they reach Immich.
 
-<a href="../images/visual-tour/named-people.png">
-  <img src="../images/visual-tour/named-people.png" alt="Named view with four fictional people" width="840">
+<a href="../images/visual-tour/named-people.jpg">
+  <img src="../images/visual-tour/named-people.jpg" alt="Named view with fictional people and editable name fields" width="840">
 </a>
 
 **Ignored** lists people hidden in Immich. Choosing **Restore** queues an
-unhide action in Pending; Sync applies it. The screenshot shows a fictional
-ignored cluster, not a person hidden from a real library.
+unhide action in Pending; Sync applies it. The screenshot shows fictional
+ignored clusters, not people hidden from a real library.
 
-<a href="../images/visual-tour/ignored.png">
-  <img src="../images/visual-tour/ignored.png" alt="Ignored view with a fictional cluster and Restore button" width="840">
+<a href="../images/visual-tour/ignored.jpg">
+  <img src="../images/visual-tour/ignored.jpg" alt="Ignored view with fictional clusters and Restore buttons" width="840">
 </a>
 
 The header counts help you move among the main sections. Naming has **Clusters**

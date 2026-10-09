@@ -6,20 +6,21 @@
 hiding or restoring people, and moving a wrong face to a new unnamed cluster.
 Queueing an action does not call an Immich write endpoint.
 
-The list shows each proposed change and its representative face. Checkboxes
+The list shows each proposed change. **Inspect** opens representative faces
+for a cluster change; **Preview** opens the photo for a face correction. Checkboxes
 decide which items the next Sync includes. Unchecking one leaves it in Pending
 for later. **Inspect** lets you review a cluster and correct its queued name
 or return it to naming.
 
-<a href="../images/visual-tour/pending-list.png">
-  <img src="../images/visual-tour/pending-list.png" alt="Four fictional renames in Pending with checkboxes and Inspect actions" width="840">
+<a href="../images/visual-tour/pending-list.jpg">
+  <img src="../images/visual-tour/pending-list.jpg" alt="Pending merge, ignore, and face-correction requests with review controls" width="840">
 </a>
 
 Choosing an existing person from name suggestions produces a merge item like
-this one. The example uses two synthetic clusters for Asha Bell.
+this one. The example uses two synthetic clusters for Dorian Reed.
 
-<a href="../images/visual-tour/merge-pending.png">
-  <img src="../images/visual-tour/merge-pending.png" alt="Pending merge from an unnamed cluster into Asha Bell" width="840">
+<a href="../images/visual-tour/merge-pending.jpg">
+  <img src="../images/visual-tour/merge-pending.jpg" alt="Pending merge from an unnamed cluster into Dorian Reed" width="840">
 </a>
 
 **Sync checked changes to Immich** is the explicit write step. Review the

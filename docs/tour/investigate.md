@@ -8,12 +8,12 @@ without queueing an Immich change.
 
 The Investigate view shows a larger portrait, filenames, a photo preview, and
 a thumbnail strip. Use the arrows to browse previews, click the large image
-for a bigger view, or copy a filename to help find the photo in Immich. This
-demo repeats one fictional portrait across its sample photos; a real library
-shows the available Immich previews.
+for a bigger view, or copy a filename to help find the photo in Immich. The
+demo uses repeated fictional portraits and deliberate mixed assignments; a real
+library shows the available Immich previews.
 
-<a href="../images/visual-tour/investigate.png">
-  <img src="../images/visual-tour/investigate.png" alt="Investigate view with a fictional cluster, photo preview, filename, and thumbnail strip" width="840">
+<a href="../images/visual-tour/investigate.jpg">
+  <img src="../images/visual-tour/investigate.jpg" alt="Investigate view with a fictional cluster, photo preview, filename, and thumbnail strip" width="680">
 </a>
 
 When you know the person, use the same name field and suggestions as in

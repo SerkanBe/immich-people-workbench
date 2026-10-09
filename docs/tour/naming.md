@@ -10,25 +10,25 @@ and press `Enter` to put a rename in Pending; focus moves to the next card.
 ## Reuse an existing person
 
 Typing any part of an existing name opens suggestions with face thumbnails.
-Here, `a` matches Asha Bell, Mira Solis, and Nora Vale.
+Here, `a` matches several names, including Asha Bell, Eli Tan, and Mira Solis.
 
-<a href="../images/visual-tour/name-suggestions.png">
-  <img src="../images/visual-tour/name-suggestions.png" alt="Unnamed clusters with three name suggestions for the letter a" width="840">
+<a href="../images/visual-tour/name-suggestions.jpg">
+  <img src="../images/visual-tour/name-suggestions.jpg" alt="Unnamed clusters with name suggestions for the letter a" width="798">
 </a>
 
-Typing `Ash` narrows the list and shows the rest of **Asha Bell** in grey.
+Typing `Eli` narrows the list and shows the rest of **Eli Tan** in grey.
 Press `Tab` to accept the completion, or use `Up` / `Down` to choose a
 suggestion. Moving above the first suggestion restores your unfinished text.
 
-<a href="../images/visual-tour/name-completion.png">
-  <img src="../images/visual-tour/name-completion.png" alt="Ash in the name field with a grey completion to Asha Bell" width="840">
+<a href="../images/visual-tour/name-completion.jpg">
+  <img src="../images/visual-tour/name-completion.jpg" alt="Eli in the name field with a grey completion to Eli Tan" width="840">
 </a>
 
 The chosen target is highlighted. Press `Enter` to queue a merge into that
 existing person. This does not write to Immich yet.
 
-<a href="../images/visual-tour/name-selected.png">
-  <img src="../images/visual-tour/name-selected.png" alt="Asha Bell accepted and highlighted as the merge target" width="840">
+<a href="../images/visual-tour/name-selected.jpg">
+  <img src="../images/visual-tour/name-selected.jpg" alt="Eli Tan accepted and highlighted as the merge target" width="840">
 </a>
 
 If you manually type an existing full name without choosing its suggestion,
@@ -36,8 +36,8 @@ Workbench asks whether you really intend to create a *separate* person with
 the same name. Use **Back to name** or `Escape` if you meant to merge. Confirm
 only when the two people are intentionally different.
 
-<a href="../images/visual-tour/duplicate-name.png">
-  <img src="../images/visual-tour/duplicate-name.png" alt="Duplicate-name confirmation comparing a current cluster with Asha Bell" width="840">
+<a href="../images/visual-tour/duplicate-name.jpg">
+  <img src="../images/visual-tour/duplicate-name.jpg" alt="Duplicate-name confirmation comparing a current cluster with Eli Tan" width="840">
 </a>
 
 ## Leave a cluster for later
