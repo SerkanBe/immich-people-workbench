@@ -64,6 +64,12 @@ on Pending writes to Immich.
 See [Name faces with Group photos](tour/group-photos.md) for the full walkthrough,
 shortcuts, scan filters, and help when no photos appear.
 
+## Merging people
+
+To merge an unnamed cluster into an existing person, choose that person
+from name autocomplete. Review the proposed source and destination in
+Pending, then explicitly Sync.
+
 ## Investigate difficult clusters
 
 The Investigate view is a separate persistent list for cases that need more

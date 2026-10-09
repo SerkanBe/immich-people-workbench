@@ -108,7 +108,11 @@ class PeopleWorkbenchTests(unittest.TestCase):
         for route in ("/", "/unnamed", "/naming/clusters", "/naming/group-photos", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"):
             with self.subTest(route=route), opener.open(base + route) as response:
                 self.assertEqual(response.status, 200)
+                if route == "/merge":
+                    self.assertEqual(response.geturl(), base + "/naming/clusters")
                 self.assertIn(b'nav aria-label="People sections"', response.read())
+        with opener.open(base + "/merge/") as response:
+            self.assertEqual(response.geturl(), base + "/naming/clusters")
         for path, signature in (
             ("/merge.js", b"export function createMergeWorkbench"),
             ("/face-review.js", b"export function createFaceReview"),
@@ -217,7 +221,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
                             urllib.request.urlopen(base + path)
                         self.assertEqual(error.exception.code, 401)
                     with urllib.request.urlopen(base + "/merge") as response:
-                        self.assertEqual(response.geturl(), base + "/login?next=/merge")
+                        self.assertEqual(response.geturl(), base + "/login?next=/naming/clusters")
                         self.assertIn(b"Sign in", response.read())
                     with self.assertRaises(urllib.error.HTTPError) as error:
                         post("/api/sync", {"confirmation": "SYNC"})
@@ -240,6 +244,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
                         self.assertIn("SameSite=Strict", response.headers["Set-Cookie"])
                     with urllib.request.urlopen(urllib.request.Request(base + "/merge", headers={"Cookie": cookie})) as response:
                         self.assertEqual(response.status, 200)
+                        self.assertEqual(response.geturl(), base + "/naming/clusters")
                         self.assertIn(b'nav aria-label="People sections"', response.read())
                     with urllib.request.urlopen(urllib.request.Request(base + "/api/state", headers={"Cookie": cookie})) as response:
                         self.assertEqual(response.status, 200)

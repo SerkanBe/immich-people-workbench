@@ -42,7 +42,7 @@ form.addEventListener("submit", async event => {
     try { localStorage.setItem(URL_KEY, url); } catch { /* Optional convenience only. */ }
     document.querySelector("#immich-password").value = "";
     const next = new URLSearchParams(window.location.search).get("next");
-    const routes = new Set(["/", "/unnamed", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"]);
+    const routes = new Set(["/", "/unnamed", "/naming/clusters", "/naming/group-photos", "/investigate", "/faces", "/pending", "/named", "/ignored"]);
     window.location.replace(routes.has(next) ? next : "/");
   } catch (cause) {
     error.textContent = cause.message;

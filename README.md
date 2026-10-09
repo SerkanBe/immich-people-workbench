@@ -31,7 +31,7 @@ Right now it runs with python and allows you to sign in only with your immich ad
 You can:
 - Name people quickly
 - Create new people (by typing a name that doesn't exist yet)
-- Merge people by selecting an existing name
+- Merge an unnamed cluster into an existing person by selecting their name, then reviewing it in Pending before Sync
 - Review persons to see if there is any wrong face in there (still needs work though)
 
 Future plans:

@@ -12,7 +12,8 @@ import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MA
 "use strict";
 
 const MERGE_CARD_WIDTH = 220, MERGE_CARD_HEIGHT = 260;
-const VIEW_ROUTES = new Set(["unnamed", "group-photos", "merge", "investigate", "faces", "pending", "named", "ignored"]);
+const MERGE_WORKSPACE_ENABLED = false;
+const VIEW_ROUTES = new Set(["unnamed", "group-photos", ...(MERGE_WORKSPACE_ENABLED ? ["merge"] : []), "investigate", "faces", "pending", "named", "ignored"]);
 
 function routeForView(view) { return view === "unnamed" ? "/naming/clusters" : view === "group-photos" ? "/naming/group-photos" : `/${view}`; }
 
@@ -140,7 +141,7 @@ async function refreshSummary() {
   for (const key of ["unnamed", "investigate", "faces", "pending", "named", "ignored"]) {
     document.querySelector(`#${key}-count`).textContent = summary.counts[key] ?? 0;
   }
-  document.querySelector("#merge-count").textContent = summary.counts.unnamed ?? 0;
+  if (MERGE_WORKSPACE_ENABLED) document.querySelector("#merge-count").textContent = summary.counts.unnamed ?? 0;
   document.querySelector("#pending-count").textContent = summary.counts.pending ?? 0;
   document.querySelector("#reset-button").disabled = !summary.connected || !(summary.counts.pending > 0);
   document.querySelector("#investigate-return-all").disabled = !summary.connected || !(summary.counts.investigate > 0);
@@ -176,8 +177,10 @@ async function waitUntilReady() {
 }
 
 function switchView(view, pushHistory = true, render = true) {
+  if (view === "merge" && !MERGE_WORKSPACE_ENABLED) view = "unnamed";
   if (!VIEW_ROUTES.has(view)) return;
-  if (pushHistory && window.location.pathname !== routeForView(view)) window.history.pushState(null, "", routeForView(view));
+  if (!MERGE_WORKSPACE_ENABLED && /^\/merge\/?$/.test(window.location.pathname)) window.history.replaceState(null, "", routeForView(view));
+  else if (pushHistory && window.location.pathname !== routeForView(view)) window.history.pushState(null, "", routeForView(view));
   state.view = view;
   document.querySelectorAll(".nav-button").forEach(button => {
     const active = button.dataset.view === view || button.dataset.view === "unnamed" && view === "group-photos";
@@ -231,6 +234,7 @@ async function renderIgnored() {
 }
 
 document.querySelector("#page-size-select").value = String(state.pageSize);
+document.querySelector('.nav-button[data-view="merge"]').hidden = !MERGE_WORKSPACE_ENABLED;
 document.querySelectorAll(".nav-button, .naming-tabs a").forEach(button => button.addEventListener("click", event => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault(); switchView(button.dataset.view);
@@ -251,8 +255,10 @@ document.querySelector("#page-size-select").addEventListener("change", event => 
 document.querySelectorAll("select[data-people-sort]").forEach(select => select.addEventListener("change", event => {
   changePeopleSort(event.target.value).catch(error => showToast(error.message));
 }));
-initializeMergeCanvas();
-bindMergeControls();
+if (MERGE_WORKSPACE_ENABLED) {
+  initializeMergeCanvas();
+  bindMergeControls();
+}
 bindNamingControls();
 bindGroupPhotos();
 bindFaceReviewControls();
