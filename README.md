@@ -42,13 +42,34 @@ Future plans:
 ## Getting started
 
 You need Python 3.10 or newer and an Immich admin account. No extra Python
-packages are required.
+packages are required. Manual release testing was performed with Immich v3.2.1.
+
+With Git installed, download the source:
 
 ```bash
 git clone https://github.com/SerkanBe/immich-people-workbench.git
 cd immich-people-workbench
+```
+
+Alternatively, download the repository as a ZIP and extract it. Open a terminal
+in the extracted folder containing `people_workbench.py` and `web/`.
+
+Start the app on Linux, macOS, or WSL:
+
+```bash
 python3 people_workbench.py
 ```
+
+On Windows, use PowerShell:
+
+```powershell
+python people_workbench.py
+```
+
+If `python` does not select your Python 3.10+ installation, use
+`py -3 people_workbench.py` if the Python launcher is installed, or the full
+path to your Python executable. See the [getting-started guide](docs/getting-started.md)
+for examples and separate state directories.
 
 If the browser does not open automatically, go to `http://127.0.0.1:8766/`.
 Enter your Immich URL and sign in with your admin account. For local state and
