@@ -13,7 +13,7 @@ Typing any part of an existing name opens suggestions with face thumbnails.
 Here, `a` matches several names, including Asha Bell, Eli Tan, and Mira Solis.
 
 <a href="../images/visual-tour/name-suggestions.jpg">
-  <img src="../images/visual-tour/name-suggestions.jpg" alt="Unnamed clusters with name suggestions for the letter a" width="798">
+  <img src="../images/visual-tour/name-suggestions.jpg" alt="Unnamed clusters with name suggestions for the letter a" width="840">
 </a>
 
 Typing `Eli` narrows the list and shows the rest of **Eli Tan** in grey.

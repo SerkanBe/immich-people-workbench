@@ -86,7 +86,12 @@ already in Pending are outside this sequence.
 ## Submit the decisions
 
 Choose **Submit review**, or press `Ctrl+Enter` (`⌘+Enter` on macOS).
-This takes one action and keeps the person selected.
+This takes one action. The person stays selected while faces still need review.
+After a successful submission, focus moves to the next untouched visible face
+so you can continue with `A` or `D`. The grid scrolls that face into view when
+needed. If more photos must be loaded, review continues after each page; a
+loading error focuses **Retry loading** and waits for you. If you move focus to
+another control while saving, Workbench leaves it there.
 
 - Accepted faces become locally checked and are hidden by default. Use
   **Show checked** to inspect them again.
@@ -123,3 +128,19 @@ Use **Shortcuts ?** for the full key reference.
 
 Next: [Pending and Sync](pending.md) to apply reviewed corrections, or
 [Group photos](group-photos.md) to identify unnamed clusters with photo context.
+
+## Keep reviewing after submission
+
+Submitting keeps the keyboard flow going: the next untouched face receives
+focus while this person still needs review. Once their complete inventory is
+reviewed, the next person needing review opens in the current list order and
+filters.
+
+You can also skip a difficult person at any point: choose the secondary
+**Next person · N** beside Submit, or press **N** outside text fields and dialogs.
+Saved drafts and completed decisions remain when you return. Workbench waits
+for an active draft save and stays put if it fails. The skipped person remains
+incomplete; skipping does not submit their drafts or queue changes in Pending.
+The completed empty area also has Next person. If no other person remains under
+those filters, Workbench explains that instead. Only explicit Sync applies
+Pending corrections to Immich.

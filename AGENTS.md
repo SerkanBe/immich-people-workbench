@@ -61,6 +61,15 @@
   handoffs in ignored `var/`; do not turn them into public documentation.
 - Document important limitations or manual verification gaps in the final
   handoff. Avoid copying private examples into documentation.
+- Write user guides around the reader's task: prerequisites, actions, and the
+  result to expect. Use short task headings and direct language.
+- Keep installation and everyday workflows concise. Link to optional setup,
+  troubleshooting, and existing illustrated tours instead of repeating them.
+- Keep development history, test-run evidence, source-contract audits, and agent
+  implementation notes out of user instructions. Use contributor docs for
+  reusable technical reference and ignored `var/` for temporary evidence.
+- Preserve instructions readers need to avoid losing progress or applying
+  unwanted Immich changes; shorten explanations without removing those steps.
 
 ## Review checklist
 
@@ -88,7 +97,7 @@
 - On a new clone, run `python3 tools/agent_git.py configure` once. It installs
   shared defaults for `codex/**` branches and hooks for all worktrees of this clone.
   It preserves the configured identity on human branches and refuses to replace
-  unrelated hooks. See `docs/development.md`.
+  unrelated hooks. See `docs/development/README.md`.
 - Stage explicit files, review the staged diff, then commit with
   `python3 tools/agent_git.py commit -m "Describe the change"`.
   On Windows use the corresponding Python executable.
