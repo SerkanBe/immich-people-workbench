@@ -336,7 +336,8 @@ class ApiKeyTests(unittest.TestCase):
         with urllib.request.urlopen(self.base+'/login-key.css') as response: self.assertEqual(response.status, 200)
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(self.base+'/media/person/'+PERSON)
-        self.assertEqual(caught.exception.code, 401)
+        with caught.exception:
+            self.assertEqual(caught.exception.code, 401)
 
     def test_metadata_identity_cannot_reflect_key(self):
         self.f['name'] = CANARY

@@ -441,6 +441,16 @@ class Immich:
         return samples
 
 
+class StoreConnection(sqlite3.Connection):
+    """Keep SQLite's transaction context semantics and close on context exit."""
+
+    def __exit__(self, *args: Any) -> bool:
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
@@ -539,7 +549,7 @@ class Store:
                 db.execute("ALTER TABLE group_photo_drafts ADD COLUMN operation TEXT NOT NULL DEFAULT 'rename'")
 
     def connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.path, timeout=30)
+        db = sqlite3.connect(self.path, timeout=30, factory=StoreConnection)
         db.row_factory = sqlite3.Row
         return db
 

@@ -10,6 +10,7 @@ import json
 import sqlite3
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from contextlib import closing
 import sys
 from unittest import mock
 
@@ -1425,7 +1426,7 @@ class GroupPhotoTests(unittest.TestCase):
 
     def test_existing_group_drafts_migrate_to_rename_operation(self):
         legacy_path = Path(self.directory.name) / "legacy.sqlite3"
-        with sqlite3.connect(legacy_path) as db:
+        with closing(sqlite3.connect(legacy_path)) as db, db:
             db.execute("CREATE TABLE group_photo_drafts (asset_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL, target_person_id TEXT, PRIMARY KEY(asset_id,person_id))")
             db.execute("INSERT INTO group_photo_drafts VALUES(?,?,?,NULL)", (self.PHOTO, self.FIRST, "Old Draft"))
         migrated = Store(legacy_path)
@@ -1640,7 +1641,7 @@ class ReleaseSafetyTests(unittest.TestCase):
 
     def test_legacy_pending_schema_migrates_without_changing_operation(self):
         legacy = self.root / "legacy.sqlite3"
-        with sqlite3.connect(legacy) as db:
+        with closing(sqlite3.connect(legacy)) as db, db:
             db.execute("CREATE TABLE pending(person_id TEXT PRIMARY KEY, operation TEXT, name TEXT DEFAULT '', target_person_id TEXT, target_name TEXT DEFAULT '', feature_asset_id TEXT, included INTEGER DEFAULT 1, last_error TEXT DEFAULT '', created_at TEXT, updated_at TEXT)")
             db.execute("INSERT INTO pending(person_id,operation,created_at,updated_at) VALUES(?,?,?,?)", (self.source,"hide","old","old"))
         store = Store(legacy)
@@ -1697,7 +1698,7 @@ class ReleaseSafetyTests(unittest.TestCase):
             def __exit__(self, *args): return self.db.__exit__(*args)
             def execute(self, sql, *args):
                 if "SELECT * FROM face_detach_pending" in sql:
-                    with sqlite3.connect(store.path) as writer:
+                    with closing(sqlite3.connect(store.path)) as writer, writer:
                         writer.execute("UPDATE pending SET included=0")
                         writer.execute("UPDATE face_detach_pending SET included=0")
                 return self.db.execute(sql, *args)
