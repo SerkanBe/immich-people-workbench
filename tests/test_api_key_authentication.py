@@ -262,8 +262,11 @@ class ApiKeyTests(unittest.TestCase):
         raw = (Path(self.tmp.name)/'state.sqlite3').read_bytes()
         self.assertNotIn(CANARY.encode(), raw)
 
-    def test_delayed_old_epoch_check_cannot_clear_new_session(self):
-        self.connect(); old = self.auth.cookie; self.auth.checked = 0
+    @mock.patch.object(w.time, 'monotonic', return_value=30.0)
+    def test_delayed_old_epoch_check_cannot_clear_new_session(self, _young_clock):
+        # A freshly booted runner may have less than one cache interval of uptime.
+        self.connect(); old = self.auth.cookie
+        self.auth.checked = time.monotonic() - w.ADMIN_CHECK_SECONDS - 1
         self.f['permissions'].remove('face.update')
         self.f['block_check'] = True
         result = []
