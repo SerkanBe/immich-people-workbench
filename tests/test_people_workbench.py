@@ -10,6 +10,7 @@ import json
 import sqlite3
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from contextlib import closing
 import sys
 from unittest import mock
 
@@ -27,6 +28,9 @@ class FakeImmich:
             {"id": "11111111-1111-4111-8111-111111111111", "name": "", "isHidden": False, "updatedAt": "2026-01-01T00:00:00Z"},
             {"id": "22222222-2222-4222-8222-222222222222", "name": "Existing Person", "isHidden": False, "updatedAt": "2026-01-02T00:00:00Z"},
         ]
+
+    def current_admin(self):
+        return "admin-1"
 
     def update_person(self, person_id, payload):
         self.calls.append(("update", person_id, payload))
@@ -87,6 +91,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = AppState(Store(Path(directory) / "state.sqlite3"), Path(directory) / "reports")
             auth = AdminSession(state)
+            auth.user_id = "admin-1"
             auth.cookie = "synthetic-session"
             auth.expires = time.monotonic() + 1000
             auth.checked = time.monotonic()
@@ -156,7 +161,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
 
         FakeResponse.headers.get_content_type.return_value = "application/json"
         client = Immich("https://immich.example", "synthetic-token", session=True)
-        with mock.patch.object(workbench.urllib.request, "urlopen", return_value=FakeResponse()) as opened:
+        with mock.patch.object(client.opener, "open", return_value=FakeResponse()) as opened:
             client.request("GET", "/users/me")
         request = opened.call_args.args[0]
         self.assertEqual(request.get_header("X-immich-user-token"), "synthetic-token")
@@ -1044,6 +1049,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
                 "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             })
             auth = AdminSession(app)
+            auth.user_id = "admin-1"
             auth.cookie = "synthetic-session"
             auth.expires = time.monotonic() + 1000
             auth.checked = time.monotonic()
@@ -1296,7 +1302,24 @@ class GroupPhotoTests(unittest.TestCase):
     def test_discovery_counts_all_faces_including_investigate_and_publishes_early(self):
         self.store.mark_investigate(self.FIRST)
         self.fake.hold = threading.Event()
+        foreground = threading.current_thread()
+        face_requests = []
+        request_lock = threading.Lock()
+        original_faces = self.fake.faces
+
+        def track_faces(asset_id):
+            with request_lock:
+                face_requests.append((threading.current_thread() is foreground, asset_id))
+            return original_faces(asset_id)
+
+        self.fake.faces = track_faces
+
+        def finish_scan():
+            self.fake.hold.set()
+            self.wait_scan()
+
         self.app.start_group_scan()
+        self.addCleanup(finish_scan)
         for _ in range(200):
             with self.app.lock:
                 if self.PHOTO in self.app.group_candidates:
@@ -1314,7 +1337,12 @@ class GroupPhotoTests(unittest.TestCase):
         self.assertEqual([face["status"] for face in state["photo"]["faces"]], ["actionable", "actionable", "actionable", "named", "ignored", "unassigned"])
         self.assertEqual(set(self.app.group_candidates), {self.PHOTO, self.ARCHIVE})
         self.assertTrue(all(call[2] for call in self.fake.calls if call[0] == "search"))
-        self.assertEqual(sum(call == ("faces", self.PHOTO) for call in self.fake.calls[:4]), 1)
+        # Discovery deduplicates photos shared by people. Display refreshes read
+        # faces again, and may interleave with discovery in any order.
+        self.assertCountEqual([asset_id for is_foreground, asset_id in face_requests if not is_foreground],
+                              [self.PHOTO, self.ARCHIVE])
+        self.assertEqual([asset_id for is_foreground, asset_id in face_requests if is_foreground],
+                         [self.PHOTO, self.PHOTO])
 
     def test_saved_current_photo_appears_before_search_finishes(self):
         self.store.set_setting("group_current", self.PHOTO)
@@ -1420,7 +1448,7 @@ class GroupPhotoTests(unittest.TestCase):
 
     def test_existing_group_drafts_migrate_to_rename_operation(self):
         legacy_path = Path(self.directory.name) / "legacy.sqlite3"
-        with sqlite3.connect(legacy_path) as db:
+        with closing(sqlite3.connect(legacy_path)) as db, db:
             db.execute("CREATE TABLE group_photo_drafts (asset_id TEXT NOT NULL, person_id TEXT NOT NULL, name TEXT NOT NULL, target_person_id TEXT, PRIMARY KEY(asset_id,person_id))")
             db.execute("INSERT INTO group_photo_drafts VALUES(?,?,?,NULL)", (self.PHOTO, self.FIRST, "Old Draft"))
         migrated = Store(legacy_path)
@@ -1635,7 +1663,7 @@ class ReleaseSafetyTests(unittest.TestCase):
 
     def test_legacy_pending_schema_migrates_without_changing_operation(self):
         legacy = self.root / "legacy.sqlite3"
-        with sqlite3.connect(legacy) as db:
+        with closing(sqlite3.connect(legacy)) as db, db:
             db.execute("CREATE TABLE pending(person_id TEXT PRIMARY KEY, operation TEXT, name TEXT DEFAULT '', target_person_id TEXT, target_name TEXT DEFAULT '', feature_asset_id TEXT, included INTEGER DEFAULT 1, last_error TEXT DEFAULT '', created_at TEXT, updated_at TEXT)")
             db.execute("INSERT INTO pending(person_id,operation,created_at,updated_at) VALUES(?,?,?,?)", (self.source,"hide","old","old"))
         store = Store(legacy)
@@ -1692,7 +1720,7 @@ class ReleaseSafetyTests(unittest.TestCase):
             def __exit__(self, *args): return self.db.__exit__(*args)
             def execute(self, sql, *args):
                 if "SELECT * FROM face_detach_pending" in sql:
-                    with sqlite3.connect(store.path) as writer:
+                    with closing(sqlite3.connect(store.path)) as writer, writer:
                         writer.execute("UPDATE pending SET included=0")
                         writer.execute("UPDATE face_detach_pending SET included=0")
                 return self.db.execute(sql, *args)
@@ -1708,7 +1736,7 @@ class ReleaseSafetyTests(unittest.TestCase):
         class QuietHandler(Handler):
             def log_message(self, *_args): pass
         auth = AdminSession(self.app)
-        auth.cookie = "synthetic-session"; auth.expires=time.monotonic()+1000; auth.checked=time.monotonic()
+        auth.cookie = "synthetic-session"; auth.user_id = "admin-1"; auth.expires=time.monotonic()+1000; auth.checked=time.monotonic()
         with mock.patch.object(workbench, "STATE", self.app, create=True), mock.patch.object(workbench, "AUTH", auth, create=True):
             server=ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
             thread=threading.Thread(target=server.serve_forever);thread.start()
@@ -1785,7 +1813,7 @@ class ReleaseSafetyTests(unittest.TestCase):
         class QuietHandler(Handler):
             def log_message(self, *_args): pass
         auth = AdminSession(self.app)
-        auth.cookie = "synthetic-session"; auth.expires = time.monotonic()+1000; auth.checked = time.monotonic()
+        auth.cookie = "synthetic-session"; auth.user_id = "admin-1"; auth.expires = time.monotonic()+1000; auth.checked = time.monotonic()
         with mock.patch.object(workbench, "STATE", self.app, create=True), mock.patch.object(workbench, "AUTH", auth, create=True):
             server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
             server_thread = threading.Thread(target=server.serve_forever); server_thread.start()

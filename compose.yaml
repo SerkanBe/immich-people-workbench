@@ -1,0 +1,26 @@
+name: people-workbench
+
+services:
+  people-workbench:
+    image: ${PEOPLE_WORKBENCH_IMAGE:-ghcr.io/serkanbe/immich-people-workbench:latest}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${PEOPLE_WORKBENCH_BIND_IP:-127.0.0.1}:${PEOPLE_WORKBENCH_PORT:-8766}:8766"
+    environment:
+      PEOPLE_WORKBENCH_IMMICH_URL: ${PEOPLE_WORKBENCH_IMMICH_URL-}
+      PEOPLE_WORKBENCH_PUBLIC_URL: ${PEOPLE_WORKBENCH_PUBLIC_URL:-http://localhost:${PEOPLE_WORKBENCH_PORT:-8766}}
+      PEOPLE_WORKBENCH_TRUSTED_PROXIES: ${PEOPLE_WORKBENCH_TRUSTED_PROXIES:-}
+    volumes:
+      - people-workbench-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 2m
+
+volumes:
+  people-workbench-data:

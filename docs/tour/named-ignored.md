@@ -18,9 +18,10 @@ ignored clusters, not people hidden from a real library.
   <img src="../images/visual-tour/ignored.jpg" alt="Ignored view with fictional clusters and Restore buttons" width="840">
 </a>
 
-The header counts help you move among the main sections. Naming has **Clusters**
-and [**Group photos**](group-photos.md) subtabs. **Per page** changes the page
-size for lists. Each section
+The left navigation links to each main section, with **Clusters** and
+[**Group photos**](group-photos.md) grouped under **Naming**. The mobile
+**Menu** opens that navigation as a drawer. **Per page** changes the page size
+for lists. Each section
 has its own URL, so reload and browser Back or Forward keep your place. The
 **Reload** button refreshes people from Immich, while local Pending changes
 remain available for review.

@@ -21,6 +21,14 @@ ROOT = Path(__file__).resolve().parent
 IDENTITIES = ["mira", "asha", "dorian", "eli", "rowan", "nora"]
 NAMES = ["Mira Solis", "Asha Bell", "Dorian Reed", "Eli Tan", "Rowan Finch", "Nora Vale",
          "Mira Solis — studio", "Alexander Morgan-Winterbottom"]
+REQUIRED_PERMISSIONS = frozenset({"user.read", "person.read", "person.statistics", "person.update", "person.create", "person.merge", "asset.read", "asset.view", "face.read", "face.update"})
+# Invented credentials usable only in this loopback fixture, never an upstream.
+KEY_FIXTURES = {
+    "synthetic-owner-key": "owner", "synthetic-rotated-key": "owner",
+    "synthetic-missing-key": "missing", "synthetic-broad-key": "broad",
+    "synthetic-revoked-key": "revoked", "synthetic-wrong-owner-key": "wrong-owner",
+    "synthetic-malformed-key": "malformed",
+}
 NAMESPACE = uuid.UUID("96b787a0-7b74-4a32-a824-97fd1fa9b007")
 def uid(value):
     return str(uuid.uuid5(NAMESPACE, value))
@@ -31,6 +39,8 @@ class Fixtures:
         self.requests = collections.Counter()
         self.writes = []
         self.fail_writes = False
+        self.key_permissions = set(REQUIRED_PERMISSIONS)
+        self.key_revoked = False
         self.people = {}
         self.assets = {}
         self.faces = {}
@@ -155,16 +165,56 @@ class Handler(BaseHTTPRequestHandler):
                                   "failWrites": F.fail_writes, "people": len(F.people)})
             if path == "/__review__/settings" and method == "POST":
                 F.fail_writes = bool(payload.get("failWrites"))
-                return self.send({"failWrites": F.fail_writes})
+                if "keyPermissions" in payload:
+                    permissions = payload["keyPermissions"]
+                    if not isinstance(permissions, list) or any(not isinstance(p, str) for p in permissions):
+                        return self.send({"message": "keyPermissions must be a list"}, 400)
+                    F.key_permissions = set(permissions)
+                if "keyRevoked" in payload:
+                    F.key_revoked = payload["keyRevoked"] is True
+                return self.send({"failWrites": F.fail_writes, "keyRevoked": F.key_revoked, "keyPermissions": sorted(F.key_permissions)})
             if path == "/auth/login":
                 if payload.get("email") != "review@example.test" or payload.get("password") != "synthetic-review":
                     return self.send({"message": "Use the documented synthetic review account"}, 401)
                 return self.send({"isAdmin": True, "accessToken": "synthetic-review-session",
                                   "userId": uid("admin"), "name": "UI review"})
-            if path == "/users/me":
-                return self.send({"isAdmin": True, "id": uid("admin"), "email": "review@example.test"})
             if path == "/server/version":
-                return self.send({"version": "UI mock"})
+                return self.send({"major": 3, "minor": 3, "patch": 1})
+            key = self.headers.get("x-api-key", "")
+            token = self.headers.get("x-immich-user-token", "")
+            fixture = KEY_FIXTURES.get(key)
+            is_key = bool(fixture)
+            if is_key:
+                if fixture == "revoked" or F.key_revoked:
+                    return self.send({"message": "Synthetic key revoked"}, 401)
+                permissions = set(F.key_permissions)
+                if fixture == "missing": permissions.discard("face.update")
+                if fixture == "broad": permissions = {"all"}
+            elif token == "synthetic-review-session" and not key:
+                permissions = {"all"}
+            else:
+                return self.send({"message": "Synthetic authentication required"}, 401)
+            if path == "/api-keys/me":
+                if not is_key: return self.send({"message": "Use an API key"}, 403)
+                if fixture == "malformed": return self.send({"permissions": "invalid"})
+                return self.send({"id": uid("key-" + fixture), "name": "Synthetic review key",
+                                  "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+                                  "permissions": sorted(permissions)})
+            permission = ""
+            if path == "/users/me": permission = "user.read"
+            elif path.startswith("/people"):
+                permission = ("person.statistics" if path.endswith("/statistics") else
+                              "person.merge" if path.endswith("/merge") else
+                              "person.create" if path == "/people" and method == "POST" else
+                              "person.update" if method == "PUT" else "person.read")
+            elif path.startswith("/faces"): permission = "face.update" if method == "PUT" else "face.read"
+            elif path == "/search/metadata": permission = "asset.read"
+            elif path.startswith("/assets/"): permission = "asset.view" if path.endswith("/thumbnail") else "asset.read"
+            if permission and permission not in permissions and "all" not in permissions:
+                return self.send({"message": "Synthetic permission denied"}, 403)
+            if path == "/users/me":
+                owner = "wrong-owner" if fixture == "wrong-owner" else "owner" if is_key else "admin"
+                return self.send({"isAdmin": not is_key, "id": uid(owner), "name": "Synthetic review account", "email": "review@example.test"})
             if path == "/people" and method == "GET":
                 rows = list(F.people.values())
                 if q.get("withHidden", ["false"])[0] != "true":

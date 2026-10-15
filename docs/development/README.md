@@ -65,14 +65,51 @@ with every version. The guide mock uses the current two-result contract.
 
 ## Tests
 
+Run every discovered Python and Node test so new suites are included automatically:
+
 ```bash
-python3 -m unittest discover -s tests -p 'test_people_workbench.py' -v
-node --test tests/test_group_photos.mjs
-for file in web/*.js tests/test_group_photos.mjs; do node --check "$file"; done
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+node --test tests/*.mjs
+for file in web/*.js tests/*.mjs; do node --check "$file"; done
 ```
 
-With Node.js installed, run the synthetic browser interaction tests with
-`node --test tests/*.mjs`. Check changed browser modules with `node --check`.
+These tests use synthetic data and browser DOM doubles; they do not prove layout
+or focus behavior in every browser or live compatibility with every Immich
+version. API-key login, required scopes, account binding, rotation and revocation
+are described in [API key connection](../api-key-authentication.md). Credentials
+remain in server memory. HTTP Sync checks current identity and scopes before any
+upstream write. The intended Sync boundary and recovery behavior are described
+in the user guide.
+
+Deployment tests exercise real loopback HTTP servers with synthetic data:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_deployment.py' -v
+```
+
+They check configured hosts/origins, proxy trust, login cookie flags, health
+without Immich access, Pending/Sync boundaries, restart persistence, and Linux
+SIGTERM handling. Run them on Linux to include the shutdown test. The full
+discovered Python command above includes this suite.
+See [Docker deployment](../docker.md) for Compose and image release details.
+
+## Continuous integration
+
+`.github/workflows/checks.yml` is the reusable CI gate. It discovers all
+`tests/test_*.py` on Ubuntu and Windows with Python 3.10 and 3.13, and all
+`tests/*.mjs` with Node 24; it also syntax-checks browser/test JavaScript and
+checks tracked public paths and local links in README/docs. A Linux Docker job
+starts a fresh checkout with `docker compose up -d`, checks localhost defaults,
+login and authentication boundaries, and verifies state survives container
+recreation. It uses a separate project and synthetic volume without connecting
+to Immich. The Docker jobs run Linux containers; they do not verify Docker
+Desktop credential helpers or WSL integration. CI runs with read-only
+repository permissions and no Immich credentials. Docker's release
+workflow calls this gate for the tagged source revision. CI success is not a live
+Immich, real-browser layout, native ARM64, or production proxy test.
+
+`tools/check_public_files.py` inspects only Git-tracked paths and local links
+in README/docs. It is a focused hygiene check, not a general secret scanner.
 
 ## Guides and synthetic screenshots
 

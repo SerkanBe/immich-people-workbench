@@ -6,9 +6,6 @@ Open **Naming → Group photos** when knowing someone in a photo might help you
 recognize its unnamed faces. Workbench shows the whole photo with numbered
 face markers and a name field for the selected cluster.
 
-All examples below use fictional portraits composed into made-up group photos.
-The interface is the actual application, running against a local API mock.
-
 ## Find a useful photo
 
 The first matching photo appears while Workbench continues searching. By
@@ -21,7 +18,7 @@ Change **Minimum detected faces** to 2 to include smaller groups. Uncheck
 the number of unnamed detections, update time, or random order.
 
 <a href="../images/visual-tour/group-photos-overview.jpg">
-  <img src="../images/visual-tour/group-photos-overview.jpg" alt="Group photos with six numbered faces and the selected unnamed face in the sidebar" width="715">
+  <img src="../images/visual-tour/group-photos-overview.jpg" alt="Group photos with six numbered faces and the selected unnamed face in the sidebar" width="840">
 </a>
 
 The progress line distinguishes photos found, checked, and eligible. Workbench
@@ -46,7 +43,7 @@ Type a new name, or choose an existing person from the suggestions. In this
 example, `Do` offers **Dorian Reed**, whose face matches the selected cluster.
 
 <a href="../images/visual-tour/group-photos-name.jpg">
-  <img src="../images/visual-tour/group-photos-name.jpg" alt="Existing-person suggestion beside the selected fictional face" width="715">
+  <img src="../images/visual-tour/group-photos-name.jpg" alt="Existing-person suggestion beside the selected fictional face" width="840">
 </a>
 
 `Tab` accepts a visible completion; press it again to move on. Up/Down choose
@@ -62,7 +59,7 @@ cluster**. The field displays that full label so the choice is clear. Merely
 typing “Ignore” without choosing the action is treated as a person's name.
 
 <a href="../images/visual-tour/group-photos-ignore.jpg">
-  <img src="../images/visual-tour/group-photos-ignore.jpg" alt="Explicit Ignore this cluster suggestion before submitting the photo" width="715">
+  <img src="../images/visual-tour/group-photos-ignore.jpg" alt="Explicit Ignore this cluster suggestion before submitting the photo" width="840">
 </a>
 
 Press `H` outside a text field to hide/show the face rectangles. Use

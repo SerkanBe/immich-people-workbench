@@ -7,6 +7,7 @@ import { createGroupPhotos } from "./group-photos.js";
 import { createInvestigate } from "./investigate.js";
 import { createPending } from "./pending.js";
 import { createAssetPreview } from "./asset-preview.js";
+import { createNavigationDrawer, routeForView, updateNavigationState, viewFromPath } from "./navigation.js";
 import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM, readMergeCanvasState, readPageSize, savePageSize, saveMergeCanvasState } from "./browser-storage.js";
 
 "use strict";
@@ -14,15 +15,6 @@ import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MA
 const MERGE_CARD_WIDTH = 220, MERGE_CARD_HEIGHT = 260;
 const MERGE_WORKSPACE_ENABLED = false;
 const VIEW_ROUTES = new Set(["unnamed", "group-photos", ...(MERGE_WORKSPACE_ENABLED ? ["merge"] : []), "investigate", "faces", "pending", "named", "ignored"]);
-
-function routeForView(view) { return view === "unnamed" ? "/naming/clusters" : view === "group-photos" ? "/naming/group-photos" : `/${view}`; }
-
-function viewFromPath(path) {
-  const view = path.replace(/^\/|\/$/g, "");
-  if (view === "naming/clusters") return "unnamed";
-  if (view === "naming/group-photos") return "group-photos";
-  return VIEW_ROUTES.has(view) ? view : "unnamed";
-}
 
 const ui = {
   duplicate: document.querySelector("#duplicate-dialog"),
@@ -56,8 +48,14 @@ async function api(path, options = {}) {
   }
   const response = await fetch(path, init);
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401) {
-    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+  if (response.status === 401 || (response.status === 403 && data.reconnectRequired === true)) {
+    const params = new URLSearchParams({ next: window.location.pathname });
+    const reasons = new Set(["missing_permissions", "invalid_key", "session_expired", "unavailable", "unsupported_introspection", "invalid_login", "owner_mismatch", "connection_ended"]);
+    if (reasons.has(data.code)) params.set("reason", data.code);
+    const known = new Set(["user.read", "person.read", "person.statistics", "person.update", "person.create", "person.merge", "asset.read", "asset.view", "face.read", "face.update"]);
+    const missing = Array.isArray(data.missingPermissions) ? [...new Set(data.missingPermissions.filter(value => known.has(value)))].slice(0, 10) : [];
+    if (data.code === "missing_permissions" && missing.length) params.set("missing", missing.join(","));
+    window.location.assign(`/login?${params}`);
     throw new Error("Sign in required");
   }
   if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
@@ -136,7 +134,13 @@ async function refreshSummary() {
   state.summary = summary;
   state.sort = summary.sort || state.sort;
   syncPeopleSortControls();
-  document.querySelector("#connection-status").textContent = summary.connected ? `Immich ${summary.version} · local queue enabled` : "Not connected";
+  const connection = summary.connection;
+  const account = connection?.displayName || "Account connected";
+  const mode = connection?.authMode === "apiKey" ? "API key" : "Admin login";
+  const warning = connection?.overbroad ? " · Warning: key grants extra permissions" : "";
+  document.querySelector("#connection-status").textContent = summary.connected
+    ? (connection?.authMode ? `${account} · ${mode} · Immich ${summary.version}${warning}` : `Immich ${summary.version} · local queue enabled`)
+    : "Not connected";
   document.querySelector("#reload-button").hidden = !summary.connected;
   for (const key of ["unnamed", "investigate", "faces", "pending", "named", "ignored"]) {
     document.querySelector(`#${key}-count`).textContent = summary.counts[key] ?? 0;
@@ -176,19 +180,15 @@ async function waitUntilReady() {
   }
 }
 
-function switchView(view, pushHistory = true, render = true) {
+function switchView(view, pushHistory = true, render = true, focusDestination = false) {
   if (view === "merge" && !MERGE_WORKSPACE_ENABLED) view = "unnamed";
   if (!VIEW_ROUTES.has(view)) return;
   if (!MERGE_WORKSPACE_ENABLED && /^\/merge\/?$/.test(window.location.pathname)) window.history.replaceState(null, "", routeForView(view));
   else if (pushHistory && window.location.pathname !== routeForView(view)) window.history.pushState(null, "", routeForView(view));
   state.view = view;
-  document.querySelectorAll(".nav-button").forEach(button => {
-    const active = button.dataset.view === view || button.dataset.view === "unnamed" && view === "group-photos";
-    button.classList.toggle("active", active);
-    if (active) button.setAttribute("aria-current", "page"); else button.removeAttribute("aria-current");
-  });
+  updateNavigationState(document, view);
   document.querySelectorAll(".view").forEach(section => section.classList.toggle("active", section.id === `${view}-view`));
-  if (render) renderCurrentView(true).catch(error => showToast(error.message));
+  if (render) return renderCurrentView(!focusDestination).catch(error => showToast(error.message));
 }
 
 async function renderCurrentView(focusFirst = false, refresh = true) {
@@ -235,10 +235,7 @@ async function renderIgnored() {
 
 document.querySelector("#page-size-select").value = String(state.pageSize);
 document.querySelector('.nav-button[data-view="merge"]').hidden = !MERGE_WORKSPACE_ENABLED;
-document.querySelectorAll(".nav-button, .naming-tabs a").forEach(button => button.addEventListener("click", event => {
-  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  event.preventDefault(); switchView(button.dataset.view);
-}));
+createNavigationDrawer({ document, window, onNavigate: (view, fromDrawer) => switchView(view, true, true, fromDrawer) });
 window.addEventListener("popstate", () => switchView(viewFromPath(window.location.pathname), false));
 document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => switchView(button.dataset.go)));
 document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));

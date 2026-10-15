@@ -1,6 +1,6 @@
 # Writing guides and taking screenshots
 
-User walkthroughs live in `docs/tour/`; the [Visual tour](visual-tour.md)
+User walkthroughs live in `docs/tour/`; the [Visual tour](../visual-tour.md)
 indexes them. Keep each page focused on a user's task: where to start, the
 decision to make, its local result, and when Immich changes.
 
@@ -34,14 +34,41 @@ python tools/tour_demo.py
 
 Open the printed app address, normally `http://127.0.0.1:18776/`, and sign in:
 
-| Field | Synthetic value |
-| --- | --- |
-| Immich URL | `http://127.0.0.1:18777` |
-| Email | `review@example.test` |
-| Password | `synthetic-review` |
+For either connection method, set the Immich URL to `http://127.0.0.1:18777`.
+Then choose one of these separate mock fixtures:
 
-These invented credentials work only in the mock. Do not enter real credentials.
-The mock has no upstream client or forwarding path, and only fictional assets.
+| Connection method | Fields | Synthetic values |
+| --- | --- | --- |
+| Admin login | Email and password | `review@example.test` / `synthetic-review` |
+| API key (recommended) | API key | `synthetic-owner-key` |
+
+These invented credentials work only in the mock. The password fixture is a
+different administrator account from the ordinary owner behind the API-key
+fixture. Use a fresh demo runtime/state directory when switching between them,
+because local state binds to the first connected account and server. Never enter
+real credentials. The mock has no upstream client or forwarding path, and only
+fictional assets. The mock audit records synthetic requests without recording
+credentials or auth headers.
+
+### API-key fixtures for guide maintenance
+
+The guide mock can exercise these fictional key states. They are not real
+Immich keys and work only with `tools/tour_mock.py`:
+
+| Key | Fixture |
+| --- | --- |
+| `synthetic-owner-key` | Ordinary owner with all required permissions |
+| `synthetic-rotated-key` | Replacement key for the same owner |
+| `synthetic-missing-key` | Missing `face.update` |
+| `synthetic-broad-key` | `all` permission; Workbench shows a warning |
+| `synthetic-revoked-key` | Rejected credential |
+| `synthetic-wrong-owner-key` | Key belongs to another owner |
+| `synthetic-malformed-key` | Invalid permission introspection |
+
+The mock can also change a key's permissions or revocation state through its
+`POST /__review__/settings` endpoint. It records fictional requests and writes;
+it never forwards them to Immich. Use a fresh runtime when changing account
+fixtures because Workbench binds local state to the first account and server.
 
 Keep the launcher running while capturing. `Ctrl+C` stops only its own app
 and mock children. Logs, the copied source, and synthetic state remain in the

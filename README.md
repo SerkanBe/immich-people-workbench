@@ -1,103 +1,116 @@
 # Immich People Workbench
 
-People Workbench is a keyboard-first, local tool for reviewing people and faces
-already detected by [Immich](https://immich.app/).
+Name people faster and review incorrect face assignments in your
+[Immich](https://immich.app/) library, using keyboard shortcuts and photo context.
 
-The goal of this workbench is to streamline the whole process of naming faces, merging them and removing wrongly
-assigned faces from people.
+[Getting started](#getting-started) · [User guide](docs/user-guide.md) ·
+[Visual tour](docs/visual-tour.md) · [Report a bug](docs/reporting-bugs.md)
 
-In this workbench the main task of naming people is done with the keyboard:
-- Type in name
-- Instantly get names suggested
-- hit Tab to use autocomplete to select the first name
-- use up/down keys to select other suggested names
-- hit Enter to confirm the name
-- hit Tab to move to the next face
-- alt+i to ignore a face
-- alt+d to mark it for further investigation later on (with more context/the whole image)
+<a href="docs/images/visual-tour/name-suggestions.jpg">
+  <img src="docs/images/visual-tour/name-suggestions.jpg" alt="Naming clusters with autocomplete in People Workbench" width="840">
+</a>
 
-Only if you type the whole name yourself and it already exists as a person, only then you will be
-asked if you're sure you want to create a new person with the same name.
-The immich way is to always ask you if you want to merge... which is basically always the case.
+*Naming with autocomplete. Screenshot uses fictional demo data.*
 
-Immich changes stay in a local Pending queue until you review and explicitly Sync them.
+## Features
 
-Yeah. That's it. I hope this helps people as much as it did help me.
+- **Fast naming:** type a name or choose an existing person with autocomplete.
+- **Photo context:** identify unnamed faces in Group photos, or set difficult
+  clusters aside in Investigate.
+- **Face review:** accept correct faces, separate mistakes, and continue with
+  the keyboard.
+- **Pending review:** check queued names, merges and corrections before applying
+  them to Immich.
 
-## Current scope
-
-Right now it runs with python and allows you to sign in only with your immich admin account.
-
-You can:
-- Name people quickly
-- Create new people (by typing a name that doesn't exist yet)
-- Merge an unnamed cluster into an existing person by selecting their name, then reviewing it in Pending before Sync
-- Review persons to see if there is any wrong face in there (still needs work though)
-
-Future plans:
-- Add ways to run this tool in Docker, with its own Compose file or as a service in Immich's Compose stack
-- Allow other immich accounts to login and do their naming
-- Fix the issues/experimentals mentioned above... at some point, if people want that.
+**Changes stay local until you review Pending and explicitly Sync.** Keep a
+backup of your library before applying changes.
 
 ## Getting started
 
-You need Python 3.10 or newer and an Immich admin account. No extra Python
-packages are required. Manual release testing was performed with Immich v3.2.1.
+You need a running Immich server and either Docker Compose or Python 3.10+.
+Download the source:
 
-With Git installed, download the source:
-
-```bash
+```sh
 git clone https://github.com/SerkanBe/immich-people-workbench.git
 cd immich-people-workbench
 ```
 
-Alternatively, download the repository as a ZIP and extract it. Open a terminal
-in the extracted folder containing `people_workbench.py` and `web/`.
+Or download and extract the repository ZIP.
 
-Start the app on Linux, macOS, or WSL:
+Choose one of these three setups:
 
-```bash
+### 1. Standalone Python
+
+No extra Python packages are required:
+
+```sh
 python3 people_workbench.py
 ```
 
-On Windows, use PowerShell:
+On Windows, use `python people_workbench.py` or `py -3 people_workbench.py`.
+Open [http://127.0.0.1:8766/](http://127.0.0.1:8766/) if the browser does not open.
+Connect to Immich using its domain/IP, or `http://localhost:2283` if it runs on
+the same machine and is reachable at that address.
 
-```powershell
-python people_workbench.py
+### 2. Standalone Docker with remote Immich
+
+Run Workbench locally without changing your remote Immich installation:
+
+```sh
+docker compose up -d
 ```
 
-If `python` does not select your Python 3.10+ installation, use
-`py -3 people_workbench.py` if the Python launcher is installed, or the full
-path to your Python executable. See the [getting-started guide](docs/getting-started.md)
-for examples and separate state directories.
+The first start builds the image. Open
+[http://localhost:8766/](http://localhost:8766/) and enter your **remote Immich
+URL**, such as `https://photos.example.com`. The address starts empty unless
+you previously saved one. Inside the container, `localhost`
+means Workbench itself. For Immich on the same computer with Docker Desktop,
+use `http://host.docker.internal:2283` or choose setup 3.
+See [Run with Docker](docs/docker.md) for settings, updates and storage.
 
-If the browser does not open automatically, go to `http://127.0.0.1:8766/`.
-Enter your Immich URL and sign in with your admin account. For local state and
-remote-access details, see the [getting-started guide](docs/getting-started.md).
+### 3. Add Workbench to Immich's Compose file
+
+On the Docker host running Immich, build the image from the Workbench source
+folder:
+
+```sh
+docker compose build
+```
+
+Add the [Workbench service](docs/docker.md#add-workbench-to-immichs-compose-file)
+to your existing Immich Compose file, then run this from the **Immich folder**:
+
+```sh
+docker compose up -d people-workbench
+```
+
+Open [http://localhost:8766/](http://localhost:8766/) and connect to
+`http://immich-server:2283` (prefilled on a fresh browser) using your actual
+Immich service name. Each container
+has its own `localhost`, even when both services share the same network.
+
+### Connect and name a person
+
+Connect with an [Immich API key](docs/api-key-authentication.md) (recommended),
+or use an administrator account with password login enabled.
+Open **Naming → Clusters**, enter a name and press `Enter`. Review the change
+in **Pending**, then choose **Sync** when you are ready to apply it.
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md) — run locally, sign in, and understand local state.
-- [Visual tour](docs/visual-tour.md) — illustrated walkthrough of the main views and workflows.
-- [User guide](docs/user-guide.md) — naming, Group photos, Investigate, Face review, and Pending.
-- [Development](docs/development.md) — source layout, tests, and agent commit setup.
-- [Writing guides](docs/writing-guides.md) — run the synthetic demo and capture safe screenshots.
+| I want to… | Guide |
+| --- | --- |
+| Set up Workbench and keep my progress | [Getting started](docs/getting-started.md) |
+| Create an API key with the right permissions | [API key connection](docs/api-key-authentication.md) |
+| Learn the workflows and keyboard shortcuts | [User guide](docs/user-guide.md) |
+| Follow illustrated examples | [Visual tour](docs/visual-tour.md) |
+| Report a problem | [Reporting bugs](docs/reporting-bugs.md) |
 
-Project repository: [github.com/SerkanBe/immich-people-workbench](https://github.com/SerkanBe/immich-people-workbench).
+## Contributing
 
-
-## AI Disclaimer
-
-This whole thing is written by AI. I just gave direction and told him what we need and what not.
-It's nowhere perfect, and everyone probably needs a different tool anyway. But here we are.
-
-I just can hope the AI didn't put a `rm -rf /` in there somewhere, that triggers on a specific date.
-I developed and tested the features with my own library, and didn't lose any images... yet :D
-
-Just make sure you have Backup(s) of your image library.
-
+Bug reports and improvements are welcome. See [Development](docs/development/README.md)
+for contributing and running checks. This project is developed with AI assistance.
 
 ## License
 
-Copyright (C) 2026 Serkan Bekdemir. Licensed under the
-[GNU Affero General Public License v3.0](LICENSE).
+[AGPL-3.0](LICENSE).

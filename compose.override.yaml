@@ -1,0 +1,8 @@
+# Compose loads this file automatically when running from the source checkout.
+services:
+  people-workbench:
+    image: ${PEOPLE_WORKBENCH_LOCAL_IMAGE:-people-workbench:local}
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile

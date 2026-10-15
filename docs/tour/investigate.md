@@ -13,7 +13,7 @@ demo uses repeated fictional portraits and deliberate mixed assignments; a real
 library shows the available Immich previews.
 
 <a href="../images/visual-tour/investigate.jpg">
-  <img src="../images/visual-tour/investigate.jpg" alt="Investigate view with a fictional cluster, photo preview, filename, and thumbnail strip" width="680">
+  <img src="../images/visual-tour/investigate.jpg" alt="Investigate view with a fictional cluster, photo preview, filename, and thumbnail strip" width="840">
 </a>
 
 When you know the person, use the same name field and suggestions as in

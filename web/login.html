@@ -7,19 +7,42 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in · People Workbench</title>
   <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/login-key.css">
   <script type="module" src="/login.js"></script>
 </head>
 <body class="login-page">
   <main class="login-card">
     <h1>People Workbench</h1>
-    <p>Sign in with an Immich admin account. Workbench forwards your password to Immich and does not save it.</p>
+    <p>Connect to your Immich library. Credentials stay in Workbench memory until logout, eight-hour expiry or restart.</p>
+    <section id="connection-notice" class="connection-notice" role="status" aria-live="polite" hidden>
+      <h2 id="connection-notice-title"></h2>
+      <p id="connection-notice-copy"></p>
+      <p>Saved drafts and Pending stay here. Reconnecting does not Sync them.</p>
+    </section>
     <form id="login-form" class="dialog-form">
-      <label>Immich URL <input id="immich-url" type="url" value="http://localhost:2283" required autocomplete="url"></label>
-      <label>Email <input id="immich-email" type="email" required autocomplete="username"></label>
-      <label>Password <input id="immich-password" type="password" required autocomplete="current-password"></label>
+      <fieldset class="connection-method">
+        <legend>Connection method</legend>
+        <label><input id="mode-key" type="radio" name="auth-mode" value="apiKey" checked> API key <span class="muted">(recommended)</span></label>
+        <label><input id="mode-login" type="radio" name="auth-mode" value="login"> Admin login</label>
+      </fieldset>
+      <label>Immich URL <input id="immich-url" type="url" value="__IMMICH_URL_DEFAULT__" placeholder="https://photos.example.com" required autocomplete="url"></label>
+      <div id="key-fields">
+        <label>API key <input id="immich-api-key" type="password" required autocomplete="off" spellcheck="false" autocapitalize="none"></label>
+        <details id="key-permissions">
+          <summary>Required permissions</summary>
+          <p>Create a key in your Immich account settings with these ten permissions:</p>
+          <ul class="permission-list"><li data-permission="user.read">user.read</li><li data-permission="person.read">person.read</li><li data-permission="person.statistics">person.statistics</li><li data-permission="person.update">person.update</li><li data-permission="person.create">person.create</li><li data-permission="person.merge">person.merge</li><li data-permission="asset.read">asset.read</li><li data-permission="asset.view">asset.view</li><li data-permission="face.read">face.read</li><li data-permission="face.update">face.update</li></ul>
+          <p>Use the account whose library you want to review. Extra permissions produce a warning. Workbench never creates or revokes keys.</p>
+        </details>
+      </div>
+      <div id="login-fields" hidden>
+        <label>Email <input id="immich-email" type="email" required autocomplete="username" disabled></label>
+        <label>Password <input id="immich-password" type="password" required autocomplete="current-password" disabled></label>
+        <p>Sign in with an Immich admin account. Workbench forwards your password to Immich and does not save it.</p>
+      </div>
       <label class="check-row"><input id="insecure-tls" type="checkbox"> Allow an untrusted HTTPS certificate</label>
       <p id="login-error" class="error-text" role="alert" hidden></p>
-      <button id="login-button" class="primary-button" type="submit">Sign in</button>
+      <button id="login-button" class="primary-button" type="submit">Connect</button>
     </form>
   </main>
 </body>

@@ -1,0 +1,9 @@
+# Compatibility overlay for existing commands that explicitly select this file.
+# New source installations only need: docker compose up -d
+services:
+  people-workbench:
+    image: ${PEOPLE_WORKBENCH_LOCAL_IMAGE:-people-workbench:local}
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile

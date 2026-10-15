@@ -5,5 +5,7 @@
 .codex/
 var/
 *.local.json
+.env
+.env.docker
 __pycache__/
 *.py[cod]

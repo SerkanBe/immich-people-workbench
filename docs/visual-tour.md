@@ -2,13 +2,10 @@
 
 This illustrated tour covers the main People Workbench workflows. Start with
 [Getting started](getting-started.md) to run the app and sign in; use the
-[User guide](user-guide.md) for the complete controls and keyboard shortcuts.
+[User guide](user-guide.md) for common tasks and keyboard shortcuts.
 
-All screenshots use a synthetic local demo. The portraits depict fictional,
-AI-generated people, and the names, photo counts, and filenames are invented.
-Screenshots on different pages can show different demo states. No personal
-Immich library data was used. These screenshots show the current app using the tracked synthetic mock;
-group photos are fictional composites.
+Screenshots use fictional demo data: AI-generated people, invented names,
+counts and filenames, and composite group photos.
 Select a screenshot to open the full-resolution image.
 
 | Task | Where to go |
@@ -23,4 +20,8 @@ Select a screenshot to open the full-resolution image.
 Drafting and reviewing stay local. Workbench sends changes to Immich only after
 you review checked items in **Pending** and explicitly select **Sync**.
 
-For maintainers: [Writing guides and taking screenshots](writing-guides.md).
+Use the left navigation to move among sections. **Clusters** and **Group
+photos** are grouped under **Naming**; on narrow screens, **Menu** opens the
+navigation drawer.
+
+For maintainers: [Writing guides and taking screenshots](development/writing-guides.md).

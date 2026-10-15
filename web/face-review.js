@@ -24,6 +24,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   let pageLoad = null;
   let busy = false;
   let draftSaving = false;
+  let draftSaveWaiters = [];
   let draftRevision = 0;
   const stagedVerdicts = new Map();
   let activeDecisionGeneration = null;
@@ -31,6 +32,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   let generation = 0;
   let anchorId = null;
   let focusedFaceId = null;
+  let focusIntentRevision = 0;
   let lightboxFaceId = null;
   let lightboxGeneration = null;
   let lightboxMoving = false;
@@ -40,6 +42,10 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   let nameFilter = "all";
   let openPeopleControl = null;
   let peopleLoadRevision = 0;
+  let currentPeoplePageData = null;
+  let nextPersonBusy = false;
+  let nextPersonRequested = false;
+  let nextPersonMessage = "";
   let scanRunning = false;
   let scanRestartRequested = false;
   let scanRetryRequested = false;
@@ -153,20 +159,28 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     ui.facePersonList.scrollTop = scrollTop;
   }
 
-  async function loadFaceReviewPeople(resetScroll = false) {
-    const revision = ++peopleLoadRevision;
-    const query = element("face-person-search").value.trim();
-    const data = await api(`/api/people?kind=review&sort=${encodeURIComponent(state.sort)}&page=${state.pages.facePeople}&size=${state.pageSize}&q=${encodeURIComponent(query)}&hideCompleted=${hideCompletedPeople ? "1" : "0"}&nameFilter=${nameFilter}`);
-    if (revision !== peopleLoadRevision) return;
-    state.faceReviewPeople = data.people; state.pages.facePeople = data.page;
+  function applyPeoplePage(data, resetScroll = false) {
+    currentPeoplePageData = data;
+    state.faceReviewPeople = data.people;
+    state.pages.facePeople = data.page;
     renderFacePersonList(resetScroll);
     renderPagination("face-person-pagination", data, page => {
+      nextPersonMessage = "";
       state.pages.facePeople = page; return loadFaceReviewPeople(true);
     });
     element("face-person-pagination").querySelectorAll("button:not(:disabled):not(.current)").forEach(button => {
       button.tabIndex = 0;
       if (button.title) button.setAttribute("aria-label", button.title);
     });
+  }
+
+  async function loadFaceReviewPeople(resetScroll = false) {
+    const revision = ++peopleLoadRevision;
+    const query = element("face-person-search").value.trim();
+    const data = await api(`/api/people?kind=review&sort=${encodeURIComponent(state.sort)}&page=${state.pages.facePeople}&size=${state.pageSize}&q=${encodeURIComponent(query)}&hideCompleted=${hideCompletedPeople ? "1" : "0"}&nameFilter=${nameFilter}`);
+    if (revision !== peopleLoadRevision) return null;
+    applyPeoplePage(data, resetScroll);
+    return data;
   }
 
   async function scanFaceCounts(retryFailed = false) {
@@ -244,7 +258,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
 
   function updateControls() {
     const selected = state.faceReviewSelected.size;
-    const disabled = busy;
+    const disabled = busy || nextPersonBusy || nextPersonRequested;
     const focused = visibleFaces().some(face => face.faceId === focusedFaceId);
     const actionable = selected > 0 || focused;
     element("face-review-mark").disabled = !actionable || disabled;
@@ -258,6 +272,9 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     element("face-review-queue").disabled = !actionable || disabled;
     const review = state.faceReviewResult;
     const canFinish = review?.inventoryComplete && review?.reviewReopened && !review?.untouchedCount;
+    const nextButton = element("face-review-next");
+    nextButton.disabled = disabled || !currentFaceReviewPerson();
+    nextButton.textContent = nextPersonRequested && draftSaving ? "Waiting for saved decisions…" : "Next person · N";
     const submitButton = element("face-review-submit");
     submitButton.disabled = disabled || draftSaving || actionQueue.length > 0 || !(review?.draftCount || review?.personReviewed || canFinish);
     submitButton.textContent = draftSaving ? "Saving decisions…" : review?.draftCount ? `Submit review (${review.draftCount})` : review?.personReviewed ? "Reopen review" : canFinish ? "Finish review" : "Submit review";
@@ -341,6 +358,15 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     if (!surface) return;
     calculateLayout();
     const available = visibleFaces();
+    const emptyGroup = !available.length && !hasMore && !loadError && !loading;
+    ui.faceReviewGrid.setAttribute("role", emptyGroup ? "group" : "listbox");
+    if (emptyGroup) {
+      ui.faceReviewGrid.removeAttribute("aria-multiselectable");
+      ui.faceReviewGrid.setAttribute("aria-label", "Face review status and next person");
+    } else {
+      ui.faceReviewGrid.setAttribute("aria-multiselectable", "true");
+      ui.faceReviewGrid.setAttribute("aria-label", "Assigned face crops");
+    }
     const rows = Math.ceil(available.length / layout.columns);
     surface.style.height = `${Math.max(1, rows * layout.stride)}px`;
     const firstRow = Math.max(0, Math.floor(ui.faceReviewGrid.scrollTop / layout.stride) - 2);
@@ -362,11 +388,25 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
       if (!needed.has(id)) { hidePhotoPeek(); card.remove(); mounted.delete(id); }
     }
     if (!available.length && !hasMore && !loadError && !loading) {
-      const message = document.createElement("p"); message.className = "face-review-empty muted";
-      message.textContent = hidden.size && !showChecked ? "Decided faces are hidden. Use Show hidden to see them."
-        : !showChecked && faces.some(face => face.reviewed && !face.queued) ? "Checked faces are hidden. Use Show checked to see them."
-          : "No faces remain to review here. Dismissed faces submitted to Pending are hidden from this grid.";
-      surface.append(message);
+      surface.querySelectorAll(".face-review-empty").forEach(node => node.remove());
+      const empty = document.createElement("div"); empty.className = "face-review-empty";
+      const message = document.createElement("p"); message.className = "muted";
+      message.textContent = nextPersonMessage || (state.faceReviewResult?.personReviewed
+        ? "Review complete for this person. Use Next person to continue."
+        : hidden.size && !showChecked ? "Decided faces are hidden. Use Show hidden to see them."
+          : !showChecked && faces.some(face => face.reviewed && !face.queued) ? "Checked faces are hidden. Use Show checked to see them."
+          : "No faces remain to review here. Dismissed faces submitted to Pending are hidden from this grid.");
+      empty.append(message);
+      if (state.faceReviewResult?.personReviewed || nextPersonMessage) {
+        const button = document.createElement("button");
+        button.id = "face-review-next-person"; button.className = "quiet-button";
+        button.type = "button";
+        button.textContent = nextPersonMessage.startsWith("Could not load") ? "Retry next person (N)" : "Next person (N)";
+        button.disabled = busy || nextPersonBusy || nextPersonRequested;
+        button.addEventListener("click", () => requestNextPerson());
+        empty.append(button);
+      }
+      surface.append(empty);
     } else surface.querySelectorAll(".face-review-empty").forEach(node => node.remove());
     updateMountedStates();
   }
@@ -389,6 +429,165 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     const face = revealVisibleFace(index);
     if (!face) { ui.faceReviewGrid.focus(); return; }
     mounted.get(face.faceId)?.focus({ preventScroll: true });
+  }
+
+  function nextReviewCandidate(oldOrder, oldAnchorIndex) {
+    const available = visibleFaces();
+    const eligible = face => face && !face.queued && !face.reviewed && !face.draftVerdict;
+    const byId = new Map(available.map(face => [face.faceId, face]));
+    const oldIds = new Set(oldOrder.map(face => face.faceId));
+    for (const face of oldOrder.slice(Math.max(0, oldAnchorIndex + 1))) {
+      if (eligible(byId.get(face.faceId))) return byId.get(face.faceId);
+    }
+    for (const face of available) {
+      if (!oldIds.has(face.faceId) && eligible(face)) return face;
+    }
+    for (const face of oldOrder.slice(0, Math.max(0, oldAnchorIndex)).reverse()) {
+      if (eligible(byId.get(face.faceId))) return byId.get(face.faceId);
+    }
+    const anchor = byId.get(oldOrder[oldAnchorIndex]?.faceId);
+    if (eligible(anchor)) return anchor;
+    return null;
+  }
+
+  async function requestNextPerson() {
+    const person = currentFaceReviewPerson();
+    if (!person || busy || nextPersonBusy || nextPersonRequested || state.view !== "faces") return;
+    const requestGeneration = generation;
+    const intentRevision = focusIntentRevision;
+    nextPersonRequested = true;
+    updateControls();
+    try {
+      // Drafts are already queued for local persistence. Wait for them without submitting.
+      const saved = !draftSaving && !actionQueue.length
+        || await new Promise(resolve => draftSaveWaiters.push(resolve));
+      if (!saved || requestGeneration !== generation || state.view !== "faces"
+          || state.faceReviewPersonId !== person.id || focusIntentRevision !== intentRevision) return;
+      await advanceToNextPerson(intentRevision);
+    } finally {
+      nextPersonRequested = false;
+      updateControls();
+      if (requestGeneration === generation && state.view === "faces") renderVisible();
+    }
+  }
+
+  async function advanceToNextPerson(intent = null) {
+    const person = currentFaceReviewPerson();
+    if (!person || nextPersonBusy || state.view !== "faces") return;
+    const requestGeneration = generation;
+    const intentRevision = intent ?? focusIntentRevision;
+    const oldPage = state.pages.facePeople || 1;
+    const oldPeople = state.faceReviewPeople.slice();
+    const oldPageData = currentPeoplePageData;
+    const oldIndex = oldPeople.findIndex(item => item.id === person.id);
+    const stillCurrent = () => requestGeneration === generation && state.view === "faces"
+      && state.faceReviewPersonId === person.id && focusIntentRevision === intentRevision;
+    nextPersonBusy = true;
+    nextPersonMessage = "Finding the next person…";
+    renderVisible();
+    try {
+      const first = await loadFaceReviewPeople();
+      if (!stillCurrent()) return;
+      if (!first) throw new Error("People list changed during refresh");
+      const pages = Math.max(1, Number(first.pages) || 1);
+      const pageData = new Map([[state.pages.facePeople, first]]);
+      const loadPage = async page => {
+        if (pageData.has(page)) return pageData.get(page);
+        state.pages.facePeople = page;
+        const data = await loadFaceReviewPeople();
+        if (!data) throw new Error("People list changed during refresh");
+        pageData.set(page, data);
+        return data;
+      };
+      const currentPage = state.pages.facePeople;
+      const currentData = first;
+      const start = hideCompletedPeople || oldIndex < 0
+        ? Math.min(oldIndex < 0 ? 0 : oldIndex, currentData.people.length)
+        : currentData.people.findIndex(item => item.id === person.id) + 1;
+      const orderedPages = [...Array.from({ length: pages - currentPage + 1 }, (_, i) => currentPage + i),
+        ...Array.from({ length: currentPage - 1 }, (_, i) => i + 1)];
+      let found = null;
+      const laterPageCount = pages - currentPage + 1;
+      for (let pageIndex = 0; pageIndex < orderedPages.length && !found; pageIndex += 1) {
+        const page = orderedPages[pageIndex];
+        const data = await loadPage(page);
+        if (!stillCurrent()) return;
+        let candidates = data.people.filter(item => item.id !== person.id && !item.reviewed);
+        if (page === currentPage) {
+          const boundary = Math.max(0, start);
+          const after = data.people.slice(boundary).filter(item => item.id !== person.id && !item.reviewed);
+          candidates = pageIndex < laterPageCount ? after
+            : data.people.slice(0, boundary).filter(item => item.id !== person.id && !item.reviewed);
+        }
+        found = candidates[0] || null;
+      }
+      if (!found) {
+        const boundary = Math.max(0, start);
+        found = currentData.people.slice(0, boundary).find(item => item.id !== person.id && !item.reviewed) || null;
+      }
+      if (!stillCurrent()) return;
+      if (found) {
+        const page = [...pageData.entries()].find(([, data]) => data.people.some(item => item.id === found.id))?.[0];
+        if (page) applyPeoplePage(pageData.get(page));
+        nextPersonMessage = "";
+        await selectFaceReviewPerson(found.id, true);
+      } else {
+        state.pages.facePeople = oldPage;
+        const restored = pageData.get(oldPage);
+        if (restored) {
+          applyPeoplePage(restored);
+        } else await loadFaceReviewPeople();
+        if (!stillCurrent()) return;
+        nextPersonMessage = "No other people need review with these filters. Change a filter or search to keep reviewing.";
+        showToast(nextPersonMessage);
+        renderVisible();
+      }
+    } catch {
+      if (stillCurrent()) {
+        if (oldPageData) applyPeoplePage(oldPageData);
+        else {
+          state.pages.facePeople = oldPage;
+          state.faceReviewPeople = oldPeople;
+          renderFacePersonList();
+        }
+        nextPersonMessage = "Could not load the next person. Try again.";
+        showToast(nextPersonMessage);
+        renderVisible();
+      }
+    } finally {
+      nextPersonBusy = false;
+      updateControls();
+      if (stillCurrent()) renderVisible();
+      else if (requestGeneration === generation && state.view === "faces" && state.faceReviewPersonId === person.id) {
+        if (nextPersonMessage === "Finding the next person…") nextPersonMessage = "";
+        renderVisible();
+      }
+    }
+  }
+
+  async function continueReviewFocus(personId, requestGeneration, intentRevision, oldOrder, anchorIndex) {
+    const stillInFlow = () => requestGeneration === generation
+      && currentFaceReviewPerson()?.id === personId
+      && state.view === "faces" && focusIntentRevision === intentRevision;
+    while (stillInFlow()) {
+      const candidate = nextReviewCandidate(oldOrder, anchorIndex);
+      if (candidate) {
+        focusVisibleFace(visibleFaces().findIndex(face => face.faceId === candidate.faceId));
+        return;
+      }
+      if (!hasMore || loadError) break;
+      const before = faces.length;
+      await loadNextPage();
+      if (!stillInFlow() || loadError || faces.length === before && hasMore) break;
+    }
+    if (!stillInFlow()) return;
+    const retry = element("face-review-load-more");
+    if (loadError && !retry.hidden && !retry.disabled) retry.focus();
+    else {
+      const submit = element("face-review-submit");
+      if (!submit.hidden && !submit.disabled) submit.focus();
+      else ui.faceReviewGrid.focus();
+    }
   }
 
   async function navigateFaces(faceId, key, extendSelection = false) {
@@ -470,7 +669,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   }
 
   function toggleSelection(face, range = false) {
-    if (face.queued || busy) return;
+    if (face.queued || busy || nextPersonBusy || nextPersonRequested) return;
     if (range && anchorId) {
       const available = visibleFaces();
       const start = available.findIndex(item => item.faceId === anchorId);
@@ -524,12 +723,14 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
         }
       }
       if (requestGeneration === generation) { renderVisible(); maybeLoadMore(); }
+      return true;
     } catch (error) {
       for (const { face } of decisions.slice(saved)) {
         if (stagedVerdicts.get(face.faceId)?.revision === revision) stagedVerdicts.delete(face.faceId);
       }
       if (requestGeneration === generation) renderVisible();
       showToast(`${saved} decisions saved; could not finish: ${error.message}`);
+      return false;
     }
   }
 
@@ -550,18 +751,22 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   async function drainActions() {
     if (draftSaving || busy) return;
     draftSaving = true; updateControls();
+    let savesSucceeded = true;
     try {
       while (actionQueue.length) {
         const action = actionQueue.shift();
         if (action.type === "decision") {
           activeDecisionGeneration = action.requestGeneration;
-          try { await saveDecisions(action); } finally { activeDecisionGeneration = null; }
+          try { if (!await saveDecisions(action)) savesSucceeded = false; } finally { activeDecisionGeneration = null; }
         } else if (action.requestGeneration !== generation) continue;
         else if (action.type === "hide") hideDecidedNow();
         else if (action.type === "show") showHiddenNow();
       }
     } finally {
       draftSaving = false; state.faceReviewSaving = false;
+      const waiters = draftSaveWaiters;
+      draftSaveWaiters = [];
+      for (const resolve of waiters) resolve(savesSucceeded);
       document.dispatchEvent(new Event("face-review-save-state"));
       updateControls();
     }
@@ -569,7 +774,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
 
   function stageFaces(selected, verdict, clearSelected = false) {
     const person = currentFaceReviewPerson();
-    if (!person || !selected.length || busy) return false;
+    if (!person || !selected.length || busy || nextPersonBusy || nextPersonRequested) return false;
     if (selected.some(face => hidden.has(face.faceId) && !(showChecked && face.reviewed))) {
       showToast("Show hidden selected faces before marking them.");
       return false;
@@ -585,6 +790,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   }
 
   function stageSelected(verdict) {
+    focusIntentRevision += 1;
     const selected = state.faceReviewSelectedData.size
       ? [...state.faceReviewSelectedData.values()].filter(face => !face.queued)
       : visibleFaces().filter(face => face.faceId === focusedFaceId);
@@ -674,13 +880,26 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     const person = currentFaceReviewPerson();
     if (!person || busy || draftSaving || actionQueue.length || !(state.faceReviewResult?.draftCount > 0)) return;
     const requestGeneration = generation;
+    const oldOrder = visibleFaces().slice();
+    let anchorIndex = oldOrder.findIndex(face => face.faceId === focusedFaceId);
+    if (anchorIndex < 0) anchorIndex = oldOrder.findIndex(face => state.faceReviewSelected.has(face.faceId));
+    if (anchorIndex < 0) anchorIndex = 0;
+    const intentRevision = focusIntentRevision;
+    const stillInFlow = () => requestGeneration === generation
+      && currentFaceReviewPerson()?.id === person.id
+      && state.view === "faces" && focusIntentRevision === intentRevision;
+    let submitted = false;
+    let reviewCompleted = false;
     busy = true; updateControls();
     try {
       const result = await api("/api/face-review/submit", { method: "POST", body: { personId: person.id } });
       if (requestGeneration !== generation) return;
-      const submitted = new Map(result.submittedFaces.map(item => [item.faceId, item.verdict]));
+      submitted = true;
+      reviewCompleted = Boolean(result.personReviewed && result.inventoryComplete
+        && result.untouchedCount === 0 && result.draftCount === 0);
+      const submittedByFace = new Map(result.submittedFaces.map(item => [item.faceId, item.verdict]));
       for (const face of faces) {
-        const verdict = submitted.get(face.faceId);
+        const verdict = submittedByFace.get(face.faceId);
         if (verdict === "correct") face.reviewed = true;
         else if (verdict === "wrong") { face.reviewed = false; face.queued = true; }
         else if (verdict === "unreviewed") face.reviewed = false;
@@ -689,14 +908,33 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
       hidePhotoPeek();
       clearSelection();
       applyProgress(result);
-      renderVisible(); maybeLoadMore();
-      await refreshSummary().catch(error => showToast(error.message));
+      renderVisible();
       showToast(`Review submitted locally: ${result.submitted.correct} accepted, ${result.submitted.wrong} dismissed faces added to Pending. Immich is unchanged.`);
-      if (hideCompletedPeople) await loadFaceReviewPeople().catch(error => showToast(`Could not refresh people: ${error.message}`));
+      await refreshSummary().catch(error => showToast(`Could not refresh summary: ${error.message}`));
     } catch (error) {
       if (requestGeneration === generation) showToast(`Review was not submitted: ${error.message}`);
     } finally {
-      if (requestGeneration === generation) { busy = false; updateMountedStates(); }
+      if (requestGeneration === generation) {
+        busy = false; updateMountedStates();
+        if (stillInFlow()) {
+          if (!submitted) {
+            const available = visibleFaces();
+            const originalIndex = available.findIndex(face => face.faceId === focusedFaceId);
+            const submit = element("face-review-submit");
+            if (originalIndex >= 0 && !available[originalIndex].queued) focusVisibleFace(originalIndex);
+            else if (!submit.hidden && !submit.disabled) submit.focus();
+            else ui.faceReviewGrid.focus();
+          }
+          else if (reviewCompleted) await advanceToNextPerson(intentRevision);
+          else {
+            const submit = element("face-review-submit");
+            if (state.faceReviewResult?.draftCount === 0 && state.faceReviewResult?.personReviewed
+                && !submit.hidden && !submit.disabled) submit.focus();
+            else await continueReviewFocus(person.id, requestGeneration, intentRevision, oldOrder, anchorIndex)
+              .catch(() => { if (stillInFlow()) ui.faceReviewGrid.focus(); });
+          }
+        }
+      }
     }
   }
 
@@ -710,6 +948,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
       const result = await api("/api/face-review/reopen", { method: "POST", body: { personId: person.id, reopened: Boolean(review.personReviewed) } });
       if (requestGeneration !== generation) return;
       applyProgress(result);
+      nextPersonMessage = "";
       if (hideCompletedPeople) await loadFaceReviewPeople().catch(error => showToast(`Could not refresh people: ${error.message}`));
     } catch (error) {
       if (requestGeneration === generation) showToast(`Could not change review state: ${error.message}`);
@@ -764,6 +1003,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     const person = state.faceReviewPeople.find(item => item.id === personId) || (state.faceReviewPersonId === personId ? state.faceReviewCurrentPerson : null);
     if (!person) return;
     generation += 1;
+    nextPersonMessage = "";
     state.faceReviewPersonId = personId; state.faceReviewCurrentPerson = person;
     state.faceReviewResult = null;
     state.faceReviewSelected.clear(); state.faceReviewSelectedData.clear();
@@ -799,6 +1039,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   }
 
   function bindFaceReviewControls() {
+    document.addEventListener("focusin", () => { focusIntentRevision += 1; }, true);
     let searchTimer = null;
     window.addEventListener("beforeunload", event => {
       if (!state.faceReviewSaving) return;
@@ -823,6 +1064,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     });
     const search = element("face-person-search");
     const scheduleSearch = () => {
+      nextPersonMessage = "";
       setOpenPeopleControl("search", false);
       clearTimeout(searchTimer); state.pages.facePeople = 1;
       searchTimer = setTimeout(() => loadFaceReviewPeople(true).catch(error => showToast(error.message)), 180);
@@ -836,6 +1078,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
       if (!["all", "named", "unnamed"].includes(event.target.value)) return;
       const previous = nameFilter;
       nameFilter = event.target.value;
+      nextPersonMessage = "";
       updatePeopleControlState();
       element("face-person-filter-toggle").focus();
       setOpenPeopleControl(null);
@@ -856,6 +1099,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     element("face-person-sort-options").addEventListener("change", async event => {
       if (!Object.hasOwn(sortLabels, event.target.value)) return;
       element("face-person-sort-toggle").focus();
+      nextPersonMessage = "";
       setOpenPeopleControl(null);
       try { await changePeopleSort(event.target.value); }
       catch (error) { showToast(`Could not change people order: ${error.message}`); }
@@ -864,6 +1108,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     element("face-person-toggle-completed").addEventListener("click", async () => {
       const previous = hideCompletedPeople;
       hideCompletedPeople = !hideCompletedPeople;
+      nextPersonMessage = "";
       const button = element("face-person-toggle-completed");
       setOpenPeopleControl(null);
       updatePeopleControlState();
@@ -890,6 +1135,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     element("face-review-clear").addEventListener("click", clearSelection);
     element("face-review-compact").addEventListener("click", () => setMode("compact"));
     element("face-review-detail").addEventListener("click", () => setMode("detail"));
+    element("face-review-next").addEventListener("click", requestNextPerson);
     element("face-review-submit").addEventListener("click", () => {
       if (state.faceReviewResult?.draftCount) submitReview();
       else toggleReviewReopened();
@@ -945,16 +1191,21 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
           && state.faceReviewResult?.draftCount) {
         event.preventDefault(); submitReview(); return;
       }
-      if (event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, button, [contenteditable]")) return;
+      if (event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
       const key = event.key.toLowerCase();
+      if (key === "n" && !event.shiftKey) {
+        event.preventDefault(); requestNextPerson(); return;
+      }
+      if (event.target.closest("button")) return;
       if (key === " " && event.target === ui.faceReviewGrid && !event.shiftKey) {
+        focusIntentRevision += 1;
         const face = visibleFaces().find(item => item.faceId === focusedFaceId) || visibleFaces()[0];
         if (face) { event.preventDefault(); openReviewPhoto(face); }
       }
       else if (key === "a" && !event.shiftKey) { event.preventDefault(); stageSelected("correct"); }
       else if (key === "d" && !event.shiftKey) { event.preventDefault(); stageSelected("wrong"); }
-      else if (key === "f") { event.preventDefault(); event.shiftKey ? showHidden() : hideDecided(); }
-      else if (key === "?") { event.preventDefault(); toggleShortcuts(); }
+      else if (key === "f") { focusIntentRevision += 1; event.preventDefault(); event.shiftKey ? showHidden() : hideDecided(); }
+      else if (key === "?") { focusIntentRevision += 1; event.preventDefault(); toggleShortcuts(); }
     });
   }
 

@@ -1,0 +1,182 @@
+name: Checks
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (${{ matrix.os }}, ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run discovered Python tests
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  javascript:
+    name: JavaScript tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Check JavaScript syntax
+        shell: bash
+        run: |
+          for file in web/*.js tests/*.mjs; do
+            test -f "$file" || continue
+            node --check "$file"
+          done
+      - name: Run discovered JavaScript tests
+        shell: bash
+        run: node --test tests/*.mjs
+
+  source-docs:
+    name: Source and documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check whitespace in the candidate change range
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            base="$PR_BASE"
+          else
+            base="$EVENT_BEFORE"
+          fi
+          if [ -z "$base" ] || printf '%s' "$base" | grep -Eq '^0+$'; then
+            git diff --check HEAD^ HEAD
+          else
+            git diff --check "$base" "$HEAD_SHA"
+          fi
+      - name: Check tracked paths and documentation links
+        run: python3 tools/check_public_files.py
+
+  docker-compose:
+    name: Docker Compose (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: pw-compose-${{ github.run_id }}-${{ github.run_attempt }}
+      PEOPLE_WORKBENCH_LOCAL_IMAGE: people-workbench:compose-${{ github.run_id }}-${{ github.run_attempt }}
+      PEOPLE_WORKBENCH_PORT: 18766
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check defaults without a settings file
+        shell: bash
+        run: |
+          set -euo pipefail
+          env -u COMPOSE_PROJECT_NAME -u PEOPLE_WORKBENCH_LOCAL_IMAGE -u PEOPLE_WORKBENCH_PORT \
+            docker compose config --format json > "$RUNNER_TEMP/pw-compose-defaults.json"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          config = json.loads((Path(os.environ['RUNNER_TEMP']) / 'pw-compose-defaults.json').read_text())
+          service = config['services']['people-workbench']
+          assert config['name'] == 'people-workbench'
+          assert service['image'] == 'people-workbench:local'
+          assert service['build']['dockerfile'] == 'Dockerfile'
+          assert service['environment']['PEOPLE_WORKBENCH_PUBLIC_URL'] == 'http://localhost:8766'
+          assert service['environment']['PEOPLE_WORKBENCH_IMMICH_URL'] == ''
+          assert service['ports'][0]['host_ip'] == '127.0.0.1'
+          assert str(service['ports'][0]['published']) == '8766'
+          assert config['volumes']['people-workbench-data']['name'] == 'people-workbench_people-workbench-data'
+          PY
+      - name: Start with the documented command
+        run: docker compose up -d
+      - name: Check startup and authentication
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+          base = 'http://localhost:18766'
+          for attempt in range(60):
+              try:
+                  with urllib.request.urlopen(base + '/healthz', timeout=2) as response:
+                      assert json.load(response) == {'ok': True}
+                  break
+              except (OSError, urllib.error.URLError):
+                  time.sleep(1)
+          else:
+              raise AssertionError('Workbench did not become ready')
+          for path, expected in [('/login', 200), ('/login-key.css', 200), ('/api/state', 401), ('/api/pending', 401)]:
+              try:
+                  with urllib.request.urlopen(base + path, timeout=3) as response:
+                      status = response.status
+                      response.read()
+              except urllib.error.HTTPError as response:
+                  status = response.code
+                  response.read()
+              assert status == expected, (path, status)
+          PY
+          docker compose exec -T people-workbench python - <<'PY'
+          import os
+          from pathlib import Path
+          assert os.getuid() == 10001 and os.getgid() == 10001
+          assert os.environ['PEOPLE_WORKBENCH_PUBLIC_URL'] == 'http://localhost:18766'
+          assert not Path('/app/.env').exists() and not Path('/app/var').exists()
+          Path('/data/compose-smoke-marker').write_text('synthetic')
+          try:
+              Path('/app/compose-smoke-marker').touch()
+          except OSError:
+              pass
+          else:
+              raise AssertionError('Application filesystem is writable')
+          PY
+      - name: Check state survives container recreation
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose down
+          docker compose up -d
+          docker compose exec -T people-workbench python - <<'PY'
+          from pathlib import Path
+          assert Path('/data/compose-smoke-marker').read_text() == 'synthetic'
+          PY
+      - name: Show synthetic service logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=100
+      - name: Remove the isolated Compose project and synthetic state
+        if: always()
+        run: docker compose down --volumes --remove-orphans
