@@ -1,3 +1,5 @@
+name: people-workbench
+
 services:
   people-workbench:
     image: ${PEOPLE_WORKBENCH_IMAGE:-ghcr.io/serkanbe/immich-people-workbench:latest}
@@ -6,7 +8,7 @@ services:
     ports:
       - "${PEOPLE_WORKBENCH_BIND_IP:-127.0.0.1}:${PEOPLE_WORKBENCH_PORT:-8766}:8766"
     environment:
-      PEOPLE_WORKBENCH_PUBLIC_URL: ${PEOPLE_WORKBENCH_PUBLIC_URL:?Set the browser URL, for example http://localhost:8766}
+      PEOPLE_WORKBENCH_PUBLIC_URL: ${PEOPLE_WORKBENCH_PUBLIC_URL:-http://localhost:${PEOPLE_WORKBENCH_PORT:-8766}}
       PEOPLE_WORKBENCH_TRUSTED_PROXIES: ${PEOPLE_WORKBENCH_TRUSTED_PROXIES:-}
     volumes:
       - people-workbench-data:/data
