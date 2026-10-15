@@ -1302,7 +1302,24 @@ class GroupPhotoTests(unittest.TestCase):
     def test_discovery_counts_all_faces_including_investigate_and_publishes_early(self):
         self.store.mark_investigate(self.FIRST)
         self.fake.hold = threading.Event()
+        foreground = threading.current_thread()
+        face_requests = []
+        request_lock = threading.Lock()
+        original_faces = self.fake.faces
+
+        def track_faces(asset_id):
+            with request_lock:
+                face_requests.append((threading.current_thread() is foreground, asset_id))
+            return original_faces(asset_id)
+
+        self.fake.faces = track_faces
+
+        def finish_scan():
+            self.fake.hold.set()
+            self.wait_scan()
+
         self.app.start_group_scan()
+        self.addCleanup(finish_scan)
         for _ in range(200):
             with self.app.lock:
                 if self.PHOTO in self.app.group_candidates:
@@ -1320,7 +1337,12 @@ class GroupPhotoTests(unittest.TestCase):
         self.assertEqual([face["status"] for face in state["photo"]["faces"]], ["actionable", "actionable", "actionable", "named", "ignored", "unassigned"])
         self.assertEqual(set(self.app.group_candidates), {self.PHOTO, self.ARCHIVE})
         self.assertTrue(all(call[2] for call in self.fake.calls if call[0] == "search"))
-        self.assertEqual(sum(call == ("faces", self.PHOTO) for call in self.fake.calls[:4]), 1)
+        # Discovery deduplicates photos shared by people. Display refreshes read
+        # faces again, and may interleave with discovery in any order.
+        self.assertCountEqual([asset_id for is_foreground, asset_id in face_requests if not is_foreground],
+                              [self.PHOTO, self.ARCHIVE])
+        self.assertEqual([asset_id for is_foreground, asset_id in face_requests if is_foreground],
+                         [self.PHOTO, self.PHOTO])
 
     def test_saved_current_photo_appears_before_search_finishes(self):
         self.store.set_setting("group_current", self.PHOTO)
