@@ -49,7 +49,7 @@ function node() {
   };
 }
 
-async function submitHarness({ people, pages, submit }) {
+async function submitHarness({ people, pages, submit, peoplePages = null, selectedIndex = 0 }) {
   const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage,
     requestAnimationFrame: globalThis.requestAnimationFrame };
   const elements = new Map(), windowListeners = new Map(), documentListeners = new Map();
@@ -62,11 +62,19 @@ async function submitHarness({ people, pages, submit }) {
   globalThis.localStorage = { getItem: () => null };
   globalThis.requestAnimationFrame = callback => setImmediate(callback);
   const list = node(), grid = node();
+  const calls = [];
+  const pagination = [];
   const state = { view: "faces", faceReviewPeople: [], pages: { facePeople: 1 }, pageSize: 10, sort: "most",
     faceReviewSelected: new Set(), faceReviewSelectedData: new Map() };
   const review = createFaceReview({
     api: async (path, options) => {
-      if (path.startsWith("/api/people?")) return { people, page: 1 };
+      calls.push([path, options]);
+      if (path.startsWith("/api/people?")) {
+        const query = new URL(`http://local${path}`).searchParams;
+        const page = Number(query.get("page")) || 1;
+        if (peoplePages) return peoplePages(page, query);
+        return { people, page: 1, pages: 1, total: people.length };
+      }
       if (path.startsWith("/api/person-faces/")) {
         const page = Number(new URL(`http://local${path}`).searchParams.get("page"));
         const result = pages[page - 1];
@@ -76,18 +84,19 @@ async function submitHarness({ people, pages, submit }) {
       if (path === "/api/face-review/submit") return submit(options);
       throw new Error(`Unexpected request: ${path}`);
     }, state, ui: { facePersonList: list, faceReviewGrid: grid }, assetThumb: () => "", personThumb: () => "",
-    drawFace: async () => {}, refreshSummary: async () => {}, showToast: () => {}, renderPagination: () => {},
+    drawFace: async () => {}, refreshSummary: async () => {}, showToast: () => {},
+    renderPagination: (containerId, data, onPage) => pagination.push({ containerId, data, onPage }),
   });
   review.bindFaceReviewControls();
   await review.renderFaceReview();
   const selectPerson = async index => { await list.children[index].listeners.get("click")(); };
-  await selectPerson(0);
+  await selectPerson(selectedIndex);
   const focus = target => { target.focus(); documentListeners.get("focusin")?.({ target }); };
   const fireSubmit = () => windowListeners.get("keydown")({ key: "Enter", ctrlKey: true, metaKey: false, altKey: false,
     shiftKey: false, target: { closest: () => null }, preventDefault() {} });
   const firstCard = grid.querySelector(".face-review-card");
   if (firstCard) { firstCard.listeners.get("focus")(); document.activeElement = firstCard; }
-  return { documentListeners, elements, fireSubmit, focus, grid, list, review, selectPerson, state,
+  return { calls, documentListeners, elements, fireSubmit, focus, grid, keydown: windowListeners.get("keydown"), list, pagination, review, selectPerson, state,
     dispose: () => Object.assign(globalThis, previous) };
 }
 
@@ -398,10 +407,10 @@ test("Face review submits directly, then reopens and finishes without changing d
     assert.deepEqual(calls[0], ["/api/face-review/submit", { personId: person.id }]);
     assert.equal(button.textContent, "Reopen review");
     await click();
-    assert.deepEqual(calls[1], ["/api/face-review/reopen", { personId: person.id, reopened: true }]);
+    assert.deepEqual(calls.filter(([path]) => path === "/api/face-review/reopen")[0], ["/api/face-review/reopen", { personId: person.id, reopened: true }]);
     assert.equal(button.textContent, "Finish review");
     await click();
-    assert.deepEqual(calls[2], ["/api/face-review/reopen", { personId: person.id, reopened: false }]);
+    assert.deepEqual(calls.filter(([path]) => path === "/api/face-review/reopen")[1], ["/api/face-review/reopen", { personId: person.id, reopened: false }]);
     assert.equal(button.textContent, "Reopen review");
 
     document.getElementById("face-person-search").value = "Synthetic";
@@ -466,6 +475,142 @@ test("successful submit focuses the next untouched virtualized face", async () =
   } finally { Object.assign(globalThis, previous); }
 });
 
+test("completed submission opens the next unreviewed person and focuses their first face", async () => {
+  const faces = [{ faceId: "c2111111-1111-4111-8111-111111111111", assetId: "a2111111-1111-4111-8111-111111111111",
+    fileName: "next.jpg", reviewed: false, queued: false }];
+  const people = [
+    { id: "11111111-1111-4111-8111-111111111111", name: "Finished", reviewed: false },
+    { id: "22222222-2222-4222-8222-222222222222", name: "Next", reviewed: false },
+  ];
+  const h = await submitHarness({ people, pages: [{ faces, page: 1, hasMore: false, draftCount: 1,
+    reviewedCount: 0, reviewTotal: 1, untouchedCount: 1, inventoryComplete: true }], submit: async () => ({
+    submitted: { correct: 1, wrong: 0 }, submittedFaces: [], draftCount: 0, reviewedCount: 1,
+    reviewTotal: 1, untouchedCount: 0, inventoryComplete: true, personReviewed: true,
+  }) });
+  try {
+    h.fireSubmit(); await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(h.state.faceReviewPersonId, people[1].id);
+    assert.equal(document.activeElement?.dataset.faceId, faces[0].faceId);
+  } finally { h.dispose(); }
+});
+
+test("completed-list filtering removes the current person before choosing the next", async () => {
+  const person = { id: "11111111-1111-4111-8111-111111111111", name: "Finished", reviewed: false };
+  const next = { id: "22222222-2222-4222-8222-222222222222", name: "Next", reviewed: false };
+  const face = { faceId: "c2111111-1111-4111-8111-111111111111", assetId: "a2111111-1111-4111-8111-111111111111",
+    fileName: "next.jpg", reviewed: false, queued: false };
+  const h = await submitHarness({ people: [person, next], peoplePages: (_page, query) => {
+    const shown = query.get("hideCompleted") === "1" ? [person, next].filter(item => !item.reviewed) : [person, next];
+    return { people: shown, page: 1, pages: 1, total: shown.length };
+  }, pages: [{ faces: [face], page: 1, hasMore: false, draftCount: 1, reviewedCount: 0, reviewTotal: 1,
+    untouchedCount: 1, inventoryComplete: true }], submit: async () => ({ submitted: { correct: 1, wrong: 0 },
+    submittedFaces: [], draftCount: 0, reviewedCount: 1, reviewTotal: 1, untouchedCount: 0,
+    inventoryComplete: true, personReviewed: true }) });
+  try {
+    await h.elements.get("face-person-toggle-completed").listeners.get("click")();
+    h.fireSubmit(); await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(h.state.faceReviewPersonId, next.id);
+    assert.equal(document.activeElement?.dataset.faceId, face.faceId);
+  } finally { h.dispose(); }
+});
+
+test("completed submission scans later people pages and wraps to earlier eligible people", async t => {
+  const face = { faceId: "c3111111-1111-4111-8111-111111111111", assetId: "a3111111-1111-4111-8111-111111111111",
+    fileName: "next.jpg", reviewed: false, queued: false };
+  const people = Array.from({ length: 11 }, (_, index) => ({
+    id: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`, name: `Person ${index + 1}`, reviewed: true,
+  }));
+  people[0].reviewed = false;
+  const current = people[9]; current.reviewed = false;
+  people[10].reviewed = false;
+  const pageResult = { faces: [face], page: 1, hasMore: false, draftCount: 0, reviewedCount: 0,
+    reviewTotal: 1, untouchedCount: 1, inventoryComplete: true };
+  await t.test("later page is considered before wrapping", async () => {
+    const h = await submitHarness({ people, pages: [{ ...pageResult, draftCount: 1 }], peoplePages: (page) => ({
+      people: people.slice((page - 1) * 10, page * 10), page, pages: 2, total: people.length,
+    }), selectedIndex: 9, submit: async () => ({ submitted: { correct: 1, wrong: 0 }, submittedFaces: [], draftCount: 0,
+      reviewedCount: 1, reviewTotal: 1, untouchedCount: 0, inventoryComplete: true, personReviewed: true }) });
+    try {
+      h.state.pages.facePeople = 1;
+      h.fireSubmit(); await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(h.state.faceReviewPersonId, people[10].id);
+    } finally { h.dispose(); }
+  });
+  await t.test("earlier eligible person is considered after later pages", async () => {
+    const h = await submitHarness({ people, pages: [{ ...pageResult, draftCount: 1 }], peoplePages: (page) => ({
+      people: people.slice((page - 1) * 10, page * 10), page, pages: 2, total: people.length,
+    }), selectedIndex: 9, submit: async () => ({ submitted: { correct: 1, wrong: 0 }, submittedFaces: [], draftCount: 0,
+      reviewedCount: 1, reviewTotal: 1, untouchedCount: 0, inventoryComplete: true, personReviewed: true }) });
+    try {
+      h.state.pages.facePeople = 1;
+      people[10].reviewed = true;
+      h.fireSubmit(); await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(h.state.faceReviewPersonId, people[0].id, JSON.stringify(h.calls.map(([path]) => path)));
+      assert.equal(h.state.pages.facePeople, 1);
+      assert.ok(h.state.faceReviewPeople.some(item => item.id === people[0].id));
+      assert.equal(h.pagination.at(-1).data.page, 1);
+    } finally { h.dispose(); }
+  });
+});
+
+test("completed person with no candidate shows filter guidance and a retryable next-person action", async () => {
+  const person = { id: "11111111-1111-4111-8111-111111111111", name: "Finished", reviewed: false };
+  const face = { faceId: "c1111111-1111-4111-8111-111111111111", assetId: "a1111111-1111-4111-8111-111111111111",
+    fileName: "checked.jpg", reviewed: false, queued: false };
+  let failRefresh = false;
+  const h = await submitHarness({ people: [person], pages: [{ faces: [face], page: 1, hasMore: false, draftCount: 1,
+    reviewedCount: 0, reviewTotal: 1, untouchedCount: 0, inventoryComplete: true }], peoplePages: (page, query) => {
+      if (failRefresh && query.get("page") === "1") throw new Error("synthetic list failure");
+      return { people: [person], page, pages: 1, total: 1 };
+    }, submit: async () => ({ submitted: { correct: 1, wrong: 0 }, submittedFaces: [{ faceId: face.faceId, verdict: "correct" }], draftCount: 0,
+      reviewedCount: 1, reviewTotal: 1, untouchedCount: 0, inventoryComplete: true, personReviewed: true }) });
+  try {
+    failRefresh = true;
+    h.fireSubmit(); await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(h.state.faceReviewPersonId, person.id);
+    assert.match(h.grid.querySelector(".face-review-empty")?.children[0]?.textContent || "", /Could not load the next person/, JSON.stringify(h.calls.map(([path]) => path)));
+    const retry = h.grid.querySelector("#face-review-next-person") || h.grid.querySelector(".face-review-empty")?.children.find(item => item.id === "face-review-next-person");
+    assert.ok(retry);
+    failRefresh = false;
+    await retry.listeners.get("click")();
+    assert.match(h.grid.querySelector(".face-review-empty")?.children[0]?.textContent || "", /No more people need review with these filters/);
+    assert.equal(h.grid.getAttribute("role"), "group");
+    assert.equal(h.grid.getAttribute("aria-multiselectable"), null);
+    h.elements.get("face-review-show-checked").listeners.get("click")();
+    assert.equal(h.grid.getAttribute("role"), "listbox");
+    assert.equal(h.grid.getAttribute("aria-multiselectable"), "true");
+    const peopleCalls = h.calls.filter(([path]) => path.startsWith("/api/people?")).length;
+    h.keydown({ key: "n", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target: node(), preventDefault() {} });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(h.calls.filter(([path]) => path.startsWith("/api/people?")).length > peopleCalls);
+  } finally { h.dispose(); }
+});
+
+test("later-page failure restores the original people list and pagination state", async () => {
+  const people = Array.from({ length: 11 }, (_, index) => ({
+    id: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`, name: `Person ${index + 1}`, reviewed: true,
+  }));
+  people[9].reviewed = false;
+  const face = { faceId: "c3111111-1111-4111-8111-111111111111", assetId: "a3111111-1111-4111-8111-111111111111",
+    fileName: "reviewed.jpg", reviewed: false, queued: false };
+  const h = await submitHarness({ people, selectedIndex: 9, pages: [{ faces: [face], page: 1, hasMore: false,
+    draftCount: 1, reviewedCount: 0, reviewTotal: 1, untouchedCount: 0, inventoryComplete: true }],
+    peoplePages: (page) => {
+      if (page === 2) throw new Error("synthetic later-page failure");
+      return { people: people.slice(0, 10), page: 1, pages: 2, total: people.length };
+    }, submit: async () => ({ submitted: { correct: 1, wrong: 0 },
+      submittedFaces: [{ faceId: face.faceId, verdict: "correct" }], draftCount: 0, reviewedCount: 1,
+      reviewTotal: 1, untouchedCount: 0, inventoryComplete: true, personReviewed: true }) });
+  try {
+    h.fireSubmit(); await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(h.state.faceReviewPersonId, people[9].id);
+    assert.equal(h.state.pages.facePeople, 1);
+    assert.deepEqual(h.state.faceReviewPeople.map(item => item.id), people.slice(0, 10).map(item => item.id));
+    assert.equal(h.pagination.at(-1).data.page, 1);
+    assert.equal(h.pagination.at(-1).data.pages, 2);
+  } finally { h.dispose(); }
+});
+
 test("submission keeps a surviving untouched anchor available when it is the only candidate", async () => {
   const faces = ["c1", "c2"].map((suffix, index) => ({ faceId: `${suffix}1111111-1111-4111-8111-111111111111`,
     assetId: `a${suffix}111111-1111-4111-8111-111111111111`, fileName: `synthetic-${index}.jpg`, reviewed: false, queued: false }));
@@ -512,6 +657,80 @@ test("delayed submission respects a new focus target and a newly selected person
       assert.equal(document.activeElement, newPersonFocus);
     } finally { h.dispose(); }
   });
+});
+
+test("delayed completed submission preserves a newer focus or person selection", async t => {
+  const people = [{ id: "11111111-1111-4111-8111-111111111111", name: "Finished", reviewed: false },
+    { id: "22222222-2222-4222-8222-222222222222", name: "Chosen", reviewed: false }];
+  const face = { faceId: "c1111111-1111-4111-8111-111111111111", assetId: "a1111111-1111-4111-8111-111111111111",
+    fileName: "synthetic.jpg", reviewed: false, queued: false };
+  const page = { faces: [face], page: 1, hasMore: false, draftCount: 1, reviewedCount: 0,
+    reviewTotal: 1, untouchedCount: 1, inventoryComplete: true };
+  const completed = { submitted: { correct: 1, wrong: 0 }, submittedFaces: [{ faceId: face.faceId, verdict: "correct" }], draftCount: 0,
+    reviewedCount: 1, reviewTotal: 1, untouchedCount: 0, inventoryComplete: true, personReviewed: true };
+  await t.test("focus moved while next-person refresh is pending", async () => {
+    let resolvePeople;
+    let listLoads = 0;
+    const h = await submitHarness({ people, pages: [page], submit: async () => completed,
+      peoplePages: (pageNumber) => {
+        listLoads += 1;
+        if (listLoads > 1) return new Promise(resolve => { resolvePeople = resolve; });
+        return { people, page: pageNumber, pages: 1, total: people.length };
+      } });
+    try {
+      h.fireSubmit();
+      for (let attempt = 0; !resolvePeople && attempt < 10; attempt += 1) await new Promise(resolve => setImmediate(resolve));
+      assert.equal(typeof resolvePeople, "function");
+      const search = h.elements.get("face-person-search"); h.focus(search);
+      resolvePeople({ people, page: 1, pages: 1, total: people.length });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(h.state.faceReviewPersonId, people[0].id);
+      assert.equal(document.activeElement, search);
+      const empty = h.grid.querySelector(".face-review-empty");
+      assert.match(empty.children[0].textContent, /Review complete for this person/);
+      assert.equal(empty.children[1].textContent, "Next person (N)");
+      assert.equal(empty.children[1].disabled, false);
+    } finally { h.dispose(); }
+  });
+  await t.test("person changed while next-person refresh is pending", async () => {
+    let resolvePeople;
+    let listLoads = 0;
+    const h = await submitHarness({ people, pages: [page], submit: async () => completed,
+      peoplePages: (pageNumber) => {
+        listLoads += 1;
+        if (listLoads > 1) return new Promise(resolve => { resolvePeople = resolve; });
+        return { people, page: pageNumber, pages: 1, total: people.length };
+      } });
+    try {
+      h.fireSubmit();
+      for (let attempt = 0; !resolvePeople && attempt < 10; attempt += 1) await new Promise(resolve => setImmediate(resolve));
+      assert.equal(typeof resolvePeople, "function");
+      h.focus(h.list.children[1]); await h.selectPerson(1);
+      const focused = document.activeElement;
+      resolvePeople({ people, page: 1, pages: 1, total: people.length });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(h.state.faceReviewPersonId, people[1].id);
+      assert.equal(document.activeElement, focused);
+    } finally { h.dispose(); }
+  });
+});
+
+test("incomplete inventory does not trigger completed-person advance", async () => {
+  const people = [{ id: "11111111-1111-4111-8111-111111111111", name: "Current", reviewed: false },
+    { id: "22222222-2222-4222-8222-222222222222", name: "Next", reviewed: false }];
+  const face = { faceId: "c1111111-1111-4111-8111-111111111111", assetId: "a1111111-1111-4111-8111-111111111111",
+    fileName: "synthetic.jpg", reviewed: false, queued: false };
+  const h = await submitHarness({ people, pages: [{ faces: [face], page: 1, hasMore: false, draftCount: 1,
+    reviewedCount: 0, reviewTotal: 2, untouchedCount: 1, inventoryComplete: false }], submit: async () => ({
+    submitted: { correct: 1, wrong: 0 }, submittedFaces: [], draftCount: 0, reviewedCount: 1,
+    reviewTotal: 2, untouchedCount: 1, inventoryComplete: false, personReviewed: true,
+  }) });
+  try {
+    const peopleCalls = h.calls.filter(([path]) => path.startsWith("/api/people?")).length;
+    h.fireSubmit(); await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(h.state.faceReviewPersonId, people[0].id);
+    assert.equal(h.calls.filter(([path]) => path.startsWith("/api/people?")).length, peopleCalls);
+  } finally { h.dispose(); }
 });
 
 test("failed submission restores the original face without clearing its draft", async () => {
