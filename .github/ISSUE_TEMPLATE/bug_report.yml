@@ -1,0 +1,93 @@
+name: Bug report
+description: Report a reproducible problem without sharing private library data
+title: "[Bug]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not attach photos, real names, private paths, API keys or passwords,
+        `state.sqlite3`, reports containing names, or authentication headers.**
+        Redact errors and screenshots. Never repeat an uncertain merge or Sync
+        just to capture a bug. A synthetic demo is safer for screenshots.
+  - type: input
+    id: summary
+    attributes:
+      label: What happened?
+      description: A short summary.
+    validations:
+      required: true
+  - type: input
+    id: workbench-version
+    attributes:
+      label: Workbench release or commit
+      description: Unknown is okay.
+    validations:
+      required: true
+  - type: input
+    id: immich-version
+    attributes:
+      label: Immich version
+      description: Unknown is okay.
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: Install method and host OS
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version (for UI problems)
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use synthetic data where possible. Do not repeat uncertain Sync actions.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: dropdown
+    id: pending-sync
+    attributes:
+      label: Was Pending or Sync involved?
+      options:
+        - No
+        - Pending only, no Sync
+        - Explicit Sync was involved
+        - Unsure
+    validations:
+      required: true
+  - type: dropdown
+    id: reload
+    attributes:
+      label: Did it happen again after a harmless reload?
+      options:
+        - Yes
+        - No
+        - Not tried
+        - Cannot safely try
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Optional details
+      description: Shortcut, viewport/zoom, approximate library size, local-only or after explicit Sync, and sanitized error text. Never include credentials.
+    validations:
+      required: false
