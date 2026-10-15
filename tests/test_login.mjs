@@ -6,19 +6,28 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../web/login.js', import.meta.url), 'utf8');
-function setup({ storageError = false, readError = false, next = '', fetchResult } = {}) {
+function setup({ storageError = false, readError = false, next = '', reason = '', missing = '', fetchResult } = {}) {
   const elements = {};
-  for (const id of ['login-form', 'login-error', 'immich-url', 'immich-api-key', 'immich-email', 'immich-password', 'mode-key', 'mode-login', 'login-button', 'key-fields', 'login-fields', 'insecure-tls']) {
+  for (const id of ['login-form', 'login-error', 'immich-url', 'immich-api-key', 'immich-email', 'immich-password', 'mode-key', 'mode-login', 'login-button', 'key-fields', 'login-fields', 'insecure-tls', 'key-permissions', 'connection-notice', 'connection-notice-title', 'connection-notice-copy']) {
     elements[id] = { value: '', checked: id === 'mode-key', hidden: false, disabled: false, textContent: '', listeners: {},
+      classList: { toggle(name, active) { elements[id].classes ??= new Set(); active ? elements[id].classes.add(name) : elements[id].classes.delete(name); } },
+      dataset: {}, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; },
       addEventListener(kind, fn) { this.listeners[kind] = fn; }, focus() { this.focused = true; } };
   }
+  elements['connection-notice'].hidden = true;
+  const permissions = ['user.read', 'person.read', 'person.statistics', 'person.update', 'person.create', 'person.merge', 'asset.read', 'asset.view', 'face.read', 'face.update'].map(value => ({
+    dataset: { permission: value }, classes: new Set(), attributes: {}, classList: { toggle(name, active) { active ? this.owner.classes.add(name) : this.owner.classes.delete(name); } },
+    setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; },
+  }));
+  for (const item of permissions) item.classList.owner = item;
   elements['immich-url'].value = 'http://synthetic.test';
   elements['login-form'].reportValidity = () => !!elements['immich-url'].value &&
     (elements['mode-key'].checked ? !!elements['immich-api-key'].value : !!elements['immich-email'].value && !!elements['immich-password'].value);
   const saved = new Map([['immichPeopleConsole.connection.v1', JSON.stringify({ url: 'http://old.test', apiKey: 'synthetic-old-secret' })]]);
   const calls = [], redirects = [], removals = [];
-  const context = vm.createContext({ document: { querySelector: selector => elements[selector.slice(1)] }, URLSearchParams, TypeError,
-    window: { location: { search: '?next=' + encodeURIComponent(next), replace: route => redirects.push(route) } },
+  const search = new URLSearchParams(); if (next) search.set('next', next); if (reason) search.set('reason', reason); if (missing) search.set('missing', missing);
+  const context = vm.createContext({ document: { querySelector: selector => elements[selector.slice(1)], querySelectorAll: selector => selector === '[data-permission]' ? permissions : [] }, URLSearchParams, TypeError,
+    window: { location: { search: '?' + search.toString(), replace: route => redirects.push(route) } },
     localStorage: {
       getItem(key) { if (storageError || readError) throw Error('Storage unavailable'); return saved.get(key); },
       removeItem(key) { removals.push(key); if (storageError) throw Error('Storage unavailable'); saved.delete(key); },
@@ -27,7 +36,7 @@ function setup({ storageError = false, readError = false, next = '', fetchResult
     fetch: async (url, options) => { calls.push([url, JSON.parse(options.body)]); return fetchResult ? fetchResult(url, options) : { ok: true, json: async () => ({ ok: true }) }; },
   });
   vm.runInContext(source, context);
-  return { elements, calls, redirects, saved, removals,
+  return { elements, permissions, calls, redirects, saved, removals,
     submit: () => elements['login-form'].listeners.submit({ preventDefault() {} }),
     mode(isKey) { elements['mode-key'].checked = isKey; elements['mode-login'].checked = !isKey; elements[isKey ? 'mode-key' : 'mode-login'].listeners.change(); } };
 }
@@ -88,6 +97,47 @@ test('rejected and missing-scope keys clear and errors allow explicit retry', as
     assert.equal(x.elements['immich-api-key'].value, ''); assert.equal(x.elements['login-error'].hidden, false);
     assert.match(x.elements['login-error'].textContent, /face.update/); assert.equal(x.elements['login-button'].disabled, false);
   }
+});
+
+test('persistent missing-permission notice opens details, filters unknown values, and survives method changes', () => {
+  const x = setup({ reason: 'missing_permissions', missing: 'face.update,evil.injected,person.merge' });
+  assert.equal(x.elements['connection-notice'].hidden, false);
+  assert.match(x.elements['connection-notice-title'].textContent, /permissions are missing/);
+  assert.equal(x.elements['key-permissions'].open, true);
+  assert.deepEqual(x.permissions.filter(item => item.classes.has('permission-missing')).map(item => item.dataset.permission), ['person.merge', 'face.update']);
+  x.mode(false); assert.equal(x.elements['connection-notice'].hidden, false);
+  assert.equal(x.elements['connection-notice-title'].textContent, 'Some required permissions are missing');
+});
+
+test('supported notices use static copy without requests; unknown and prototype-like reasons are ignored', () => {
+  const reasons = ['missing_permissions', 'invalid_key', 'session_expired', 'unavailable', 'unsupported_introspection', 'invalid_login', 'owner_mismatch', 'connection_ended'];
+  for (const reason of reasons) {
+    const x = setup({ reason });
+    assert.equal(x.elements['connection-notice'].hidden, false, reason);
+    assert.equal(x.calls.length, 0, reason);
+    assert.equal(x.elements['mode-login'].checked, reason === 'invalid_login', reason);
+    if (reason === 'invalid_login') {
+      assert.equal(x.elements['key-fields'].hidden, true);
+      assert.equal(x.elements['login-fields'].hidden, false);
+      assert.equal(x.elements['immich-api-key'].disabled, true);
+    }
+  }
+  for (const reason of ['unknown_reason', '__proto__', 'constructor', 'toString']) {
+    const x = setup({ reason });
+    assert.equal(x.elements['connection-notice'].hidden, true, reason);
+    assert.equal(x.calls.length, 0, reason);
+  }
+});
+
+test('initial missing-scope attempt highlights only known scopes and next attempt clears stale highlights', async () => {
+  let attempt = 0;
+  const x = setup({ fetchResult: async () => { attempt++; return { ok: false, json: async () => attempt === 1
+    ? { code: 'missing_permissions', missingPermissions: ['face.update', 'unknown.injected'], error: 'Add face.update and retry.' }
+    : { code: 'invalid_key', error: 'Rejected.' } }; } });
+  x.elements['immich-api-key'].value = 'synthetic-key'; await x.submit();
+  assert.deepEqual(x.permissions.filter(item => item.classes.has('permission-missing')).map(item => item.dataset.permission), ['face.update']);
+  x.elements['immich-api-key'].value = 'synthetic-key'; await x.submit();
+  assert.equal(x.permissions.some(item => item.classes.has('permission-missing')), false);
 });
 
 test('offline failure displays safe message and restores connect button', async () => {

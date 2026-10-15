@@ -50,6 +50,7 @@ ADMIN_CHECK_SECONDS = 60
 SESSION_COOKIE = "people_workbench_session"
 
 REQUIRED_PERMISSIONS = ('user.read', 'person.read', 'person.statistics', 'person.update', 'person.create', 'person.merge', 'asset.read', 'asset.view', 'face.read', 'face.update')
+CONNECTION_REASONS = frozenset({"missing_permissions", "invalid_key", "session_expired", "unavailable", "unsupported_introspection", "invalid_login", "owner_mismatch", "connection_ended"})
 # Official Permission enums at the source commits documented in docs/api-key-authentication.md.
 KNOWN_PERMISSIONS = frozenset("""
 activity.create activity.delete activity.read activity.statistics activity.update adminAuth.unlinkAll
@@ -95,15 +96,18 @@ class UpstreamError(ToolError):
 
 
 class AuthenticationError(ToolError):
-    def __init__(self, message: str, code: str, missing: Iterable[str] = ()):
+    def __init__(self, message: str, code: str, missing: Iterable[str] = (), reconnect: bool = False):
         self.code = code
-        self.missing = sorted(missing)
+        self.missing = sorted(set(missing) & set(REQUIRED_PERMISSIONS))[:len(REQUIRED_PERMISSIONS)]
+        self.reconnect = reconnect
         super().__init__(message)
 
     def response(self) -> dict[str, Any]:
         result = {"error": str(self), "code": self.code}
         if self.missing:
             result["missingPermissions"] = self.missing
+        if self.reconnect:
+            result["reconnectRequired"] = True
         return result
 
 
@@ -2368,8 +2372,14 @@ class AdminSession:
         else:
             try:
                 actual_user = client.current_admin()
-            except Exception:
+            except UpstreamError as exc:
+                if exc.status in {401, 403}:
+                    raise AuthenticationError("Immich admin access is no longer valid. Sign in again.", "invalid_login") from None
+                raise AuthenticationError("Immich is unavailable. Check the server and reconnect; local work is saved.", "unavailable") from None
+            except ToolError:
                 raise AuthenticationError("Immich admin access is no longer available. Sign in again.", "invalid_login") from None
+            except Exception:
+                raise AuthenticationError("Immich could not be reached. Check the server and reconnect; local work is saved.", "unavailable") from None
             identity = getattr(client, "connection_metadata", {})
         if actual_user != user_id:
             raise AuthenticationError("Immich account changed. Reconnect to the original account.", "owner_mismatch")
@@ -2377,35 +2387,43 @@ class AdminSession:
             raise AuthenticationError("Your Workbench connection expired. Reconnect; local work is saved.", "session_expired")
         return identity
 
-    def authorized(self, cookie: str) -> bool:
+    def authorization(self, cookie: str) -> tuple[bool, AuthenticationError | None]:
         snapshot = self._snapshot(cookie)
         if snapshot is None:
-            return False
+            if cookie:
+                return False, AuthenticationError("This Workbench connection is no longer recognized. Reconnect; local work is saved.", "connection_ended", reconnect=True)
+            return False, None
         epoch, client, user_id, mode, expires, checked = snapshot
         if time.monotonic() < expires and time.monotonic() - checked < ADMIN_CHECK_SECONDS:
-            return True
+            return True, None
         try:
             identity = self._verify(snapshot)
-            valid = True
+            failure = None
+        except AuthenticationError as exc:
+            failure = AuthenticationError(str(exc), exc.code, exc.missing, reconnect=True)
+            identity = {}
         except Exception:
-            valid = False
+            failure = AuthenticationError("Immich could not be verified. Check the server and reconnect; local work is saved.", "unavailable", reconnect=True)
             identity = {}
         # A read request must not replace/clear credentials in an active Sync.
         if not self.state.mutation_lock.acquire(blocking=False):
             with self.lock:
-                return valid and epoch == self.epoch
+                return (failure is None and epoch == self.epoch), None
         try:
             with self.lock:
                 if epoch != self.epoch:
-                    return False
-                if not valid:
+                    return False, AuthenticationError("This Workbench connection is no longer recognized. Reconnect; local work is saved.", "connection_ended", reconnect=True)
+                if failure is not None:
                     self._clear()
-                    return False
+                    return False, failure
                 client.connection_metadata = identity
                 self.checked = time.monotonic()
-                return True
+                return True, None
         finally:
             self.state.mutation_lock.release()
+
+    def authorized(self, cookie: str) -> bool:
+        return self.authorization(cookie)[0]
 
     def require_capabilities(self, cookie: str) -> None:
         snapshot = self._snapshot(cookie)
@@ -2427,11 +2445,12 @@ class AdminSession:
                     raise AuthenticationError("Sign in required", "session_expired")
                 try:
                     identity = self._verify(snapshot)
-                except AuthenticationError:
+                except AuthenticationError as exc:
                     with self.lock:
                         if snapshot[0] == self.epoch:
                             self._clear()
-                    raise
+                            raise AuthenticationError(str(exc), exc.code, exc.missing, reconnect=True) from None
+                    raise AuthenticationError("The Workbench connection changed. Reconnect and review Pending again.", "connection_ended", reconnect=True) from None
                 with self.lock:
                     if snapshot[0] != self.epoch:
                         raise AuthenticationError("Connection changed. Review Pending and retry explicitly.", "connection_changed")
@@ -2558,6 +2577,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def login_redirect(self, path: str, failure: AuthenticationError | None = None) -> None:
+        routes = {"/", *PAGE_ROUTES}
+        safe_path = path if path in routes else "/"
+        params = {"next": safe_path}
+        if failure and failure.reconnect and failure.code in CONNECTION_REASONS:
+            params["reason"] = failure.code
+            missing = sorted(set(failure.missing) & set(REQUIRED_PERMISSIONS))[:len(REQUIRED_PERMISSIONS)]
+            if failure.code == "missing_permissions" and missing:
+                params["missing"] = ",".join(missing)
+        self.redirect("/login?" + urllib.parse.urlencode(params, safe="/"))
+
     def send_json(self, value: Any, status: int = 200, cookie: str | None = None) -> None:
         body = json.dumps(value, ensure_ascii=False).encode()
         self.send_response(status)
@@ -2627,19 +2657,25 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect("/naming/clusters")
                 return
             if path == "/login":
-                if AUTH.authorized(self.session_cookie()):
+                authorized, failure = AUTH.authorization(self.session_cookie())
+                if authorized:
                     self.redirect("/")
+                elif failure and failure.reconnect and query.get("reason", [""])[0] not in CONNECTION_REASONS:
+                    requested = query.get("next", ["/"])[0]
+                    self.login_redirect(requested, failure)
                 else:
                     self.static("login.html")
                 return
             if path in {"/styles.css", "/login-key.css", "/login.js"}:
                 self.static(path[1:])
                 return
-            if not AUTH.authorized(self.session_cookie()):
+            authorized, failure = AUTH.authorization(self.session_cookie())
+            if not authorized:
                 if path == "/" or path.rstrip("/") in PAGE_ROUTES:
-                    self.redirect("/login?next=" + urllib.parse.quote(path, safe="/"))
+                    self.login_redirect(path.rstrip("/") or "/", failure)
                 else:
-                    self.send_json({"error": "Sign in required"}, 401)
+                    response = failure.response() if failure else {"error": "Sign in required"}
+                    self.send_json(response, 401)
                 return
             if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                 self.static("index.html")
@@ -2738,9 +2774,11 @@ class Handler(BaseHTTPRequestHandler):
         if not self.same_origin():
             self.send_json({"error": "Invalid request origin"}, 403)
             return
-        if path not in {"/api/login", "/api/connect-key"} and not AUTH.authorized(self.session_cookie()):
-            self.send_json({"error": "Sign in required"}, 401)
-            return
+        if path not in {"/api/login", "/api/connect-key"}:
+            authorized, failure = AUTH.authorization(self.session_cookie())
+            if not authorized:
+                self.send_json(failure.response() if failure else {"error": "Sign in required"}, 401)
+                return
         try:
             guard = nullcontext() if path in {"/api/sync", "/api/face-review/scan-next", "/api/group-photos/retry"} else mutation_guard(STATE.mutation_lock)
             with guard:

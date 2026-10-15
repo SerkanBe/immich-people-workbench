@@ -48,8 +48,14 @@ async function api(path, options = {}) {
   }
   const response = await fetch(path, init);
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401) {
-    window.location.assign(`/login?next=${encodeURIComponent(window.location.pathname)}`);
+  if (response.status === 401 || (response.status === 403 && data.reconnectRequired === true)) {
+    const params = new URLSearchParams({ next: window.location.pathname });
+    const reasons = new Set(["missing_permissions", "invalid_key", "session_expired", "unavailable", "unsupported_introspection", "invalid_login", "owner_mismatch", "connection_ended"]);
+    if (reasons.has(data.code)) params.set("reason", data.code);
+    const known = new Set(["user.read", "person.read", "person.statistics", "person.update", "person.create", "person.merge", "asset.read", "asset.view", "face.read", "face.update"]);
+    const missing = Array.isArray(data.missingPermissions) ? [...new Set(data.missingPermissions.filter(value => known.has(value)))].slice(0, 10) : [];
+    if (data.code === "missing_permissions" && missing.length) params.set("missing", missing.join(","));
+    window.location.assign(`/login?${params}`);
     throw new Error("Sign in required");
   }
   if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);

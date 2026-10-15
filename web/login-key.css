@@ -8,4 +8,10 @@
 #key-permissions { margin: .5rem 0 1rem; }
 #key-permissions summary { cursor: pointer; }
 #key-permissions p, #login-fields p { font-size: .9rem; }
+#key-permissions li.permission-missing { color: var(--danger, #a12622); font-weight: 700; background: color-mix(in srgb, var(--danger) 10%, transparent); border-radius: 3px; }
+#key-permissions li.permission-missing::after { content: " — missing"; font-size: .85em; }
+.connection-notice { border: 1px solid var(--warning, #9a6700); border-left-width: 4px; border-radius: 8px; padding: .75rem 1rem; margin: 1rem 0; background: color-mix(in srgb, var(--warning, #9a6700) 8%, transparent); }
+.connection-notice h2 { font-size: 1.05rem; margin: 0 0 .35rem; }
+.connection-notice p { margin: .35rem 0; }
+.connection-notice[hidden] { display: none; }
 #key-fields[hidden], #login-fields[hidden] { display: none; }

@@ -74,6 +74,11 @@ class QuietHandler(w.Handler):
     def log_message(self, *_args): pass
 
 
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        return None
+
+
 class ApiKeyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -114,6 +119,27 @@ class ApiKeyTests(unittest.TestCase):
             response = error
         with response:
             return response.status, json.load(response), response.headers
+
+    def get_redirect(self, path, cookie=''):
+        headers = {'Cookie': w.SESSION_COOKIE + '=' + cookie} if cookie else {}
+        req = urllib.request.Request(self.base + path, headers=headers)
+        opener = urllib.request.build_opener(NoRedirectHandler())
+        try:
+            response = opener.open(req, timeout=8)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            return response.status, response.headers.get('Location', ''), response.read()
+
+    def get_json(self, path, cookie=''):
+        headers = {'Cookie': w.SESSION_COOKIE + '=' + cookie} if cookie else {}
+        req = urllib.request.Request(self.base + path, headers=headers)
+        try:
+            response = urllib.request.urlopen(req, timeout=8)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            return response.status, json.load(response)
 
     def connect(self, key=CANARY, **payload):
         return self.post('/api/connect-key', {'url': self.url, 'apiKey': key, **payload})
@@ -229,12 +255,79 @@ class ApiKeyTests(unittest.TestCase):
         self.f['permissions'].remove('face.update')
         status, result, _ = self.sync(token)
         self.assertEqual(status, 403); self.assertEqual(result['missingPermissions'], ['face.update'])
+        self.assertTrue(result['reconnectRequired'])
         self.assertFalse(self.f['writes']); self.assertEqual(len(self.state.store.pending()), 1)
         self.assertFalse(self.auth.cookie); self.assertIsNone(self.state.client)
         self.f['permissions'] = list(w.REQUIRED_PERMISSIONS)
         self.connect('synthetic-rotated-key')
         self.assertEqual(self.sync(self.state.pending_data()['reviewToken'])[0], 200)
         self.assertEqual(len(self.f['writes']), 1)
+
+    def test_expired_key_notice_redirect_filters_scopes_and_preserves_next(self):
+        self.connect(); cookie = self.auth.cookie
+        self.auth.checked = time.monotonic() - w.ADMIN_CHECK_SECONDS - 1
+        self.f['permissions'].remove('face.update')
+        status, location, _ = self.get_redirect('/pending?ignored=synthetic-secret', cookie)
+        self.assertEqual(status, 303)
+        self.assertEqual(location, '/login?next=/pending&reason=missing_permissions&missing=face.update')
+        self.assertEqual(len(self.state.store.pending()), 0)
+        self.assertFalse(self.f['writes'])
+
+    def test_unknown_cookie_gets_generic_ended_notice_and_logout_is_ordinary(self):
+        status, location, _ = self.get_redirect('/pending', 'synthetic-unknown-cookie')
+        self.assertEqual(status, 303)
+        self.assertEqual(location, '/login?next=/pending&reason=connection_ended')
+        status, location, _ = self.get_redirect('/pending')
+        self.assertEqual(status, 303)
+        self.assertEqual(location, '/login?next=/pending')
+
+    def test_protected_get_and_post_return_typed_401_without_private_data(self):
+        self.connect(); cookie = self.auth.cookie
+        self.auth.checked = time.monotonic() - w.ADMIN_CHECK_SECONDS - 1
+        self.f['revoked'] = True
+        status, result = self.get_json('/api/state', cookie)
+        self.assertEqual(status, 401); self.assertEqual(result['code'], 'invalid_key')
+        self.assertTrue(result['reconnectRequired']); self.assertNotIn(CANARY, json.dumps(result))
+        self.f['revoked'] = False
+        status, result, _ = self.post('/api/queue', {'personId': PERSON, 'operation': 'hide'}, 'synthetic-unknown-cookie')
+        self.assertEqual(status, 401); self.assertEqual(result['code'], 'connection_ended')
+        self.assertTrue(result['reconnectRequired']); self.assertFalse(self.f['writes'])
+
+    def test_stale_login_page_cookie_preserves_allowlisted_next(self):
+        self.connect(); cookie = self.auth.cookie
+        self.auth.checked = time.monotonic() - w.ADMIN_CHECK_SECONDS - 1
+        self.f['permissions'].remove('face.update')
+        status, location, _ = self.get_redirect('/login?next=%2Fpending', cookie)
+        self.assertEqual(status, 303)
+        self.assertEqual(location, '/login?next=/pending&reason=missing_permissions&missing=face.update')
+
+    def test_api_key_rejection_and_immich_outage_have_distinct_safe_notice_reasons(self):
+        for revoked, introspection_status, expected in [(True, 200, 'invalid_key'), (False, 503, 'unavailable')]:
+            self.connect(); cookie = self.auth.cookie
+            self.auth.checked = time.monotonic() - w.ADMIN_CHECK_SECONDS - 1
+            self.f['revoked'] = revoked; self.f['introspection_status'] = introspection_status
+            authorized, failure = self.auth.authorization(cookie)
+            self.assertFalse(authorized); self.assertEqual(failure.code, expected)
+            self.assertTrue(failure.reconnect)
+            self.assertNotIn(CANARY, json.dumps(failure.response()))
+            self.f['revoked'] = False; self.f['introspection_status'] = 200
+
+    def test_password_recheck_distinguishes_rejection_from_availability(self):
+        cases = [(w.UpstreamError(401), 'invalid_login'), (w.ToolError('admin gate'), 'invalid_login'),
+                 (w.UpstreamError(503), 'unavailable'), (ConnectionError('private network detail'), 'unavailable')]
+        for raised, expected in cases:
+            _, cookie = self.auth.login(self.url, 'admin@example.test', 'synthetic-password', False)
+            client = self.state.client
+            self.auth.checked = time.monotonic() - w.ADMIN_CHECK_SECONDS - 1
+            with mock.patch.object(client, 'current_admin', side_effect=raised):
+                authorized, failure = self.auth.authorization(cookie)
+            self.assertFalse(authorized); self.assertIsNotNone(failure, repr(raised)); self.assertEqual(failure.code, expected)
+            self.assertNotIn('private network detail', json.dumps(failure.response()))
+
+    def test_unknown_permission_values_never_enter_auth_error_or_redirect(self):
+        error = w.AuthenticationError('safe', 'missing_permissions', ['face.update', 'evil.injected'] * 20)
+        self.assertEqual(error.response()['missingPermissions'], ['face.update'])
+        self.assertNotIn('evil.injected', json.dumps(error.response()))
 
     def test_changed_owner_before_sync_blocks_writes_and_retains_queue(self):
         self.connect(); token = self.seed_queue(); self.f['owner'] = OTHER

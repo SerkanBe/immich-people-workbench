@@ -13,7 +13,55 @@ const passwordInput = document.querySelector("#immich-password");
 const keyMode = document.querySelector("#mode-key");
 const loginMode = document.querySelector("#mode-login");
 const button = document.querySelector("#login-button");
+const permissionDetails = document.querySelector("#key-permissions");
+const permissionItems = [...document.querySelectorAll("[data-permission]")];
+const notice = document.querySelector("#connection-notice");
+const noticeTitle = document.querySelector("#connection-notice-title");
+const noticeCopy = document.querySelector("#connection-notice-copy");
+const KNOWN_PERMISSIONS = new Set(permissionItems.map(item => item.dataset.permission));
+const NOTICE_COPY = {
+  missing_permissions: ["Some required permissions are missing", "Edit this API key in Immich to add the highlighted permissions, then enter it below to reconnect."],
+  invalid_key: ["Immich rejected this API key", "The key may have been revoked. Enter a valid key below to reconnect."],
+  session_expired: ["The Workbench connection expired", "Reconnect below to continue reviewing your library."],
+  unavailable: ["Immich could not be reached", "Check the Immich URL and service, then reconnect below."],
+  unsupported_introspection: ["Immich permissions could not be verified", "Use a compatible Immich server or connect with Admin login below."],
+  invalid_login: ["Admin access needs to be renewed", "Sign in again below with an Immich administrator account."],
+  owner_mismatch: ["Reconnect to the original Immich account", "This state directory is bound to one account and server. Use a separate state directory for another."],
+  connection_ended: ["The Workbench connection ended", "Reconnect below to continue reviewing your library."],
+};
 let submitting = false;
+
+function highlightMissing(values) {
+  const missing = new Set(Array.isArray(values) ? values.filter(value => KNOWN_PERMISSIONS.has(value)).slice(0, 10) : []);
+  for (const item of permissionItems) {
+    const active = missing.has(item.dataset.permission);
+    item.classList.toggle("permission-missing", active);
+    if (active) item.setAttribute("aria-label", `${item.dataset.permission}, missing`);
+    else item.removeAttribute("aria-label");
+  }
+  if (missing.size) permissionDetails.open = true;
+}
+
+function showConnectionNotice() {
+  const params = new URLSearchParams(window.location.search);
+  const reason = params.get("reason");
+  if (!Object.hasOwn(NOTICE_COPY, reason)) return;
+  const copy = NOTICE_COPY[reason];
+  noticeTitle.textContent = copy[0];
+  noticeCopy.textContent = copy[1];
+  notice.hidden = false;
+  if (params.get("reason") === "missing_permissions") {
+    keyMode.checked = true;
+    loginMode.checked = false;
+    highlightMissing((params.get("missing") || "").slice(0, 512).split(","));
+  } else if (reason === "invalid_login") {
+    loginMode.checked = true;
+    keyMode.checked = false;
+  }
+  updateMode();
+}
+
+function clearMissing() { highlightMissing([]); }
 
 // URL storage is optional. Attempt legacy deletion separately even if a read fails.
 let savedUrl;
@@ -44,12 +92,14 @@ function updateMode(focus = false) {
 }
 for (const input of [keyMode, loginMode]) input.addEventListener("change", () => updateMode(true));
 updateMode();
+showConnectionNotice();
 
 form.addEventListener("submit", async event => {
   event.preventDefault();
   if (submitting || !form.reportValidity()) return;
   submitting = true;
   error.hidden = true;
+  clearMissing();
   button.disabled = true;
   keyMode.disabled = true;
   loginMode.disabled = true;
@@ -64,6 +114,7 @@ form.addEventListener("submit", async event => {
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
+      if (result.code === "missing_permissions") highlightMissing(result.missingPermissions);
       if (isKey && ["invalid_key", "missing_permissions", "unsupported_introspection"].includes(result.code)) clearSecrets();
       // Only the server's sanitized user-facing message is displayed.
       throw new Error(result.error || "Connection failed. Re-enter your credentials and retry.");
