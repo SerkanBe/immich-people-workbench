@@ -62,7 +62,8 @@ docker compose up -d
 
 The first start builds the image. Open
 [http://localhost:8766/](http://localhost:8766/) and enter your **remote Immich
-URL**, such as `https://photos.example.com`. Inside the container, `localhost`
+URL**, such as `https://photos.example.com`. The address starts empty unless
+you previously saved one. Inside the container, `localhost`
 means Workbench itself. For Immich on the same computer with Docker Desktop,
 use `http://host.docker.internal:2283` or choose setup 3.
 See [Run with Docker](docs/docker.md) for settings, updates and storage.
@@ -84,7 +85,8 @@ docker compose up -d people-workbench
 ```
 
 Open [http://localhost:8766/](http://localhost:8766/) and connect to
-`http://immich-server:2283` using your actual Immich service name. Each container
+`http://immich-server:2283` (prefilled on a fresh browser) using your actual
+Immich service name. Each container
 has its own `localhost`, even when both services share the same network.
 
 ### Connect and name a person

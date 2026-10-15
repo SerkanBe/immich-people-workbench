@@ -13,6 +13,7 @@ import time
 import textwrap
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest import mock
 
@@ -78,6 +79,52 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {"ok": True})
         self.assertFalse(self.auth.cookie)
+
+    def test_connection_form_defaults_are_setup_specific_and_do_not_connect(self):
+        class Inputs(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.urls = []
+
+            def handle_starttag(self, tag, attrs):
+                values = dict(attrs)
+                if tag == "input" and values.get("id") == "immich-url":
+                    self.urls.append(values)
+
+        for url in (None, "", "http://immich-server:2283", "https://photos.example.test/immich/api"):
+            with self.subTest(url=url), mock.patch.object(workbench.Immich, "request", side_effect=AssertionError("unexpected Immich request")):
+                if url is not None:
+                    self.server.initial_immich_url = url
+                status, headers, body = self.request("/login")
+                self.assertEqual(status, 200)
+                self.assertEqual(int(headers["Content-Length"]), len(body))
+                parser = Inputs()
+                parser.feed(body.decode())
+                self.assertEqual(len(parser.urls), 1)
+                self.assertEqual(parser.urls[0]["value"], workbench.DEFAULT_IMMICH_URL if url is None else url)
+                self.assertIn("required", parser.urls[0])
+                self.assertEqual(parser.urls[0]["placeholder"], "https://photos.example.com")
+                self.assertNotIn(b"__IMMICH_URL_DEFAULT__", body)
+                self.assertFalse(self.auth.cookie)
+                self.assertEqual(self.state.store.pending_snapshot(), ([], []))
+
+    def test_connection_form_default_is_escaped_as_attribute_data(self):
+        self.server.initial_immich_url = 'https://photos.example.test/\"><svg/onload=alert(1)>&'
+        status, _, body = self.request("/login")
+        self.assertEqual(status, 200)
+        self.assertIn(b"&quot;&gt;&lt;svg/onload=alert(1)&gt;&amp;", body)
+        self.assertNotIn(b"<svg", body)
+
+    def test_connection_form_default_validation_accepts_blank_and_rejects_credentials(self):
+        for value in ("", "http://localhost:2283", "http://immich-server:2283", "https://photos.example.test/immich/api", "http://[::1]:2283"):
+            with self.subTest(value=value):
+                self.assertEqual(workbench.initial_immich_url("  " + value + "  "), value)
+        for value in ("localhost:2283", "//photos.example.test", "javascript:alert(1)",
+                      "https://user:secret@example.test", "https://@example.test", "https://example.test/?key=secret",
+                      "https://example.test/#token", "http://example.test:0", "http://example.test:bad",
+                      "http://example.test:70000", "http://exa mple.test", "http://[broken"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                workbench.initial_immich_url(value)
 
     def test_shutdown_rejects_new_handler_admission(self):
         server = workbench.WorkbenchServer(("127.0.0.1", 0), workbench.Handler)
@@ -186,6 +233,25 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(fake.calls, [("update", person_id, {"name": "Synthetic Person"})])
         self.assertEqual(restored.store.pending(), [])
         self.assertEqual(len(list(self.state.reports.glob("sync-*.json"))), 1)
+
+    def test_invalid_initial_url_fails_before_creating_state_and_redacts_credentials(self):
+        path = Path(self.directory.name) / "no-initial-url-state"
+        base_env = {key: value for key, value in os.environ.items() if not key.startswith("PEOPLE_WORKBENCH_")}
+        for cli in (False, True):
+            with self.subTest(cli=cli):
+                env = base_env.copy()
+                command = [sys.executable, str(workbench.ROOT / "people_workbench.py"),
+                           "--state-dir", str(path), "--no-browser"]
+                unsafe = "https://synthetic-user:synthetic-secret@example.test"
+                if cli:
+                    command += ["--immich-url", unsafe]
+                else:
+                    env["PEOPLE_WORKBENCH_IMMICH_URL"] = unsafe
+                result = subprocess.run(command, capture_output=True, text=True, env=env, timeout=5)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("Immich URL default must be", result.stderr)
+                self.assertNotIn("synthetic-secret", result.stderr + result.stdout)
+                self.assertFalse(path.exists())
 
     def test_invalid_public_configuration_fails_before_creating_state(self):
         for origin in ("ftp://example.test", "https://example.test/people", "https://user:secret@example.test",

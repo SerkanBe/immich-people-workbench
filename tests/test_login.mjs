@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../web/login.js', import.meta.url), 'utf8');
-function setup({ storageError = false, readError = false, next = '', reason = '', missing = '', fetchResult } = {}) {
+function setup({ storageError = false, readError = false, next = '', reason = '', missing = '', initialUrl = 'http://synthetic.test', savedEntries, fetchResult } = {}) {
   const elements = {};
   for (const id of ['login-form', 'login-error', 'immich-url', 'immich-api-key', 'immich-email', 'immich-password', 'mode-key', 'mode-login', 'login-button', 'key-fields', 'login-fields', 'insecure-tls', 'key-permissions', 'connection-notice', 'connection-notice-title', 'connection-notice-copy']) {
     elements[id] = { value: '', checked: id === 'mode-key', hidden: false, disabled: false, textContent: '', listeners: {},
@@ -20,10 +20,10 @@ function setup({ storageError = false, readError = false, next = '', reason = ''
     setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; },
   }));
   for (const item of permissions) item.classList.owner = item;
-  elements['immich-url'].value = 'http://synthetic.test';
+  elements['immich-url'].value = initialUrl;
   elements['login-form'].reportValidity = () => !!elements['immich-url'].value &&
     (elements['mode-key'].checked ? !!elements['immich-api-key'].value : !!elements['immich-email'].value && !!elements['immich-password'].value);
-  const saved = new Map([['immichPeopleConsole.connection.v1', JSON.stringify({ url: 'http://old.test', apiKey: 'synthetic-old-secret' })]]);
+  const saved = new Map(savedEntries ?? [['immichPeopleConsole.connection.v1', JSON.stringify({ url: 'http://old.test', apiKey: 'synthetic-old-secret' })]]);
   const calls = [], redirects = [], removals = [];
   const search = new URLSearchParams(); if (next) search.set('next', next); if (reason) search.set('reason', reason); if (missing) search.set('missing', missing);
   const context = vm.createContext({ document: { querySelector: selector => elements[selector.slice(1)], querySelectorAll: selector => selector === '[data-permission]' ? permissions : [] }, URLSearchParams, TypeError,
@@ -154,4 +154,45 @@ test('repeated submit starts only one connection while awaiting response', async
   assert.equal(x.elements['mode-key'].disabled, true);
   resolve({ ok: true, json: async () => ({ ok: true }) }); await first;
   assert.equal(x.elements['mode-key'].disabled, false);
+});
+
+
+test('fresh setup defaults remain editable and never initiate a connection', async () => {
+  for (const initialUrl of ['http://localhost:2283', '', 'http://immich-server:2283']) {
+    const x = setup({ initialUrl, savedEntries: [] });
+    assert.equal(x.elements['immich-url'].value, initialUrl);
+    assert.equal(x.calls.length, 0);
+    assert.equal(x.saved.size, 0);
+    x.elements['immich-url'].value = 'https://photos.example.test';
+    x.elements['immich-api-key'].value = 'synthetic-key';
+    await x.submit();
+    assert.equal(x.calls.length, 1);
+    assert.equal(x.calls[0][1].url, 'https://photos.example.test');
+  }
+});
+
+test('blank standalone default requires an address before connecting', async () => {
+  const x = setup({ initialUrl: '', savedEntries: [] });
+  x.elements['immich-api-key'].value = 'synthetic-key';
+  await x.submit();
+  assert.equal(x.calls.length, 0);
+});
+
+test('saved and legacy URLs take precedence over deployment defaults without changing other settings', () => {
+  for (const key of ['immichPeopleWorkbench.url.v1', 'immichPeopleWorkbench.connection.v1', 'immichPeopleConsole.connection.v1']) {
+    const savedUrl = 'https://saved.example.test';
+    const savedValue = key.endsWith('url.v1') ? savedUrl : JSON.stringify({ url: savedUrl, apiKey: 'synthetic-old-secret' });
+    const canvasKey = 'immichPeopleConsole.mergeCanvas.v1';
+    const x = setup({ initialUrl: 'http://immich-server:2283', savedEntries: [[key, savedValue], [canvasKey, 'synthetic-canvas']] });
+    assert.equal(x.elements['immich-url'].value, savedUrl);
+    assert.equal(x.saved.get(canvasKey), 'synthetic-canvas');
+    assert.equal(x.elements['immich-api-key'].value, '');
+    assert.equal(x.calls.length, 0);
+  }
+});
+
+test('a deployment default works when optional browser storage is unavailable', () => {
+  const x = setup({ initialUrl: 'http://immich-server:2283', storageError: true });
+  assert.equal(x.elements['immich-url'].value, 'http://immich-server:2283');
+  assert.equal(x.calls.length, 0);
 });

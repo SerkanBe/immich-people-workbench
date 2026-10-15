@@ -61,6 +61,7 @@ services:
     ports:
       - "${PEOPLE_WORKBENCH_BIND_IP:-127.0.0.1}:${PEOPLE_WORKBENCH_PORT:-8766}:8766"
     environment:
+      PEOPLE_WORKBENCH_IMMICH_URL: ${PEOPLE_WORKBENCH_IMMICH_URL-http://immich-server:2283}
       PEOPLE_WORKBENCH_PUBLIC_URL: ${PEOPLE_WORKBENCH_PUBLIC_URL:-http://localhost:${PEOPLE_WORKBENCH_PORT:-8766}}
       PEOPLE_WORKBENCH_TRUSTED_PROXIES: ${PEOPLE_WORKBENCH_TRUSTED_PROXIES:-}
     volumes:
@@ -103,6 +104,17 @@ first. Do not run `docker compose down` against the Immich stack just to stop
 Workbench.
 
 ## Connect to Immich
+
+Python initially offers `http://localhost:2283`. Standalone Docker leaves the
+address empty; the integrated service above offers `http://immich-server:2283`.
+A previously saved browser URL takes precedence. The form never connects until
+you submit it.
+
+To supply another initial address, set `PEOPLE_WORKBENCH_IMMICH_URL` in the
+Compose project's `.env` and recreate Workbench. For example, use
+`https://photos.example.com` for remote Immich or `http://immich:2283` for a
+custom service name. This only prefills the form; it does not change saved
+URLs, credentials or the server bound to existing state.
 
 Use an Immich URL reachable from inside the container. `localhost` inside the
 Workbench container means the container itself:

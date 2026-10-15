@@ -25,7 +25,7 @@
         <label><input id="mode-key" type="radio" name="auth-mode" value="apiKey" checked> API key <span class="muted">(recommended)</span></label>
         <label><input id="mode-login" type="radio" name="auth-mode" value="login"> Admin login</label>
       </fieldset>
-      <label>Immich URL <input id="immich-url" type="url" value="http://localhost:2283" required autocomplete="url"></label>
+      <label>Immich URL <input id="immich-url" type="url" value="__IMMICH_URL_DEFAULT__" placeholder="https://photos.example.com" required autocomplete="url"></label>
       <div id="key-fields">
         <label>API key <input id="immich-api-key" type="password" required autocomplete="off" spellcheck="false" autocapitalize="none"></label>
         <details id="key-permissions">

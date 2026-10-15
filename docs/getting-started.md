@@ -41,6 +41,11 @@ automatically.
 
 ## Connect to Immich
 
+The first connection offers `http://localhost:2283`; a saved URL takes
+precedence. To prefill another address, launch with
+`python3 people_workbench.py --immich-url https://photos.example.com`, or set
+`PEOPLE_WORKBENCH_IMMICH_URL`. This does not connect automatically.
+
 Choose **API key** (recommended) and enter your Immich server URL and key. An
 Immich administrator can instead choose **Admin login** if password login is
 enabled. Workbench checks the account and permissions before connecting. See

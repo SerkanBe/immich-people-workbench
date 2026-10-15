@@ -13,6 +13,7 @@ import argparse
 import concurrent.futures
 import datetime as dt
 import hashlib
+import html
 import http.cookies
 import ipaddress
 import json
@@ -41,6 +42,7 @@ from typing import Any, Iterable
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 DEFAULT_STATE_DIR = ROOT / ".people-workbench"
+DEFAULT_IMMICH_URL = "http://localhost:2283"
 MAX_BODY = 1_000_000
 MAX_IMAGE = 20_000_000
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{20,50}$")
@@ -2623,6 +2625,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         body = target.read_bytes()
+        if name == "login.html":
+            initial_url = getattr(self.server, "initial_immich_url", DEFAULT_IMMICH_URL)
+            body = body.replace(b"__IMMICH_URL_DEFAULT__", html.escape(initial_url, quote=True).encode("utf-8"))
         kind = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", kind + ("; charset=utf-8" if kind.startswith("text/") else ""))
@@ -2957,6 +2962,26 @@ class WorkbenchServer(ThreadingHTTPServer):
         return True
 
 
+def initial_immich_url(value: str) -> str:
+    """Validate an optional connection-form default without contacting Immich."""
+    value = value.strip()
+    if not value:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        valid = (parsed.scheme in {"http", "https"} and parsed.hostname
+                 and parsed.username is None and parsed.password is None
+                 and not parsed.query and not parsed.fragment
+                 and "?" not in value and "#" not in value and "\\" not in value
+                 and not any(character.isspace() for character in value)
+                 and parsed.port != 0)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError("Immich URL default must be an http:// or https:// URL without credentials, query, or fragment")
+    return value
+
+
 def main() -> int:
     global STATE, AUTH
     parser = argparse.ArgumentParser(description="Keyboard-first local Immich People Workbench")
@@ -2964,6 +2989,9 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--immich-url", default=os.environ.get("PEOPLE_WORKBENCH_IMMICH_URL", DEFAULT_IMMICH_URL),
+                        help=("Prefill the Immich URL; empty leaves it blank (or PEOPLE_WORKBENCH_IMMICH_URL). "
+                              "Saved browser URLs take precedence; no automatic connection."))
     parser.add_argument("--shutdown-timeout", type=float, default=110,
                         help="Seconds to drain admitted requests on shutdown (default: 110)")
     parser.add_argument("--public-url", default=os.environ.get("PEOPLE_WORKBENCH_PUBLIC_URL", ""),
@@ -2980,6 +3008,7 @@ def main() -> int:
     ]
     try:
         policy = RequestPolicy(args.public_url, proxies)
+        initial_url = initial_immich_url(args.immich_url)
     except ValueError as exc:
         parser.error(str(exc))
     state_dir = args.state_dir.expanduser().resolve()
@@ -2987,6 +3016,7 @@ def main() -> int:
     AUTH = AdminSession(STATE)
     server = WorkbenchServer((args.host, args.port), Handler)
     server.request_policy = policy
+    server.initial_immich_url = initial_url
     url = policy.origin + "/" if policy.origin else f"http://127.0.0.1:{server.server_port}/"
     stopping = threading.Event()
     deadline = None

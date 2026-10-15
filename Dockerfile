@@ -4,7 +4,7 @@ LABEL org.opencontainers.image.title="Immich People Workbench" \
       org.opencontainers.image.source="https://github.com/SerkanBe/immich-people-workbench" \
       org.opencontainers.image.licenses="AGPL-3.0-only"
 
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PEOPLE_WORKBENCH_IMMICH_URL=""
 WORKDIR /app
 RUN groupadd --gid 10001 workbench \
     && useradd --uid 10001 --gid workbench --no-create-home workbench \

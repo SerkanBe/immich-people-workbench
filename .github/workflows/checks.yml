@@ -114,6 +114,7 @@ jobs:
           assert service['image'] == 'people-workbench:local'
           assert service['build']['dockerfile'] == 'Dockerfile'
           assert service['environment']['PEOPLE_WORKBENCH_PUBLIC_URL'] == 'http://localhost:8766'
+          assert service['environment']['PEOPLE_WORKBENCH_IMMICH_URL'] == ''
           assert service['ports'][0]['host_ip'] == '127.0.0.1'
           assert str(service['ports'][0]['published']) == '8766'
           assert config['volumes']['people-workbench-data']['name'] == 'people-workbench_people-workbench-data'
