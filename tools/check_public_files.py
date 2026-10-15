@@ -27,7 +27,7 @@ def validate_paths(paths: list[str]) -> list[str]:
         if parts & {"var", ".people-workbench", ".people-console"}:
             errors.append(f"private or ignored path is tracked: {raw}")
         name = path.name.lower()
-        if (name.startswith(".env") and name != ".env.example") or name in PRIVATE_NAMES or name.endswith((".sqlite", ".sqlite3", ".db", ".pem", ".key")):
+        if (name.startswith(".env") and name not in {".env.example", ".env.docker.example"}) or name in PRIVATE_NAMES or name.endswith((".sqlite", ".sqlite3", ".db", ".pem", ".key")):
             errors.append(f"private state, environment, or key file is tracked: {raw}")
     return errors
 

@@ -14,9 +14,12 @@ class PublicFileChecksTest(unittest.TestCase):
         self.assertEqual(len(errors), 3)
 
     def test_example_environment_file_is_allowed_but_other_env_files_are_not(self):
-        errors = CHECK.validate_paths([".env.example", ".env.production", "docs/guide.md"])
-        self.assertEqual(len(errors), 1)
-        self.assertIn(".env.production", errors[0])
+        self.assertEqual(CHECK.validate_paths([".env.example", ".env.docker.example", "docs/guide.md"]), [])
+        rejected = [".env", ".env.production", ".env.docker", ".env.docker.example.private"]
+        errors = CHECK.validate_paths(rejected)
+        self.assertEqual(len(errors), len(rejected))
+        for name, error in zip(rejected, errors):
+            self.assertIn(name, error)
 
     def test_only_readme_and_docs_markdown_are_scanned(self):
         self.assertTrue(CHECK.is_documentation(Path("README.md")))

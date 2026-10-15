@@ -1,0 +1,9 @@
+# Allow only public runtime files into the build context.
+**
+!Dockerfile
+!people_workbench.py
+!LICENSE
+!web/
+!web/*.html
+!web/*.js
+!web/*.css

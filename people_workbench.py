@@ -14,14 +14,18 @@ import concurrent.futures
 import datetime as dt
 import hashlib
 import http.cookies
+import ipaddress
 import json
+import math
 import mimetypes
 import os
 import random
 import re
 import secrets
+import signal
 import sqlite3
 import ssl
+import sys
 import threading
 import time
 import urllib.error
@@ -2226,6 +2230,70 @@ STATE: AppState
 AUTH: AdminSession
 
 
+def canonical_origin(value: str) -> str:
+    """Validate an HTTP origin, including its effective port and IPv6 authority."""
+    parsed = urllib.parse.urlsplit(value)
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.path not in {"", "/"} or parsed.query or parsed.fragment
+            or any(character.isspace() for character in value) or "\\" in value
+            or "?" in value or "#" in value):
+        raise ValueError("public URL must be an http:// or https:// origin without a path, credentials, query, or fragment")
+    hostname = parsed.hostname.lower()
+    if ":" in hostname:
+        ipaddress.IPv6Address(hostname)
+        hostname = f"[{hostname}]"
+    port = parsed.port
+    if port == 0:
+        raise ValueError("public URL port must be between 1 and 65535")
+    if port is not None and port != (443 if parsed.scheme == "https" else 80):
+        hostname += f":{port}"
+    return f"{parsed.scheme}://{hostname}"
+
+
+class RequestPolicy:
+    """An explicit browser origin; forwarded scheme headers require a trusted peer."""
+
+    def __init__(self, public_url: str = "", trusted_proxies: Iterable[str] = ()):
+        self.origin = canonical_origin(public_url) if public_url else ""
+        self.trusted_proxies = tuple(ipaddress.ip_network(value, strict=False) for value in trusted_proxies)
+        if self.trusted_proxies and not self.origin:
+            raise ValueError("trusted proxies require a public URL")
+
+    def scheme(self, headers: Any, peer: str) -> str:
+        address = ipaddress.ip_address(peer)
+        if any(address in network for network in self.trusted_proxies):
+            values = headers.get_all("X-Forwarded-Proto", [])
+            if len(values) == 1 and values[0].lower() in {"http", "https"}:
+                return values[0].lower()
+        return "http"
+
+    def allowed(self, headers: Any, peer: str) -> bool:
+        hosts = headers.get_all("Host", [])
+        if len(hosts) != 1:
+            return False
+        if any(character in hosts[0] for character in "/?#\\@"):
+            return False
+        scheme = self.scheme(headers, peer)
+        try:
+            origin = canonical_origin(f"{scheme}://{hosts[0]}")
+        except ValueError:
+            return False
+        if self.origin:
+            return origin == self.origin
+        return urllib.parse.urlsplit(origin).hostname in {"127.0.0.1", "localhost", "::1"}
+
+    def same_origin(self, headers: Any, peer: str) -> bool:
+        origins = headers.get_all("Origin", [])
+        if len(origins) != 1 or not self.allowed(headers, peer):
+            return False
+        expected = self.origin or f"{self.scheme(headers, peer)}://{headers.get('Host', '')}"
+        return origins[0] == expected and headers.get("Sec-Fetch-Site", "same-origin") == "same-origin"
+
+
+LOCAL_REQUEST_POLICY = RequestPolicy()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "ImmichPeopleWorkbench/1"
 
@@ -2235,7 +2303,11 @@ class Handler(BaseHTTPRequestHandler):
         super().log_message(fmt, *args)
 
     def allowed(self) -> bool:
-        return self.headers.get("Host", "").split(":", 1)[0].strip("[]").lower() in {"127.0.0.1", "localhost", "::1"}
+        return self.policy.allowed(self.headers, self.client_address[0])
+
+    @property
+    def policy(self) -> RequestPolicy:
+        return getattr(self.server, "request_policy", LOCAL_REQUEST_POLICY)
 
     def session_cookie(self) -> str:
         try:
@@ -2247,11 +2319,7 @@ class Handler(BaseHTTPRequestHandler):
             return ""
 
     def same_origin(self) -> bool:
-        origin = self.headers.get("Origin", "")
-        host = self.headers.get("Host", "")
-        scheme = "https" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else "http"
-        return (origin == f"{scheme}://{host}"
-                and self.headers.get("Sec-Fetch-Site", "same-origin") == "same-origin")
+        return self.policy.same_origin(self.headers, self.client_address[0])
 
     def redirect(self, location: str) -> None:
         self.send_response(303)
@@ -2315,11 +2383,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
+        # Liveness only: no login, database access, or Immich request.
+        if path == "/healthz":
+            self.send_json({"ok": True})
+            return
         if not self.allowed():
             self.send_error(403)
             return
-        parsed = urllib.parse.urlparse(self.path)
-        path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
         try:
             if path.rstrip("/") == "/merge":
                 self.redirect("/naming/clusters")
@@ -2451,7 +2523,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json({"error": message}, 403)
                         return
                     threading.Thread(target=STATE.load, daemon=True).start()
-                    secure = "; Secure" if self.headers.get("X-Forwarded-Proto", "").lower() == "https" else ""
+                    secure = "; Secure" if self.policy.scheme(self.headers, self.client_address[0]) == "https" else ""
                     cookie = f"{SESSION_COOKIE}={session_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}{secure}"
                     self.send_json({"ok": True, "version": version}, 200, cookie)
                 elif path == "/api/logout":
@@ -2561,6 +2633,52 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(exc)}, 400)
 
 
+class WorkbenchServer(ThreadingHTTPServer):
+    """Stop admission on shutdown and keep admitted handlers alive to a deadline."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.handlers = threading.Condition()
+        self.active_handlers = 0
+        self.draining = False
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        with self.handlers:
+            if self.draining:
+                self.shutdown_request(request)
+                return
+            self.active_handlers += 1
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.handler_finished()
+            raise
+
+    def handler_finished(self) -> None:
+        with self.handlers:
+            self.active_handlers -= 1
+            self.handlers.notify_all()
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.handler_finished()
+
+    def stop_admission(self) -> None:
+        with self.handlers:
+            self.draining = True
+
+    def drain(self, deadline: float) -> bool:
+        with self.handlers:
+            while self.active_handlers:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.handlers.wait(remaining)
+        return True
+
+
 def main() -> int:
     global STATE, AUTH
     parser = argparse.ArgumentParser(description="Keyboard-first local Immich People Workbench")
@@ -2568,14 +2686,54 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--shutdown-timeout", type=float, default=110,
+                        help="Seconds to drain admitted requests on shutdown (default: 110)")
+    parser.add_argument("--public-url", default=os.environ.get("PEOPLE_WORKBENCH_PUBLIC_URL", ""),
+                        help="Browser origin required for remote access (or PEOPLE_WORKBENCH_PUBLIC_URL)")
+    parser.add_argument("--trusted-proxy", action="append", default=None,
+                        help="Trusted reverse-proxy IP/CIDR; repeat as needed (or PEOPLE_WORKBENCH_TRUSTED_PROXIES, comma-separated)")
     args = parser.parse_args()
-    if args.host not in {"127.0.0.1", "localhost", "::1"}:
-        parser.error("host must be localhost")
+    if not math.isfinite(args.shutdown_timeout) or args.shutdown_timeout <= 0:
+        parser.error("--shutdown-timeout must be a finite positive number")
+    if args.host not in {"127.0.0.1", "localhost", "::1"} and not args.public_url:
+        parser.error("non-localhost binding requires --public-url or PEOPLE_WORKBENCH_PUBLIC_URL")
+    proxies = args.trusted_proxy if args.trusted_proxy is not None else [
+        value.strip() for value in os.environ.get("PEOPLE_WORKBENCH_TRUSTED_PROXIES", "").split(",") if value.strip()
+    ]
+    try:
+        policy = RequestPolicy(args.public_url, proxies)
+    except ValueError as exc:
+        parser.error(str(exc))
     state_dir = args.state_dir.expanduser().resolve()
     STATE = AppState(Store(state_dir / "state.sqlite3"), state_dir / "reports")
     AUTH = AdminSession(STATE)
-    server = ThreadingHTTPServer((args.host, args.port), Handler)
-    url = f"http://127.0.0.1:{server.server_port}/"
+    server = WorkbenchServer((args.host, args.port), Handler)
+    server.request_policy = policy
+    url = policy.origin + "/" if policy.origin else f"http://127.0.0.1:{server.server_port}/"
+    stopping = threading.Event()
+    deadline = None
+
+    def force_exit() -> None:
+        print("Shutdown deadline expired; reconcile Pending and Immich before retrying Sync.", file=sys.stderr, flush=True)
+        # Executor workers can outlive their daemon handler or background loader.
+        # Interpreter cleanup joins them, so normal exit cannot enforce a bound.
+        os._exit(1)
+
+    def enforce_deadline() -> None:
+        time.sleep(max(0, deadline - time.monotonic()))
+        force_exit()
+
+    def stop(_signum: int, _frame: Any) -> None:
+        nonlocal deadline
+        if not stopping.is_set():
+            stopping.set()
+            deadline = time.monotonic() + args.shutdown_timeout
+            server.stop_admission()
+            threading.Thread(target=enforce_deadline, daemon=True).start()
+            threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
     print(f"Immich People Workbench: {url}")
     print(f"Local queue: {state_dir}")
     print("Immich login tokens remain in memory and are never written to disk.")
@@ -2586,7 +2744,10 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        server.stop_admission()
         server.server_close()
+    if not server.drain(deadline if deadline is not None else time.monotonic() + args.shutdown_timeout):
+        force_exit()
     return 0
 
 

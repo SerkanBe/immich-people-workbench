@@ -1,0 +1,8 @@
+# Build from this checkout without downloading a published Workbench image.
+# docker compose -f compose.yaml -f compose.build.yaml up -d --build
+services:
+  people-workbench:
+    image: ${PEOPLE_WORKBENCH_LOCAL_IMAGE:-people-workbench:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
