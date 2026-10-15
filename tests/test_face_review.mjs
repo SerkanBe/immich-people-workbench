@@ -49,6 +49,48 @@ function node() {
   };
 }
 
+async function submitHarness({ people, pages, submit }) {
+  const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage,
+    requestAnimationFrame: globalThis.requestAnimationFrame };
+  const elements = new Map(), windowListeners = new Map(), documentListeners = new Map();
+  globalThis.document = {
+    activeElement: null,
+    getElementById: id => { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
+    createElement: () => node(), addEventListener: (event, handler) => documentListeners.set(event, handler),
+  };
+  globalThis.window = { addEventListener: (event, handler) => windowListeners.set(event, handler) };
+  globalThis.localStorage = { getItem: () => null };
+  globalThis.requestAnimationFrame = callback => setImmediate(callback);
+  const list = node(), grid = node();
+  const state = { view: "faces", faceReviewPeople: [], pages: { facePeople: 1 }, pageSize: 10, sort: "most",
+    faceReviewSelected: new Set(), faceReviewSelectedData: new Map() };
+  const review = createFaceReview({
+    api: async (path, options) => {
+      if (path.startsWith("/api/people?")) return { people, page: 1 };
+      if (path.startsWith("/api/person-faces/")) {
+        const page = Number(new URL(`http://local${path}`).searchParams.get("page"));
+        const result = pages[page - 1];
+        if (result instanceof Error) throw result;
+        return result;
+      }
+      if (path === "/api/face-review/submit") return submit(options);
+      throw new Error(`Unexpected request: ${path}`);
+    }, state, ui: { facePersonList: list, faceReviewGrid: grid }, assetThumb: () => "", personThumb: () => "",
+    drawFace: async () => {}, refreshSummary: async () => {}, showToast: () => {}, renderPagination: () => {},
+  });
+  review.bindFaceReviewControls();
+  await review.renderFaceReview();
+  const selectPerson = async index => { await list.children[index].listeners.get("click")(); };
+  await selectPerson(0);
+  const focus = target => { target.focus(); documentListeners.get("focusin")?.({ target }); };
+  const fireSubmit = () => windowListeners.get("keydown")({ key: "Enter", ctrlKey: true, metaKey: false, altKey: false,
+    shiftKey: false, target: { closest: () => null }, preventDefault() {} });
+  const firstCard = grid.querySelector(".face-review-card");
+  if (firstCard) { firstCard.listeners.get("focus")(); document.activeElement = firstCard; }
+  return { documentListeners, elements, fireSubmit, focus, grid, list, review, selectPerson, state,
+    dispose: () => Object.assign(globalThis, previous) };
+}
+
 test("Face review hides submitted faces while leaving new drafts available", () => {
   const checked = { reviewed: true, queued: false };
   const newFace = { reviewed: false, queued: false };
@@ -375,4 +417,139 @@ test("Face review submits directly, then reopens and finishes without changing d
   } finally {
     Object.assign(globalThis, previous);
   }
+});
+
+test("successful submit focuses the next untouched virtualized face", async () => {
+  const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };
+  const elements = new Map(), windowListeners = new Map();
+  globalThis.document = {
+    activeElement: null,
+    getElementById: id => { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
+    createElement: () => node(), addEventListener() {},
+  };
+  globalThis.window = { addEventListener: (event, handler) => windowListeners.set(event, handler) };
+  globalThis.localStorage = { getItem: () => null };
+  const person = { id: "11111111-1111-4111-8111-111111111111", name: "Synthetic person", assetCount: 2 };
+  const faces = ["c1", "c2"].map(suffix => ({
+    faceId: `${suffix}1111111-1111-4111-8111-111111111111`, assetId: `a${suffix}111111-1111-4111-8111-111111111111`,
+    fileName: "synthetic.jpg", reviewed: false, queued: false, box: null,
+  }));
+  const list = node(), grid = node();
+  const state = { view: "faces", faceReviewPeople: [], pages: { facePeople: 1 }, pageSize: 10, sort: "most",
+    faceReviewSelected: new Set(), faceReviewSelectedData: new Map() };
+  try {
+    const review = createFaceReview({
+      api: async (path) => {
+        if (path.startsWith("/api/people?")) return { people: [person], page: 1 };
+        if (path.startsWith("/api/person-faces/")) return { faces, page: 1, hasMore: false, draftCount: 1,
+          reviewedCount: 0, reviewTotal: 2, untouchedCount: 1, inventoryComplete: true };
+        if (path === "/api/face-review/submit") return { submitted: { correct: 1, wrong: 0 },
+          submittedFaces: [{ faceId: faces[0].faceId, verdict: "correct" }], draftCount: 0, reviewedCount: 1,
+          reviewTotal: 2, untouchedCount: 1, inventoryComplete: true, personReviewed: false };
+        throw new Error(`Unexpected request: ${path}`);
+      }, state, ui: { facePersonList: list, faceReviewGrid: grid }, assetThumb: () => "", personThumb: () => "",
+      drawFace: async () => {}, refreshSummary: async () => {}, showToast: () => {}, renderPagination: () => {},
+    });
+    review.bindFaceReviewControls();
+    await review.renderFaceReview();
+    await list.children[0].listeners.get("click")();
+    document.getElementById("face-review-show-checked").listeners.get("click")();
+    const card = grid.querySelector(".face-review-card");
+    assert.ok(card);
+    card.listeners.get("focus")();
+    const shortcut = windowListeners.get("keydown");
+    shortcut({ key: "Enter", ctrlKey: true, metaKey: false, altKey: false, shiftKey: false,
+      target: { closest: () => null }, preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(document.activeElement?.dataset.faceId, faces[1].faceId);
+    assert.equal(state.faceReviewPersonId, person.id);
+  } finally { Object.assign(globalThis, previous); }
+});
+
+test("submission keeps a surviving untouched anchor available when it is the only candidate", async () => {
+  const faces = ["c1", "c2"].map((suffix, index) => ({ faceId: `${suffix}1111111-1111-4111-8111-111111111111`,
+    assetId: `a${suffix}111111-1111-4111-8111-111111111111`, fileName: `synthetic-${index}.jpg`, reviewed: false, queued: false }));
+  const person = { id: "11111111-1111-4111-8111-111111111111", name: "Synthetic", assetCount: 2 };
+  const h = await submitHarness({ people: [person], pages: [{ faces, page: 1, hasMore: false, draftCount: 1, reviewedCount: 0,
+    reviewTotal: 2, untouchedCount: 1, inventoryComplete: true }], submit: async () => ({ submitted: { correct: 1, wrong: 0 },
+    submittedFaces: [{ faceId: faces[1].faceId, verdict: "correct" }], draftCount: 0, reviewedCount: 1, reviewTotal: 2,
+    untouchedCount: 1, inventoryComplete: true, personReviewed: false }) });
+  try {
+    h.fireSubmit(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(document.activeElement?.dataset.faceId, faces[0].faceId);
+  } finally { h.dispose(); }
+});
+
+test("delayed submission respects a new focus target and a newly selected person", async t => {
+  const faces = ["c1", "c2"].map(suffix => ({ faceId: `${suffix}1111111-1111-4111-8111-111111111111`,
+    assetId: `a${suffix}111111-1111-4111-8111-111111111111`, fileName: "synthetic.jpg", reviewed: false, queued: false }));
+  const people = [{ id: "11111111-1111-4111-8111-111111111111", name: "Synthetic one", assetCount: 2 },
+    { id: "22222222-2222-4222-8222-222222222222", name: "Synthetic two", assetCount: 2 }];
+  const page = { faces, page: 1, hasMore: false, draftCount: 1, reviewedCount: 0, reviewTotal: 2, untouchedCount: 1, inventoryComplete: true };
+  const success = { submitted: { correct: 1, wrong: 0 }, submittedFaces: [{ faceId: faces[0].faceId, verdict: "correct" }],
+    draftCount: 0, reviewedCount: 1, reviewTotal: 2, untouchedCount: 1, inventoryComplete: true, personReviewed: false };
+  await t.test("focus moved to another control", async () => {
+    let resolveSubmit;
+    const h = await submitHarness({ people: [people[0]], pages: [page], submit: () => new Promise(resolve => { resolveSubmit = resolve; }) });
+    try {
+      h.fireSubmit();
+      const search = document.getElementById("face-person-search"); h.focus(search);
+      resolveSubmit(success); await new Promise(resolve => setImmediate(resolve));
+      assert.equal(document.activeElement, search);
+    } finally { h.dispose(); }
+  });
+  await t.test("person changed", async () => {
+    let resolveSubmit;
+    const h = await submitHarness({ people, pages: [page], submit: () => new Promise(resolve => { resolveSubmit = resolve; }) });
+    try {
+      h.fireSubmit();
+      h.focus(h.list.children[1]); await h.selectPerson(1);
+      const newPersonId = h.state.faceReviewPersonId;
+      const newPersonFocus = document.activeElement;
+      resolveSubmit(success); await new Promise(resolve => setImmediate(resolve));
+      assert.equal(h.state.faceReviewPersonId, people[1].id);
+      assert.equal(h.state.faceReviewPersonId, newPersonId);
+      assert.equal(document.activeElement, newPersonFocus);
+    } finally { h.dispose(); }
+  });
+});
+
+test("failed submission restores the original face without clearing its draft", async () => {
+  const face = { faceId: "c1111111-1111-4111-8111-111111111111", assetId: "a1111111-1111-4111-8111-111111111111",
+    fileName: "synthetic.jpg", reviewed: false, queued: false };
+  const person = { id: "11111111-1111-4111-8111-111111111111", name: "Synthetic", assetCount: 1 };
+  const h = await submitHarness({ people: [person], pages: [{ faces: [face], page: 1, hasMore: false, draftCount: 1,
+    reviewedCount: 0, reviewTotal: 1, untouchedCount: 1, inventoryComplete: true }], submit: async () => { throw new Error("busy"); } });
+  try {
+    h.fireSubmit(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(document.activeElement?.dataset.faceId, face.faceId);
+    assert.equal(h.state.faceReviewResult.draftCount, 1);
+  } finally { h.dispose(); }
+});
+
+test("continuation loads the next page and focuses Retry loading after a page error", async t => {
+  const face = (suffix, index) => ({ faceId: `${suffix}1111111-1111-4111-8111-111111111111`,
+    assetId: `a${suffix}111111-1111-4111-8111-111111111111`, fileName: `synthetic-${index}.jpg`, reviewed: false, queued: false });
+  const first = face("c1", 1), next = face("c2", 2);
+  const person = { id: "11111111-1111-4111-8111-111111111111", name: "Synthetic", assetCount: 2 };
+  const firstPage = { faces: [first], page: 1, hasMore: true, draftCount: 1, reviewedCount: 0, reviewTotal: 2, untouchedCount: 1, inventoryComplete: false };
+  const response = { submitted: { correct: 1, wrong: 0 }, submittedFaces: [{ faceId: first.faceId, verdict: "correct" }],
+    draftCount: 0, reviewedCount: 1, reviewTotal: 2, untouchedCount: 1, inventoryComplete: false, personReviewed: false };
+  await t.test("next page contains the next untouched face", async () => {
+    const secondPage = { faces: [next], page: 2, hasMore: false, draftCount: 0, reviewedCount: 1, reviewTotal: 2, untouchedCount: 1, inventoryComplete: false };
+    const h = await submitHarness({ people: [person], pages: [firstPage, secondPage], submit: async () => response });
+    try {
+      h.fireSubmit(); await new Promise(resolve => setImmediate(resolve));
+      assert.equal(document.activeElement?.dataset.faceId, next.faceId);
+    } finally { h.dispose(); }
+  });
+  await t.test("page error focuses the visible retry control", async () => {
+    const h = await submitHarness({ people: [person], pages: [firstPage, new Error("synthetic page failure")], submit: async () => response });
+    try {
+      h.fireSubmit(); await new Promise(resolve => setImmediate(resolve));
+      const retry = h.elements.get("face-review-load-more");
+      assert.equal(retry.textContent, "Retry loading");
+      assert.equal(document.activeElement, retry);
+    } finally { h.dispose(); }
+  });
 });

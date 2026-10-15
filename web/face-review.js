@@ -31,6 +31,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   let generation = 0;
   let anchorId = null;
   let focusedFaceId = null;
+  let focusIntentRevision = 0;
   let lightboxFaceId = null;
   let lightboxGeneration = null;
   let lightboxMoving = false;
@@ -391,6 +392,50 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     mounted.get(face.faceId)?.focus({ preventScroll: true });
   }
 
+  function nextReviewCandidate(oldOrder, oldAnchorIndex) {
+    const available = visibleFaces();
+    const eligible = face => face && !face.queued && !face.reviewed && !face.draftVerdict;
+    const byId = new Map(available.map(face => [face.faceId, face]));
+    const oldIds = new Set(oldOrder.map(face => face.faceId));
+    for (const face of oldOrder.slice(Math.max(0, oldAnchorIndex + 1))) {
+      if (eligible(byId.get(face.faceId))) return byId.get(face.faceId);
+    }
+    for (const face of available) {
+      if (!oldIds.has(face.faceId) && eligible(face)) return face;
+    }
+    for (const face of oldOrder.slice(0, Math.max(0, oldAnchorIndex)).reverse()) {
+      if (eligible(byId.get(face.faceId))) return byId.get(face.faceId);
+    }
+    const anchor = byId.get(oldOrder[oldAnchorIndex]?.faceId);
+    if (eligible(anchor)) return anchor;
+    return null;
+  }
+
+  async function continueReviewFocus(personId, requestGeneration, intentRevision, oldOrder, anchorIndex) {
+    const stillInFlow = () => requestGeneration === generation
+      && currentFaceReviewPerson()?.id === personId
+      && state.view === "faces" && focusIntentRevision === intentRevision;
+    while (stillInFlow()) {
+      const candidate = nextReviewCandidate(oldOrder, anchorIndex);
+      if (candidate) {
+        focusVisibleFace(visibleFaces().findIndex(face => face.faceId === candidate.faceId));
+        return;
+      }
+      if (!hasMore || loadError) break;
+      const before = faces.length;
+      await loadNextPage();
+      if (!stillInFlow() || loadError || faces.length === before && hasMore) break;
+    }
+    if (!stillInFlow()) return;
+    const retry = element("face-review-load-more");
+    if (loadError && !retry.hidden && !retry.disabled) retry.focus();
+    else {
+      const submit = element("face-review-submit");
+      if (!submit.hidden && !submit.disabled) submit.focus();
+      else ui.faceReviewGrid.focus();
+    }
+  }
+
   async function navigateFaces(faceId, key, extendSelection = false) {
     const available = visibleFaces();
     const index = available.findIndex(face => face.faceId === faceId);
@@ -585,6 +630,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   }
 
   function stageSelected(verdict) {
+    focusIntentRevision += 1;
     const selected = state.faceReviewSelectedData.size
       ? [...state.faceReviewSelectedData.values()].filter(face => !face.queued)
       : visibleFaces().filter(face => face.faceId === focusedFaceId);
@@ -674,13 +720,23 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     const person = currentFaceReviewPerson();
     if (!person || busy || draftSaving || actionQueue.length || !(state.faceReviewResult?.draftCount > 0)) return;
     const requestGeneration = generation;
+    const oldOrder = visibleFaces().slice();
+    let anchorIndex = oldOrder.findIndex(face => face.faceId === focusedFaceId);
+    if (anchorIndex < 0) anchorIndex = oldOrder.findIndex(face => state.faceReviewSelected.has(face.faceId));
+    if (anchorIndex < 0) anchorIndex = 0;
+    const intentRevision = focusIntentRevision;
+    const stillInFlow = () => requestGeneration === generation
+      && currentFaceReviewPerson()?.id === person.id
+      && state.view === "faces" && focusIntentRevision === intentRevision;
+    let submitted = false;
     busy = true; updateControls();
     try {
       const result = await api("/api/face-review/submit", { method: "POST", body: { personId: person.id } });
       if (requestGeneration !== generation) return;
-      const submitted = new Map(result.submittedFaces.map(item => [item.faceId, item.verdict]));
+      submitted = true;
+      const submittedByFace = new Map(result.submittedFaces.map(item => [item.faceId, item.verdict]));
       for (const face of faces) {
-        const verdict = submitted.get(face.faceId);
+        const verdict = submittedByFace.get(face.faceId);
         if (verdict === "correct") face.reviewed = true;
         else if (verdict === "wrong") { face.reviewed = false; face.queued = true; }
         else if (verdict === "unreviewed") face.reviewed = false;
@@ -689,14 +745,33 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
       hidePhotoPeek();
       clearSelection();
       applyProgress(result);
-      renderVisible(); maybeLoadMore();
-      await refreshSummary().catch(error => showToast(error.message));
+      renderVisible();
       showToast(`Review submitted locally: ${result.submitted.correct} accepted, ${result.submitted.wrong} dismissed faces added to Pending. Immich is unchanged.`);
+      await refreshSummary().catch(error => showToast(`Could not refresh summary: ${error.message}`));
       if (hideCompletedPeople) await loadFaceReviewPeople().catch(error => showToast(`Could not refresh people: ${error.message}`));
     } catch (error) {
       if (requestGeneration === generation) showToast(`Review was not submitted: ${error.message}`);
     } finally {
-      if (requestGeneration === generation) { busy = false; updateMountedStates(); }
+      if (requestGeneration === generation) {
+        busy = false; updateMountedStates();
+        if (stillInFlow()) {
+          if (!submitted) {
+            const available = visibleFaces();
+            const originalIndex = available.findIndex(face => face.faceId === focusedFaceId);
+            const submit = element("face-review-submit");
+            if (originalIndex >= 0 && !available[originalIndex].queued) focusVisibleFace(originalIndex);
+            else if (!submit.hidden && !submit.disabled) submit.focus();
+            else ui.faceReviewGrid.focus();
+          }
+          else {
+            const submit = element("face-review-submit");
+            if (state.faceReviewResult?.draftCount === 0 && state.faceReviewResult?.personReviewed
+                && !submit.hidden && !submit.disabled) submit.focus();
+            else await continueReviewFocus(person.id, requestGeneration, intentRevision, oldOrder, anchorIndex)
+              .catch(() => { if (stillInFlow()) ui.faceReviewGrid.focus(); });
+          }
+        }
+      }
     }
   }
 
@@ -799,6 +874,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   }
 
   function bindFaceReviewControls() {
+    document.addEventListener("focusin", () => { focusIntentRevision += 1; }, true);
     let searchTimer = null;
     window.addEventListener("beforeunload", event => {
       if (!state.faceReviewSaving) return;
@@ -948,13 +1024,14 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
       if (event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, button, [contenteditable]")) return;
       const key = event.key.toLowerCase();
       if (key === " " && event.target === ui.faceReviewGrid && !event.shiftKey) {
+        focusIntentRevision += 1;
         const face = visibleFaces().find(item => item.faceId === focusedFaceId) || visibleFaces()[0];
         if (face) { event.preventDefault(); openReviewPhoto(face); }
       }
       else if (key === "a" && !event.shiftKey) { event.preventDefault(); stageSelected("correct"); }
       else if (key === "d" && !event.shiftKey) { event.preventDefault(); stageSelected("wrong"); }
-      else if (key === "f") { event.preventDefault(); event.shiftKey ? showHidden() : hideDecided(); }
-      else if (key === "?") { event.preventDefault(); toggleShortcuts(); }
+      else if (key === "f") { focusIntentRevision += 1; event.preventDefault(); event.shiftKey ? showHidden() : hideDecided(); }
+      else if (key === "?") { focusIntentRevision += 1; event.preventDefault(); toggleShortcuts(); }
     });
   }
 
