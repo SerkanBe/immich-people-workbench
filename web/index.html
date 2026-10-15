@@ -17,9 +17,13 @@
         <button id="nav-close" class="sidebar-close" type="button" aria-label="Close navigation">×</button>
       </div>
       <nav aria-label="People sections" class="app-nav">
-        <div class="nav-section-label">Naming</div>
-        <a class="nav-button active" data-view="unnamed" href="/naming/clusters" aria-current="page">Clusters <span id="unnamed-count">0</span></a>
-        <a class="nav-button" data-view="group-photos" href="/naming/group-photos">Group photos</a>
+        <div class="nav-group" role="group" aria-labelledby="nav-naming-label">
+          <div id="nav-naming-label" class="nav-group-label">Naming</div>
+          <div class="nav-group-items">
+            <a class="nav-button active" data-view="unnamed" href="/naming/clusters" aria-current="page">Clusters <span id="unnamed-count">0</span></a>
+            <a class="nav-button" data-view="group-photos" href="/naming/group-photos">Group photos</a>
+          </div>
+        </div>
         <a class="nav-button" data-view="merge" href="/merge" hidden>Merge <span id="merge-count">0</span></a>
         <a class="nav-button" data-view="investigate" href="/investigate">Investigate <span id="investigate-count">0</span></a>
         <a class="nav-button" data-view="faces" href="/faces">Face review <span id="faces-count">0</span></a>
@@ -324,7 +328,8 @@
             <div><dt><kbd>A</kbd> / <kbd>D</kbd></dt><dd>Accept or dismiss selected faces; press again to reset</dd></div>
             <div><dt><kbd>F</kbd> / <kbd>Shift</kbd>+<kbd>F</kbd></dt><dd>Hide decided faces or show hidden faces</dd></div>
             <div><dt><kbd>Space</kbd></dt><dd>Open the focused face photo</dd></div>
-            <div><dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd></dt><dd>Submit saved review decisions</dd></div>
+            <div><dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd></dt><dd>Submit saved review decisions; continue within this person or advance when their review is complete</dd></div>
+            <div><dt><kbd>N</kbd></dt><dd>From a completed review, open the next person needing review</dd></div>
           </dl>
         </section>
         <section aria-labelledby="face-review-photo-shortcuts-title">

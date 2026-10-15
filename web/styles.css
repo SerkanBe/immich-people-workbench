@@ -34,7 +34,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sidebar-close { display: none; width: 36px; min-height: 36px; padding: 0; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-size: 1.5rem; }
 nav { display: flex; min-width: 0; justify-content: center; gap: 4px; }
 .app-nav { display: grid; align-content: start; gap: 3px; }
-.nav-section-label { padding: 8px 10px 3px; color: var(--muted); font-size: .7rem; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
+.nav-group { display: grid; gap: 3px; margin-bottom: 8px; }
+.nav-group-label { padding: 7px 10px 3px; color: var(--text); font-size: .88rem; font-weight: 600; }
+.nav-group-items { display: grid; gap: 3px; margin-left: 10px; padding-left: 8px; border-left: 1px solid var(--border); }
 .nav-divider { height: 1px; margin: 11px 6px; background: var(--border); }
 .nav-button { padding: 8px 10px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; text-decoration: none; white-space: nowrap; }
 .nav-button.active { color: var(--accent); background: var(--accent-soft); font-weight: 700; }
@@ -461,3 +463,7 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; bac
   .app-utility .quiet-button { min-height: 36px; padding: 6px 8px; }
 }
 @media (prefers-reduced-motion: reduce) { .app-sidebar { transition: none; } }
+
+.face-review-empty { display: grid; justify-items: start; gap: 10px; margin: 12px 0; }
+.face-review-empty p { margin: 0; }
+#face-review-next-person { min-height: 38px; }
