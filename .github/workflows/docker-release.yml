@@ -12,8 +12,99 @@ jobs:
   test:
     uses: ./.github/workflows/checks.yml
 
-  publish:
+  image-smoke:
     needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      SMOKE_IMAGE: people-workbench:smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_CONTAINER: pw-image-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+      SMOKE_VOLUME: pw-image-smoke-data-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.SMOKE_IMAGE }}
+      - name: Check the isolated image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker volume create "$SMOKE_VOLUME"
+          docker run -d --name "$SMOKE_CONTAINER" \
+            --read-only --tmpfs /tmp:size=16m,mode=1777 \
+            --cap-drop ALL --security-opt no-new-privileges:true \
+            --mount "type=volume,source=$SMOKE_VOLUME,target=/data" \
+            -e PEOPLE_WORKBENCH_PUBLIC_URL=http://localhost:8766 \
+            "$SMOKE_IMAGE"
+          ready=false
+          for attempt in {1..30}; do
+            if docker exec "$SMOKE_CONTAINER" python -c \
+              "import urllib.request; urllib.request.urlopen('http://localhost:8766/healthz', timeout=2).close()"; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = true
+          docker exec -i "$SMOKE_CONTAINER" python - <<'PY'
+          import http.client
+          import json
+          import os
+          from pathlib import Path
+          import people_workbench as workbench
+
+          assert os.getuid() == 10001 and os.getgid() == 10001
+          root = Path('/app')
+          assert {path.name for path in root.iterdir()} == {'people_workbench.py', 'LICENSE', 'web'}
+          assert not list(Path('/data/reports').glob('*'))
+          store = workbench.Store(Path('/data/state.sqlite3'))
+          assert store.pending_snapshot() == ([], [])
+          assert store.setting('owner') == ''
+          probe = Path('/data/smoke-write-probe')
+          probe.write_text('synthetic')
+          probe.unlink()
+          try:
+              (root / 'smoke-write-probe').touch()
+          except OSError:
+              pass
+          else:
+              raise AssertionError('application root is writable')
+          for path, expected in [('/healthz', 200), ('/login', 200),
+                                 ('/api/state', 401), ('/api/pending', 401),
+                                 ('/media/person/11111111-1111-4111-8111-111111111111', 401)]:
+              connection = http.client.HTTPConnection('localhost', 8766, timeout=3)
+              try:
+                  connection.request('GET', path)
+                  response = connection.getresponse()
+                  body = response.read()
+                  assert response.status == expected, (path, response.status)
+                  if path == '/healthz':
+                      assert json.loads(body) == {'ok': True}
+              finally:
+                  connection.close()
+          print('Image startup, non-root storage, read-only application and authentication checks passed')
+          PY
+          docker kill --signal TERM "$SMOKE_CONTAINER"
+          exit_code=$(timeout 20s docker wait "$SMOKE_CONTAINER")
+          test "$exit_code" = 0
+      - name: Remove the smoke container and volume
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f "$SMOKE_CONTAINER" || true
+          docker volume rm "$SMOKE_VOLUME" || true
+
+  publish:
+    needs: image-smoke
     runs-on: ubuntu-latest
     permissions:
       contents: read
