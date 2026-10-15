@@ -49,14 +49,16 @@ function node() {
   };
 }
 
-async function submitHarness({ people, pages, submit, peoplePages = null, selectedIndex = 0 }) {
+async function submitHarness({ people, pages, submit, draft = null, peoplePages = null, selectedIndex = 0 }) {
   const previous = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage,
     requestAnimationFrame: globalThis.requestAnimationFrame };
   const elements = new Map(), windowListeners = new Map(), documentListeners = new Map();
+  const toasts = [];
   globalThis.document = {
     activeElement: null,
     getElementById: id => { if (!elements.has(id)) elements.set(id, node()); return elements.get(id); },
     createElement: () => node(), addEventListener: (event, handler) => documentListeners.set(event, handler),
+    dispatchEvent: event => documentListeners.get(event.type)?.(event),
   };
   globalThis.window = { addEventListener: (event, handler) => windowListeners.set(event, handler) };
   globalThis.localStorage = { getItem: () => null };
@@ -82,9 +84,10 @@ async function submitHarness({ people, pages, submit, peoplePages = null, select
         return result;
       }
       if (path === "/api/face-review/submit") return submit(options);
+      if (path === "/api/face-review/draft" && draft) return draft(options);
       throw new Error(`Unexpected request: ${path}`);
     }, state, ui: { facePersonList: list, faceReviewGrid: grid }, assetThumb: () => "", personThumb: () => "",
-    drawFace: async () => {}, refreshSummary: async () => {}, showToast: () => {},
+    drawFace: async () => {}, refreshSummary: async () => {}, showToast: message => toasts.push(message),
     renderPagination: (containerId, data, onPage) => pagination.push({ containerId, data, onPage }),
   });
   review.bindFaceReviewControls();
@@ -96,7 +99,7 @@ async function submitHarness({ people, pages, submit, peoplePages = null, select
     shiftKey: false, target: { closest: () => null }, preventDefault() {} });
   const firstCard = grid.querySelector(".face-review-card");
   if (firstCard) { firstCard.listeners.get("focus")(); document.activeElement = firstCard; }
-  return { calls, documentListeners, elements, fireSubmit, focus, grid, keydown: windowListeners.get("keydown"), list, pagination, review, selectPerson, state,
+  return { calls, documentListeners, elements, fireSubmit, focus, grid, keydown: windowListeners.get("keydown"), list, pagination, review, selectPerson, state, toasts,
     dispose: () => Object.assign(globalThis, previous) };
 }
 
@@ -573,7 +576,7 @@ test("completed person with no candidate shows filter guidance and a retryable n
     assert.ok(retry);
     failRefresh = false;
     await retry.listeners.get("click")();
-    assert.match(h.grid.querySelector(".face-review-empty")?.children[0]?.textContent || "", /No more people need review with these filters/);
+    assert.match(h.grid.querySelector(".face-review-empty")?.children[0]?.textContent || "", /No other people need review with these filters/);
     assert.equal(h.grid.getAttribute("role"), "group");
     assert.equal(h.grid.getAttribute("aria-multiselectable"), null);
     h.elements.get("face-review-show-checked").listeners.get("click")();
@@ -771,4 +774,118 @@ test("continuation loads the next page and focuses Retry loading after a page er
       assert.equal(document.activeElement, retry);
     } finally { h.dispose(); }
   });
+});
+
+
+const skipPeople = [
+  { id: "11111111-1111-4111-8111-111111111111", name: "Synthetic first", reviewed: false },
+  { id: "22222222-2222-4222-8222-222222222222", name: "Synthetic next", reviewed: false },
+];
+function skipPage() {
+  return { faces: [{ faceId: "c1111111-1111-4111-8111-111111111111", assetId: "a1111111-1111-4111-8111-111111111111",
+    fileName: "synthetic.jpg", reviewed: false, queued: false }], page: 1, hasMore: false,
+    draftCount: 0, reviewedCount: 0, reviewTotal: 2, untouchedCount: 2, inventoryComplete: true, personReviewed: false };
+}
+const flushSkip = () => new Promise(resolve => setImmediate(resolve));
+const nextClick = h => h.elements.get("face-review-next").listeners.get("click")();
+
+test("Next person button and N skip an incomplete person while keeping drafts unsubmitted", async t => {
+  for (const useHotkey of [false, true]) await t.test(useHotkey ? "N from a button" : "secondary button", async () => {
+    const page = skipPage(); page.draftCount = 1; page.faces[0].draftVerdict = "correct";
+    const people = skipPeople.map(item => ({ ...item }));
+    const h = await submitHarness({ people, pages: [page], submit: () => { throw new Error("Must not submit"); } });
+    try {
+      assert.equal(h.elements.get("face-review-next").disabled, false);
+      if (useHotkey) {
+        h.keydown({ key: "n", target: { closest: selector => selector === "button" ? {} : null }, preventDefault() {} });
+        await flushSkip();
+      } else await nextClick(h);
+      assert.equal(h.state.faceReviewPersonId, people[1].id);
+      assert.equal(people[0].reviewed, false);
+      await h.selectPerson(0);
+      assert.equal(h.state.faceReviewResult.draftCount, 1);
+      assert.match(h.grid.querySelector(".face-review-card").getAttribute("aria-label"), /awaiting review submission/);
+      assert.equal(h.calls.some(([path, options]) => options?.method === "POST" && path !== "/api/face-review/scan-next"), false);
+    } finally { h.dispose(); }
+  });
+});
+
+test("Next person waits for local draft persistence and stays on the person after failure", async t => {
+  for (const fails of [false, true]) await t.test(fails ? "save fails" : "save succeeds", async () => {
+    let resolveSave, rejectSave;
+    const page = skipPage(), people = skipPeople.map(item => ({ ...item }));
+    const h = await submitHarness({ people, pages: [page], submit: () => { throw new Error("Must not submit"); },
+      draft: () => new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }) });
+    try {
+      h.elements.get("face-review-mark").listeners.get("click")();
+      const next = nextClick(h);
+      assert.equal(h.state.faceReviewPersonId, people[0].id);
+      assert.equal(h.elements.get("face-review-next").disabled, true);
+      assert.match(h.elements.get("face-review-next").textContent, /Waiting for saved decisions/);
+      assert.equal(h.calls.filter(([path]) => path.startsWith("/api/people?")).length, 1);
+      if (fails) rejectSave(new Error("Synthetic save failure"));
+      else resolveSave({ ...page, correctCount: 1, draftCount: 1, untouchedCount: 1 });
+      await next;
+      assert.equal(h.state.faceReviewPersonId, people[fails ? 0 : 1].id);
+      if (fails) assert.match(h.toasts.at(-1), /could not finish/);
+      assert.equal(h.elements.get("face-review-next").disabled, false);
+      assert.equal(people[0].reviewed, false);
+      assert.equal(h.calls.some(([path]) => path === "/api/face-review/submit" || path === "/api/sync"), false);
+    } finally { h.dispose(); }
+  });
+});
+
+test("Next person waits for every queued decision and ignores another N while waiting", async () => {
+  const saves = [], page = skipPage(), people = skipPeople.map(item => ({ ...item }));
+  const h = await submitHarness({ people, pages: [page], draft: () => new Promise(resolve => saves.push(resolve)) });
+  try {
+    h.elements.get("face-review-mark").listeners.get("click")();
+    h.elements.get("face-review-queue").listeners.get("click")();
+    const next = nextClick(h);
+    h.keydown({ key: "n", target: node(), preventDefault() {} });
+    saves[0]({ ...page, draftCount: 1, correctCount: 1 });
+    await flushSkip();
+    assert.equal(saves.length, 2);
+    assert.equal(h.state.faceReviewPersonId, people[0].id);
+    saves[1]({ ...page, draftCount: 1, wrongDraftCount: 1 });
+    await next;
+    assert.equal(h.state.faceReviewPersonId, people[1].id);
+    assert.equal(h.calls.filter(([path]) => path.startsWith("/api/people?")).length, 2);
+    assert.equal(h.calls.filter(([path]) => path === "/api/face-review/draft").length, 2);
+  } finally { h.dispose(); }
+});
+
+test("waiting Next person respects newer focus, person selection, and navigation", async t => {
+  for (const change of ["focus", "person", "view"]) await t.test(change, async () => {
+    let resolveSave;
+    const page = skipPage(), people = skipPeople.map(item => ({ ...item }));
+    const h = await submitHarness({ people, pages: [page], draft: () => new Promise(resolve => { resolveSave = resolve; }) });
+    try {
+      h.elements.get("face-review-mark").listeners.get("click")();
+      const next = nextClick(h);
+      const search = h.elements.get("face-person-search");
+      if (change === "focus") h.focus(search);
+      else if (change === "person") await h.selectPerson(1);
+      else h.state.view = "pending";
+      resolveSave({ ...page, correctCount: 1, draftCount: 1, untouchedCount: 1 });
+      await next;
+      assert.equal(h.state.faceReviewPersonId, people[change === "person" ? 1 : 0].id);
+      if (change === "focus") assert.equal(document.activeElement, search);
+      if (change === "view") assert.equal(h.state.view, "pending");
+      assert.equal(h.calls.filter(([path]) => path.startsWith("/api/people?")).length, 1);
+    } finally { h.dispose(); }
+  });
+});
+
+test("N ignores text fields, dialogs, and modified key chords", async () => {
+  const h = await submitHarness({ people: skipPeople.map(item => ({ ...item })), pages: [skipPage()] });
+  try {
+    const before = h.calls.length;
+    for (const event of [
+      { target: { closest: () => ({}) } }, { ctrlKey: true }, { metaKey: true }, { altKey: true }, { shiftKey: true },
+    ]) h.keydown({ key: "n", target: node(), preventDefault() { throw new Error("Shortcut intercepted"); }, ...event });
+    await flushSkip();
+    assert.equal(h.calls.length, before);
+    assert.equal(h.state.faceReviewPersonId, skipPeople[0].id);
+  } finally { h.dispose(); }
 });

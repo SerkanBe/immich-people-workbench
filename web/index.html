@@ -255,7 +255,7 @@
             </div>
             <div id="face-review-grid" class="face-review-grid" role="listbox" aria-multiselectable="true" aria-label="Assigned face crops" tabindex="0"></div>
             <div class="face-review-load-row"><span id="face-review-load-status" class="muted" aria-live="polite"></span><button id="face-review-load-more" class="quiet-button" type="button" hidden>Retry loading</button></div>
-            <div class="face-review-submit-bar"><div><strong>Face review</strong><small>Submit saves accepted faces locally and sends dismissed faces to Pending. Reopening keeps those decisions. Immich changes only after Sync.</small></div><button id="face-review-submit" class="primary-button" type="button" disabled>Submit review</button></div>
+            <div class="face-review-submit-bar"><div><strong>Face review</strong><small>Submit saves accepted faces locally and sends dismissed faces to Pending. Reopening keeps those decisions. Immich changes only after Sync.</small></div><div class="face-review-submit-actions"><button id="face-review-next" class="quiet-button" type="button" aria-keyshortcuts="N" disabled>Next person · N</button><button id="face-review-submit" class="primary-button" type="button" disabled>Submit review</button></div></div>
           </div>
         </section>
       </div>
@@ -329,7 +329,7 @@
             <div><dt><kbd>F</kbd> / <kbd>Shift</kbd>+<kbd>F</kbd></dt><dd>Hide decided faces or show hidden faces</dd></div>
             <div><dt><kbd>Space</kbd></dt><dd>Open the focused face photo</dd></div>
             <div><dt><kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>Enter</kbd></dt><dd>Submit saved review decisions; continue within this person or advance when their review is complete</dd></div>
-            <div><dt><kbd>N</kbd></dt><dd>From a completed review, open the next person needing review</dd></div>
+            <div><dt><kbd>N</kbd></dt><dd>Open the next person needing review; keep saved drafts and leave this person incomplete</dd></div>
           </dl>
         </section>
         <section aria-labelledby="face-review-photo-shortcuts-title">

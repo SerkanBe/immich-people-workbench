@@ -24,6 +24,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   let pageLoad = null;
   let busy = false;
   let draftSaving = false;
+  let draftSaveWaiters = [];
   let draftRevision = 0;
   const stagedVerdicts = new Map();
   let activeDecisionGeneration = null;
@@ -43,6 +44,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   let peopleLoadRevision = 0;
   let currentPeoplePageData = null;
   let nextPersonBusy = false;
+  let nextPersonRequested = false;
   let nextPersonMessage = "";
   let scanRunning = false;
   let scanRestartRequested = false;
@@ -256,7 +258,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
 
   function updateControls() {
     const selected = state.faceReviewSelected.size;
-    const disabled = busy || nextPersonBusy;
+    const disabled = busy || nextPersonBusy || nextPersonRequested;
     const focused = visibleFaces().some(face => face.faceId === focusedFaceId);
     const actionable = selected > 0 || focused;
     element("face-review-mark").disabled = !actionable || disabled;
@@ -270,6 +272,9 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     element("face-review-queue").disabled = !actionable || disabled;
     const review = state.faceReviewResult;
     const canFinish = review?.inventoryComplete && review?.reviewReopened && !review?.untouchedCount;
+    const nextButton = element("face-review-next");
+    nextButton.disabled = disabled || !currentFaceReviewPerson();
+    nextButton.textContent = nextPersonRequested && draftSaving ? "Waiting for saved decisions…" : "Next person · N";
     const submitButton = element("face-review-submit");
     submitButton.disabled = disabled || draftSaving || actionQueue.length > 0 || !(review?.draftCount || review?.personReviewed || canFinish);
     submitButton.textContent = draftSaving ? "Saving decisions…" : review?.draftCount ? `Submit review (${review.draftCount})` : review?.personReviewed ? "Reopen review" : canFinish ? "Finish review" : "Submit review";
@@ -397,8 +402,8 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
         button.id = "face-review-next-person"; button.className = "quiet-button";
         button.type = "button";
         button.textContent = nextPersonMessage.startsWith("Could not load") ? "Retry next person (N)" : "Next person (N)";
-        button.disabled = nextPersonBusy;
-        button.addEventListener("click", () => advanceToNextPerson());
+        button.disabled = busy || nextPersonBusy || nextPersonRequested;
+        button.addEventListener("click", () => requestNextPerson());
         empty.append(button);
       }
       surface.append(empty);
@@ -443,6 +448,27 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     const anchor = byId.get(oldOrder[oldAnchorIndex]?.faceId);
     if (eligible(anchor)) return anchor;
     return null;
+  }
+
+  async function requestNextPerson() {
+    const person = currentFaceReviewPerson();
+    if (!person || busy || nextPersonBusy || nextPersonRequested || state.view !== "faces") return;
+    const requestGeneration = generation;
+    const intentRevision = focusIntentRevision;
+    nextPersonRequested = true;
+    updateControls();
+    try {
+      // Drafts are already queued for local persistence. Wait for them without submitting.
+      const saved = !draftSaving && !actionQueue.length
+        || await new Promise(resolve => draftSaveWaiters.push(resolve));
+      if (!saved || requestGeneration !== generation || state.view !== "faces"
+          || state.faceReviewPersonId !== person.id || focusIntentRevision !== intentRevision) return;
+      await advanceToNextPerson(intentRevision);
+    } finally {
+      nextPersonRequested = false;
+      updateControls();
+      if (requestGeneration === generation && state.view === "faces") renderVisible();
+    }
   }
 
   async function advanceToNextPerson(intent = null) {
@@ -512,7 +538,8 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
           applyPeoplePage(restored);
         } else await loadFaceReviewPeople();
         if (!stillCurrent()) return;
-        nextPersonMessage = "No more people need review with these filters. Change a filter or search to keep reviewing.";
+        nextPersonMessage = "No other people need review with these filters. Change a filter or search to keep reviewing.";
+        showToast(nextPersonMessage);
         renderVisible();
       }
     } catch {
@@ -524,6 +551,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
           renderFacePersonList();
         }
         nextPersonMessage = "Could not load the next person. Try again.";
+        showToast(nextPersonMessage);
         renderVisible();
       }
     } finally {
@@ -641,7 +669,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   }
 
   function toggleSelection(face, range = false) {
-    if (face.queued || busy) return;
+    if (face.queued || busy || nextPersonBusy || nextPersonRequested) return;
     if (range && anchorId) {
       const available = visibleFaces();
       const start = available.findIndex(item => item.faceId === anchorId);
@@ -695,12 +723,14 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
         }
       }
       if (requestGeneration === generation) { renderVisible(); maybeLoadMore(); }
+      return true;
     } catch (error) {
       for (const { face } of decisions.slice(saved)) {
         if (stagedVerdicts.get(face.faceId)?.revision === revision) stagedVerdicts.delete(face.faceId);
       }
       if (requestGeneration === generation) renderVisible();
       showToast(`${saved} decisions saved; could not finish: ${error.message}`);
+      return false;
     }
   }
 
@@ -721,18 +751,22 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
   async function drainActions() {
     if (draftSaving || busy) return;
     draftSaving = true; updateControls();
+    let savesSucceeded = true;
     try {
       while (actionQueue.length) {
         const action = actionQueue.shift();
         if (action.type === "decision") {
           activeDecisionGeneration = action.requestGeneration;
-          try { await saveDecisions(action); } finally { activeDecisionGeneration = null; }
+          try { if (!await saveDecisions(action)) savesSucceeded = false; } finally { activeDecisionGeneration = null; }
         } else if (action.requestGeneration !== generation) continue;
         else if (action.type === "hide") hideDecidedNow();
         else if (action.type === "show") showHiddenNow();
       }
     } finally {
       draftSaving = false; state.faceReviewSaving = false;
+      const waiters = draftSaveWaiters;
+      draftSaveWaiters = [];
+      for (const resolve of waiters) resolve(savesSucceeded);
       document.dispatchEvent(new Event("face-review-save-state"));
       updateControls();
     }
@@ -740,7 +774,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
 
   function stageFaces(selected, verdict, clearSelected = false) {
     const person = currentFaceReviewPerson();
-    if (!person || !selected.length || busy) return false;
+    if (!person || !selected.length || busy || nextPersonBusy || nextPersonRequested) return false;
     if (selected.some(face => hidden.has(face.faceId) && !(showChecked && face.reviewed))) {
       showToast("Show hidden selected faces before marking them.");
       return false;
@@ -1101,6 +1135,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     element("face-review-clear").addEventListener("click", clearSelection);
     element("face-review-compact").addEventListener("click", () => setMode("compact"));
     element("face-review-detail").addEventListener("click", () => setMode("detail"));
+    element("face-review-next").addEventListener("click", requestNextPerson);
     element("face-review-submit").addEventListener("click", () => {
       if (state.faceReviewResult?.draftCount) submitReview();
       else toggleReviewReopened();
@@ -1156,11 +1191,12 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
           && state.faceReviewResult?.draftCount) {
         event.preventDefault(); submitReview(); return;
       }
-      if (event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, button, [contenteditable]")) return;
+      if (event.ctrlKey || event.metaKey || event.target.closest("input, textarea, select, dialog, [contenteditable]")) return;
       const key = event.key.toLowerCase();
-      if (key === "n" && state.faceReviewResult?.personReviewed && !event.shiftKey) {
-        event.preventDefault(); advanceToNextPerson(); return;
+      if (key === "n" && !event.shiftKey) {
+        event.preventDefault(); requestNextPerson(); return;
       }
+      if (event.target.closest("button")) return;
       if (key === " " && event.target === ui.faceReviewGrid && !event.shiftKey) {
         focusIntentRevision += 1;
         const face = visibleFaces().find(item => item.faceId === focusedFaceId) || visibleFaces()[0];

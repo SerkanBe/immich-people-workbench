@@ -347,6 +347,7 @@ body.merge-zen .merge-tray { position: static; height: 100vh; overflow-y: auto; 
 .face-review-empty { position: absolute; top: 20px; left: 20px; }
 .face-review-load-row { display: flex; align-items: center; justify-content: space-between; min-height: 30px; margin-top: 6px; font-size: .78rem; }
 .face-review-submit-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--accent-soft); }
+.face-review-submit-actions { display: flex; flex-wrap: wrap; flex-shrink: 0; align-items: center; gap: 8px; }
 .face-review-submit-bar strong, .face-review-submit-bar small { display: block; }
 .face-review-submit-bar small { margin-top: 2px; color: var(--muted); font-size: .76rem; }
 .person-reviewed .face-review-toolbar h3::after { content: "  ✓"; color: #2d9d63; }
