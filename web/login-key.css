@@ -1,0 +1,11 @@
+/* Copyright (C) 2026 Serkan Bekdemir
+   SPDX-License-Identifier: AGPL-3.0-only */
+.connection-method { display: flex; gap: 1rem; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; padding: .75rem; }
+.connection-method legend { padding: 0 .25rem; }
+.connection-method label { display: flex; align-items: center; gap: .4rem; }
+.connection-method input { width: auto; min-height: auto; padding: 0; }
+.permission-list { columns: 2; padding-left: 1.25rem; font-size: .9rem; }
+#key-permissions { margin: .5rem 0 1rem; }
+#key-permissions summary { cursor: pointer; }
+#key-permissions p, #login-fields p { font-size: .9rem; }
+#key-fields[hidden], #login-fields[hidden] { display: none; }

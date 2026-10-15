@@ -128,7 +128,13 @@ async function refreshSummary() {
   state.summary = summary;
   state.sort = summary.sort || state.sort;
   syncPeopleSortControls();
-  document.querySelector("#connection-status").textContent = summary.connected ? `Immich ${summary.version} · local queue enabled` : "Not connected";
+  const connection = summary.connection;
+  const account = connection?.displayName || "Account connected";
+  const mode = connection?.authMode === "apiKey" ? "API key" : "Admin login";
+  const warning = connection?.overbroad ? " · Warning: key grants extra permissions" : "";
+  document.querySelector("#connection-status").textContent = summary.connected
+    ? (connection?.authMode ? `${account} · ${mode} · Immich ${summary.version}${warning}` : `Immich ${summary.version} · local queue enabled`)
+    : "Not connected";
   document.querySelector("#reload-button").hidden = !summary.connected;
   for (const key of ["unnamed", "investigate", "faces", "pending", "named", "ignored"]) {
     document.querySelector(`#${key}-count`).textContent = summary.counts[key] ?? 0;

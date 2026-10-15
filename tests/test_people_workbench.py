@@ -28,6 +28,9 @@ class FakeImmich:
             {"id": "22222222-2222-4222-8222-222222222222", "name": "Existing Person", "isHidden": False, "updatedAt": "2026-01-02T00:00:00Z"},
         ]
 
+    def current_admin(self):
+        return "admin-1"
+
     def update_person(self, person_id, payload):
         self.calls.append(("update", person_id, payload))
 
@@ -87,6 +90,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             state = AppState(Store(Path(directory) / "state.sqlite3"), Path(directory) / "reports")
             auth = AdminSession(state)
+            auth.user_id = "admin-1"
             auth.cookie = "synthetic-session"
             auth.expires = time.monotonic() + 1000
             auth.checked = time.monotonic()
@@ -156,7 +160,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
 
         FakeResponse.headers.get_content_type.return_value = "application/json"
         client = Immich("https://immich.example", "synthetic-token", session=True)
-        with mock.patch.object(workbench.urllib.request, "urlopen", return_value=FakeResponse()) as opened:
+        with mock.patch.object(client.opener, "open", return_value=FakeResponse()) as opened:
             client.request("GET", "/users/me")
         request = opened.call_args.args[0]
         self.assertEqual(request.get_header("X-immich-user-token"), "synthetic-token")
@@ -1044,6 +1048,7 @@ class PeopleWorkbenchTests(unittest.TestCase):
                 "assetId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             })
             auth = AdminSession(app)
+            auth.user_id = "admin-1"
             auth.cookie = "synthetic-session"
             auth.expires = time.monotonic() + 1000
             auth.checked = time.monotonic()
@@ -1708,7 +1713,7 @@ class ReleaseSafetyTests(unittest.TestCase):
         class QuietHandler(Handler):
             def log_message(self, *_args): pass
         auth = AdminSession(self.app)
-        auth.cookie = "synthetic-session"; auth.expires=time.monotonic()+1000; auth.checked=time.monotonic()
+        auth.cookie = "synthetic-session"; auth.user_id = "admin-1"; auth.expires=time.monotonic()+1000; auth.checked=time.monotonic()
         with mock.patch.object(workbench, "STATE", self.app, create=True), mock.patch.object(workbench, "AUTH", auth, create=True):
             server=ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
             thread=threading.Thread(target=server.serve_forever);thread.start()
@@ -1785,7 +1790,7 @@ class ReleaseSafetyTests(unittest.TestCase):
         class QuietHandler(Handler):
             def log_message(self, *_args): pass
         auth = AdminSession(self.app)
-        auth.cookie = "synthetic-session"; auth.expires = time.monotonic()+1000; auth.checked = time.monotonic()
+        auth.cookie = "synthetic-session"; auth.user_id = "admin-1"; auth.expires = time.monotonic()+1000; auth.checked = time.monotonic()
         with mock.patch.object(workbench, "STATE", self.app, create=True), mock.patch.object(workbench, "AUTH", auth, create=True):
             server = ThreadingHTTPServer(("127.0.0.1", 0), QuietHandler)
             server_thread = threading.Thread(target=server.serve_forever); server_thread.start()

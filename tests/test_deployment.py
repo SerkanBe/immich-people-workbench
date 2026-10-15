@@ -66,6 +66,7 @@ class DeploymentTests(unittest.TestCase):
         self.auth.checked = time.monotonic()
         fake = FakeImmich()
         self.state.client = fake
+        self.auth.user_id = fake.current_admin()
         self.state.load()
         return fake, {"Cookie": "people_workbench_session=synthetic-workbench-session",
                       "Origin": "http://workbench.example:8766"}
@@ -113,19 +114,39 @@ class DeploymentTests(unittest.TestCase):
     def test_trusted_https_proxy_login_sets_secure_cookie_and_rejects_cross_origin(self):
         self.server.request_policy = workbench.RequestPolicy("https://workbench.example", ["127.0.0.1/32"])
         headers = {"Host": "workbench.example", "Origin": "https://workbench.example", "X-Forwarded-Proto": "https"}
-        with mock.patch.object(self.auth, "login", return_value=("synthetic", "synthetic-token")) as login, \
+        for path, method in (("/api/login", "login"), ("/api/connect-key", "connect_key")):
+            with self.subTest(path=path), \
+                    mock.patch.object(self.auth, method, return_value=("synthetic", "synthetic-token")) as connect, \
+                    mock.patch.object(self.state, "load"):
+                status, response_headers, _ = self.request(path, "POST", {}, headers)
+                self.assertEqual(status, 200)
+                self.assertIn("; Secure", response_headers["Set-Cookie"])
+                self.assertIn("HttpOnly", response_headers["Set-Cookie"])
+                self.assertIn("SameSite=Strict", response_headers["Set-Cookie"])
+                for invalid in ({"Origin": "https://evil.example"}, {"Origin": ""},
+                                {"Sec-Fetch-Site": "cross-site"}, {"X-Forwarded-Proto": "https,http"},
+                                {"X-Forwarded-Proto": "http"}, {"X-Forwarded-Host": "workbench.example", "Host": "localhost"}):
+                    with self.subTest(headers=invalid):
+                        self.assertEqual(self.request(path, "POST", {}, {**headers, **invalid})[0], 403)
+                self.assertEqual(connect.call_count, 1)
+
+    def test_key_login_ignores_untrusted_forwarded_scheme_on_http(self):
+        headers = {"Origin": "http://workbench.example:8766", "X-Forwarded-Proto": "https"}
+        with mock.patch.object(self.auth, "connect_key", return_value=("synthetic", "synthetic-token")), \
                 mock.patch.object(self.state, "load"):
-            status, response_headers, _ = self.request("/api/login", "POST", {}, headers)
-            self.assertEqual(status, 200)
-            self.assertIn("; Secure", response_headers["Set-Cookie"])
-            self.assertIn("HttpOnly", response_headers["Set-Cookie"])
-            self.assertIn("SameSite=Strict", response_headers["Set-Cookie"])
-            for invalid in ({"Origin": "https://evil.example"}, {"Origin": ""},
-                            {"Sec-Fetch-Site": "cross-site"}, {"X-Forwarded-Proto": "https,http"},
-                            {"X-Forwarded-Proto": "http"}, {"X-Forwarded-Host": "workbench.example", "Host": "localhost"}):
-                with self.subTest(headers=invalid):
-                    self.assertEqual(self.request("/api/login", "POST", {}, {**headers, **invalid})[0], 403)
-            self.assertEqual(login.call_count, 1)
+            status, response_headers, _ = self.request("/api/connect-key", "POST", {}, headers)
+        self.assertEqual(status, 200)
+        self.assertNotIn("; Secure", response_headers["Set-Cookie"])
+
+    def test_new_runtime_assets_keep_authentication_boundary(self):
+        status, _, body = self.request("/login-key.css")
+        self.assertEqual(status, 200)
+        self.assertTrue(body)
+        self.assertEqual(self.request("/navigation.js")[0], 401)
+        _, headers = self.sign_in_synthetically()
+        status, _, body = self.request("/navigation.js", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertIn(b"createNavigationDrawer", body)
 
     def test_duplicate_host_and_origin_headers_are_rejected(self):
         for duplicate in ("Host", "Origin"):
@@ -232,6 +253,7 @@ class DeploymentTests(unittest.TestCase):
                             self.expires = time.monotonic() + 1000
                             self.checked = time.monotonic()
                             state.client = Delayed()
+                            self.user_id = state.client.current_admin()
                             state.load()
                             state.queue({'personId': state.client.rows[0]['id'],
                                          'operation': 'rename', 'name': 'Synthetic Drain'})

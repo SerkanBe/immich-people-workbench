@@ -49,9 +49,62 @@ SESSION_SECONDS = 8 * 60 * 60
 ADMIN_CHECK_SECONDS = 60
 SESSION_COOKIE = "people_workbench_session"
 
+REQUIRED_PERMISSIONS = ('user.read', 'person.read', 'person.statistics', 'person.update', 'person.create', 'person.merge', 'asset.read', 'asset.view', 'face.read', 'face.update')
+# Official Permission enums at the source commits documented in docs/api-key-authentication.md.
+KNOWN_PERMISSIONS = frozenset("""
+activity.create activity.delete activity.read activity.statistics activity.update adminAuth.unlinkAll
+adminConfig.read adminConfig.update adminSession.read adminUser.create adminUser.delete adminUser.read
+adminUser.update album.create album.delete album.download album.read album.share
+album.statistics album.update albumAsset.create albumAsset.delete albumUser.create albumUser.delete
+albumUser.update all apiKey.create apiKey.delete apiKey.read apiKey.rotate
+apiKey.update archive.read asset.copy asset.create asset.delete asset.derive
+asset.download asset.edit.create asset.edit.delete asset.edit.get asset.read asset.share
+asset.statistics asset.update asset.upload asset.view assetFile.delete assetFile.download
+assetFile.read auth.changePassword authDevice.delete backup.delete backup.download backup.list
+backup.upload clusterGroup.leave clusterGroup.read clusterGroupRequest.create clusterGroupRequest.delete clusterGroupRequest.read
+duplicate.delete duplicate.read face.create face.delete face.read face.update
+folder.read job.create job.read library.create library.delete library.read
+library.statistics library.update maintenance map.read map.search memory.create
+memory.delete memory.read memory.statistics memory.update memoryAsset.create memoryAsset.delete
+notification.create notification.delete notification.read notification.update partner.create partner.delete
+partner.read partner.update person.create person.delete person.merge person.read
+person.reassign person.statistics person.update pinCode.create pinCode.delete pinCode.update
+plugin.create plugin.delete plugin.read plugin.update queue.read queue.update
+queueJob.create queueJob.delete queueJob.read queueJob.update server.about server.apkLinks
+server.statistics server.storage server.versionCheck serverLicense.delete serverLicense.read serverLicense.update
+session.create session.delete session.lock session.read session.update sharedLink.create
+sharedLink.delete sharedLink.read sharedLink.update stack.create stack.delete stack.read
+stack.update sync.stream syncCheckpoint.delete syncCheckpoint.read syncCheckpoint.update systemConfig.read
+systemConfig.update systemMetadata.read systemMetadata.update tag.asset tag.create tag.delete
+tag.read tag.update timeline.download timeline.read user.read user.update
+userConfig.read userLicense.create userLicense.delete userLicense.read userLicense.update userOnboarding.delete
+userOnboarding.read userOnboarding.update userPreference.read userPreference.update userProfileImage.create userProfileImage.delete
+userProfileImage.read userProfileImage.update workflow.create workflow.delete workflow.logs workflow.read
+workflow.update
+""".split())
+
 
 class ToolError(RuntimeError):
     pass
+
+
+class UpstreamError(ToolError):
+    def __init__(self, status: int):
+        self.status = status
+        super().__init__(f"Immich request failed (HTTP {status})")
+
+
+class AuthenticationError(ToolError):
+    def __init__(self, message: str, code: str, missing: Iterable[str] = ()):
+        self.code = code
+        self.missing = sorted(missing)
+        super().__init__(message)
+
+    def response(self) -> dict[str, Any]:
+        result = {"error": str(self), "code": self.code}
+        if self.missing:
+            result["missingPermissions"] = self.missing
+        return result
 
 
 class SyncInProgress(ToolError):
@@ -165,11 +218,16 @@ def paginate(rows: Iterable[dict[str, Any]], page: int, size: int, key: str) -> 
     }
 
 
+class NoCredentialRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 class Immich:
     def __init__(self, url: str, credential: str = "", insecure: bool = False, *, session: bool = False):
         base = url.strip().rstrip("/")
         parsed = urllib.parse.urlparse(base)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.fragment:
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password or parsed.fragment or parsed.query:
             raise ToolError("Immich URL must start with http:// or https://")
         if not credential.strip() and session:
             raise ToolError("Immich session token is required")
@@ -177,7 +235,9 @@ class Immich:
         self.credential = credential.strip()
         self.session = session
         self.context = ssl._create_unverified_context() if insecure else None
+        self.opener = urllib.request.build_opener(NoCredentialRedirect(), urllib.request.HTTPSHandler(context=self.context))
         self.server_version = "unknown"
+        self.connection_metadata: dict[str, Any] = {}
 
     def request(self, method: str, path: str, payload: Any = None) -> tuple[bytes, str]:
         data = json.dumps(payload).encode() if payload is not None else None
@@ -188,28 +248,33 @@ class Immich:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=60, context=self.context) as response:
+            with self.opener.open(request, timeout=60) as response:
                 body = response.read(MAX_IMAGE + 1)
                 if len(body) > MAX_IMAGE:
                     raise ToolError("Immich response exceeded the safety limit")
                 return body, response.headers.get_content_type()
         except urllib.error.HTTPError as exc:
-            detail = exc.read(1000).decode(errors="replace")
-            raise ToolError(f"Immich API {exc.code} for {path}: {detail}") from exc
+            # Never expose upstream bodies: proxies and servers may reflect credentials.
+            exc.close()
+            raise UpstreamError(exc.code) from None
         except urllib.error.URLError as exc:
-            raise ToolError(f"Cannot reach Immich: {exc.reason}") from exc
+            raise ConnectionError("Cannot reach Immich. Check its URL, network and HTTPS certificate.") from None
+        except (ValueError, OSError):
+            raise ConnectionError("Cannot reach Immich. Check its URL, network and HTTPS certificate.") from None
 
     def json(self, method: str, path: str, payload: Any = None) -> Any:
         body, _ = self.request(method, path, payload)
         try:
             return json.loads(body)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ToolError(f"Immich returned invalid JSON for {path}") from exc
+            raise ToolError("Immich returned invalid JSON") from None
 
     def version(self) -> str:
         data = self.json("GET", "/server/version")
         if isinstance(data, dict):
-            if isinstance(data.get("version"), str):
+            if (isinstance(data.get("version"), str)
+                    and re.fullmatch(r"v?\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?", data["version"])
+                    and (not self.credential or self.credential not in data["version"])):
                 self.server_version = data["version"]
                 return self.server_version
             values = [data.get(field) for field in ("major", "minor", "patch")]
@@ -1076,6 +1141,7 @@ class AppState:
         return {
             "connected": connected,
             "version": version,
+            "connection": dict(getattr(self.client, "connection_metadata", {})) if connected else {},
             "capabilities": {"unnamedGroupMerge": True},
             "phase": phase,
             "message": message,
@@ -2164,7 +2230,12 @@ class AppState:
 
 
 class AdminSession:
-    """One active admin per local state database."""
+    """One memory-only connection per local database; login remains admin-only.
+
+    Lock order is mutation_lock -> auth.lock -> state.lock. Never perform upstream
+    I/O holding auth.lock. Periodic checks use immutable epoch/client snapshots;
+    Sync holds mutation_lock through fresh validation and all writes.
+    """
 
     def __init__(self, state: AppState):
         self.state = state
@@ -2173,52 +2244,201 @@ class AdminSession:
         self.user_id = ""
         self.expires = 0.0
         self.checked = 0.0
+        self.epoch = 0
+        self.mode = "login"
 
-    def login(self, url: str, email: str, password: str, insecure: bool) -> tuple[str, str]:
-        if not email.strip() or not password:
-            raise ToolError("Immich email and password are required")
-        anonymous = Immich(url, insecure=insecure)
-        token, user_id = anonymous.login(email.strip(), password)
-        client = Immich(url, token, insecure, session=True)
-        if client.current_admin() != user_id:
-            raise ToolError("Immich account verification failed")
-        with self.lock:
-            owner = json.dumps({"url": client.base, "userId": user_id}, sort_keys=True)
+    @staticmethod
+    def key_identity(client: Immich) -> dict[str, Any]:
+        try:
+            # Introspection requires no apiKey.read, so read it before users/me to
+            # report a missing user.read explicitly without making a write probe.
+            metadata = client.json("GET", "/api-keys/me")
+            permissions = metadata.get("permissions") if isinstance(metadata, dict) else None
+            if (not isinstance(metadata, dict) or not isinstance(metadata.get("id"), str)
+                    or not UUID_RE.fullmatch(metadata["id"]) or not isinstance(permissions, list)
+                    or not permissions or any(not isinstance(p, str) or p not in KNOWN_PERMISSIONS for p in permissions)):
+                raise AuthenticationError("Immich key introspection is incompatible. Use Admin login or a supported Immich version.", "unsupported_introspection")
+            granted = set(permissions)
+            missing = set(REQUIRED_PERMISSIONS) - granted if "all" not in granted else set()
+            if missing:
+                raise AuthenticationError("Missing permissions: " + ", ".join(sorted(missing)) + ". Add them and re-enter the key.", "missing_permissions", missing)
+            user = client.json("GET", "/users/me")
+            if (not isinstance(user, dict) or not isinstance(user.get("id"), str)
+                    or not UUID_RE.fullmatch(user["id"]) or not isinstance(user.get("isAdmin"), bool)):
+                raise AuthenticationError("Immich did not return a verified account. Re-enter a valid key.", "invalid_key")
+            if "userId" in metadata and metadata["userId"] != user["id"]:
+                raise AuthenticationError("Immich key ownership could not be verified.", "invalid_key")
+            display = next((user.get(field) for field in ("name", "email") if isinstance(user.get(field), str) and user[field].strip()), "Account connected")
+            # A malformed upstream identity must not reflect the credential.
+            display = "Account connected" if client.credential in display else display[:160]
+            return {"authMode": "apiKey", "userId": user["id"], "isAdmin": user["isAdmin"],
+                    "displayName": display, "requiredPermissions": list(REQUIRED_PERMISSIONS),
+                    "grantedPermissions": sorted(granted), "overbroad": bool(granted - set(REQUIRED_PERMISSIONS))}
+        except UpstreamError as exc:
+            if exc.status in {401, 403}:
+                raise AuthenticationError("The API key was rejected or revoked. Re-enter a valid key.", "invalid_key") from None
+            if exc.status in {400, 404, 405}:
+                raise AuthenticationError("Immich key introspection is unavailable. Use Admin login or a supported Immich version.", "unsupported_introspection") from None
+            raise AuthenticationError("Immich is unavailable. Retry when the server is reachable.", "unavailable") from None
+        except AuthenticationError:
+            raise
+        except Exception:
+            raise AuthenticationError("Cannot reach or verify Immich. Check its URL, network and HTTPS certificate.", "unavailable") from None
+
+    def _install(self, client: Immich, identity: dict[str, Any], version: str) -> tuple[str, str]:
+        # Caller has fully validated its candidate before claiming any owner.
+        with mutation_guard(self.state.mutation_lock), self.lock:
+            owner = json.dumps({"url": client.base, "userId": identity["userId"]}, sort_keys=True)
             bound_owner = self.state.store.setting("owner")
             if bound_owner and bound_owner != owner:
-                raise ToolError("This local state belongs to a different Immich admin or server. Use a separate --state-dir.")
-            version = self.state.connect(client)
+                raise AuthenticationError("This local state belongs to a different Immich account or server. Use a separate --state-dir.", "owner_mismatch")
             if not bound_owner:
                 self.state.store.set_setting("owner", owner)
+            client.connection_metadata = identity
+            # connect() normally fetches version. It is already verified; avoid
+            # network I/O while publishing the new connection under auth.lock.
+            with self.state.lock:
+                self.state.client, self.state.version = client, version
+                self.state.people, self.state.sample_cache, self.state.similarity_cache = {}, {}, {}
+                self.state.invalidate_group_scan()
+                self.state.face_scan_failures.clear()
+                self.state.set_status("connected", f"Connected to Immich {version}")
+            self.epoch += 1
+            self.mode = identity["authMode"]
             self.cookie = secrets.token_urlsafe(32)
-            self.user_id = user_id
+            self.user_id = identity["userId"]
             self.expires = time.monotonic() + SESSION_SECONDS
             self.checked = time.monotonic()
             return version, self.cookie
 
-    def authorized(self, cookie: str) -> bool:
+    def login(self, url: str, email: str, password: str, insecure: bool) -> tuple[str, str]:
+        if not email.strip() or not password:
+            raise ToolError("Immich email and password are required")
+        with mutation_guard(self.state.mutation_lock):
+            anonymous = Immich(url, insecure=insecure)
+            token, user_id = anonymous.login(email.strip(), password)
+            client = Immich(url, token, insecure, session=True)
+            if client.current_admin() != user_id:
+                raise ToolError("Immich account verification failed")
+            identity = {"authMode": "login", "userId": user_id, "isAdmin": True,
+                        "displayName": "Admin account connected", "requiredPermissions": [],
+                        "grantedPermissions": [], "overbroad": False}
+            return self._install(client, identity, client.version())
+
+    def connect_key(self, url: str, key: str, insecure: bool) -> tuple[str, str]:
+        if not isinstance(url, str):
+            raise AuthenticationError("Enter a valid Immich URL.", "invalid_input")
+        if not isinstance(key, str) or not key.strip() or any(ord(c) < 32 or ord(c) == 127 for c in key):
+            raise AuthenticationError("Enter an API key.", "invalid_input")
+        with mutation_guard(self.state.mutation_lock):
+            try:
+                client = Immich(url, key, insecure)
+                version = client.version()
+            except UpstreamError:
+                raise AuthenticationError("Immich is unavailable. Retry when the server is reachable.", "unavailable") from None
+            except ToolError:
+                raise AuthenticationError("Check the Immich URL and HTTPS certificate, then retry.", "invalid_input") from None
+            except Exception:
+                raise AuthenticationError("Cannot reach Immich. Check its URL, network and HTTPS certificate.", "unavailable") from None
+            return self._install(client, self.key_identity(client), version)
+
+    def _snapshot(self, cookie: str):
         with self.lock:
-            if not cookie or not self.cookie or not secrets.compare_digest(cookie, self.cookie):
-                return False
-            if time.monotonic() >= self.expires:
-                self._clear()
-                return False
-            if time.monotonic() - self.checked >= ADMIN_CHECK_SECONDS:
-                try:
-                    if self.state.require_client().current_admin() != self.user_id:
-                        raise ToolError("Immich admin account changed")
-                except Exception:
+            if not cookie or not cookie.isascii() or not self.cookie or not secrets.compare_digest(cookie, self.cookie):
+                return None
+            return (self.epoch, self.state.client, self.user_id, self.mode, self.expires, self.checked)
+
+    def _verify(self, snapshot) -> dict[str, Any]:
+        epoch, client, user_id, mode, expires, checked = snapshot
+        if time.monotonic() >= expires or client is None:
+            raise AuthenticationError("Your Workbench connection expired. Reconnect; local work is saved.", "session_expired")
+        if mode == "apiKey":
+            identity = self.key_identity(client)
+            actual_user = identity["userId"]
+        else:
+            try:
+                actual_user = client.current_admin()
+            except Exception:
+                raise AuthenticationError("Immich admin access is no longer available. Sign in again.", "invalid_login") from None
+            identity = getattr(client, "connection_metadata", {})
+        if actual_user != user_id:
+            raise AuthenticationError("Immich account changed. Reconnect to the original account.", "owner_mismatch")
+        if time.monotonic() >= expires:
+            raise AuthenticationError("Your Workbench connection expired. Reconnect; local work is saved.", "session_expired")
+        return identity
+
+    def authorized(self, cookie: str) -> bool:
+        snapshot = self._snapshot(cookie)
+        if snapshot is None:
+            return False
+        epoch, client, user_id, mode, expires, checked = snapshot
+        if time.monotonic() < expires and time.monotonic() - checked < ADMIN_CHECK_SECONDS:
+            return True
+        try:
+            identity = self._verify(snapshot)
+            valid = True
+        except Exception:
+            valid = False
+            identity = {}
+        # A read request must not replace/clear credentials in an active Sync.
+        if not self.state.mutation_lock.acquire(blocking=False):
+            with self.lock:
+                return valid and epoch == self.epoch
+        try:
+            with self.lock:
+                if epoch != self.epoch:
+                    return False
+                if not valid:
                     self._clear()
                     return False
+                client.connection_metadata = identity
                 self.checked = time.monotonic()
-            return True
+                return True
+        finally:
+            self.state.mutation_lock.release()
+
+    def require_capabilities(self, cookie: str) -> None:
+        snapshot = self._snapshot(cookie)
+        if snapshot is None or time.monotonic() >= snapshot[4]:
+            raise AuthenticationError("Reconnect to Immich; local work is saved.", "session_expired")
+        if snapshot[3] == "apiKey":
+            granted = set(snapshot[1].connection_metadata.get("grantedPermissions", []))
+            missing = set(REQUIRED_PERMISSIONS) - granted if "all" not in granted else set()
+            if missing:
+                raise AuthenticationError("Reconnect with the required permissions; local work is saved.", "missing_permissions", missing)
+
+    def sync(self, cookie: str, review_token: str) -> dict[str, Any]:
+        if not self.state.sync_lock.acquire(blocking=False):
+            raise SyncInProgress("Sync already in progress")
+        try:
+            with mutation_guard(self.state.mutation_lock):
+                snapshot = self._snapshot(cookie)
+                if snapshot is None:
+                    raise AuthenticationError("Sign in required", "session_expired")
+                try:
+                    identity = self._verify(snapshot)
+                except AuthenticationError:
+                    with self.lock:
+                        if snapshot[0] == self.epoch:
+                            self._clear()
+                    raise
+                with self.lock:
+                    if snapshot[0] != self.epoch:
+                        raise AuthenticationError("Connection changed. Review Pending and retry explicitly.", "connection_changed")
+                    snapshot[1].connection_metadata = identity
+                    self.checked = time.monotonic()
+                return self.state._sync(review_token)
+        finally:
+            self.state.sync_lock.release()
 
     def logout(self, cookie: str) -> None:
-        with self.lock:
-            if cookie and self.cookie and secrets.compare_digest(cookie, self.cookie):
+        with mutation_guard(self.state.mutation_lock), self.lock:
+            if cookie and cookie.isascii() and self.cookie and secrets.compare_digest(cookie, self.cookie):
                 self._clear()
 
     def _clear(self) -> None:
+        # Call only under mutation_lock then auth.lock; persistent work is retained.
+        self.epoch += 1
         self.cookie = ""
         self.user_id = ""
         self.expires = 0.0
@@ -2402,7 +2622,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.static("login.html")
                 return
-            if path in {"/styles.css", "/login.js"}:
+            if path in {"/styles.css", "/login-key.css", "/login.js"}:
                 self.static(path[1:])
                 return
             if not AUTH.authorized(self.session_cookie()):
@@ -2508,13 +2728,15 @@ class Handler(BaseHTTPRequestHandler):
         if not self.same_origin():
             self.send_json({"error": "Invalid request origin"}, 403)
             return
-        if path != "/api/login" and not AUTH.authorized(self.session_cookie()):
+        if path not in {"/api/login", "/api/connect-key"} and not AUTH.authorized(self.session_cookie()):
             self.send_json({"error": "Sign in required"}, 401)
             return
         try:
             guard = nullcontext() if path in {"/api/sync", "/api/face-review/scan-next", "/api/group-photos/retry"} else mutation_guard(STATE.mutation_lock)
             with guard:
                 payload = self.body()
+                if path not in {"/api/login", "/api/connect-key", "/api/logout", "/api/sync"}:
+                    AUTH.require_capabilities(self.session_cookie())
                 if path == "/api/login":
                     try:
                         version, session_cookie = AUTH.login(str(payload.get("url", "")), str(payload.get("email", "")), str(payload.get("password", "")), bool(payload.get("insecureTls")))
@@ -2522,6 +2744,12 @@ class Handler(BaseHTTPRequestHandler):
                         message = str(exc) if str(exc).startswith(("Only Immich admins", "This local state", "Immich email")) else "Immich login failed"
                         self.send_json({"error": message}, 403)
                         return
+                    threading.Thread(target=STATE.load, daemon=True).start()
+                    secure = "; Secure" if self.policy.scheme(self.headers, self.client_address[0]) == "https" else ""
+                    cookie = f"{SESSION_COOKIE}={session_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}{secure}"
+                    self.send_json({"ok": True, "version": version}, 200, cookie)
+                elif path == "/api/connect-key":
+                    version, session_cookie = AUTH.connect_key(payload.get("url", ""), payload.get("apiKey", ""), bool(payload.get("insecureTls")))
                     threading.Thread(target=STATE.load, daemon=True).start()
                     secure = "; Secure" if self.policy.scheme(self.headers, self.client_address[0]) == "https" else ""
                     cookie = f"{SESSION_COOKIE}={session_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}{secure}"
@@ -2624,11 +2852,13 @@ class Handler(BaseHTTPRequestHandler):
                     if payload.get("confirmation") != "SYNC":
                         raise ToolError("Sync confirmation missing")
                     review_token = payload.get("reviewToken")
-                    self.send_json(STATE.sync(review_token if isinstance(review_token, str) else ""))
+                    self.send_json(AUTH.sync(self.session_cookie(), review_token if isinstance(review_token, str) else ""))
                 else:
                     self.send_error(404)
         except SyncInProgress as exc:
             self.send_json({"error": str(exc)}, 409)
+        except AuthenticationError as exc:
+            self.send_json(exc.response(), 403)
         except Exception as exc:
             self.send_json({"error": str(exc)}, 400)
 
