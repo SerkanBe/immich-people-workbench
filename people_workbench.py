@@ -33,11 +33,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+import shutil
 from contextlib import contextmanager, nullcontext
 from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
+from offline_workspace import OfflineWorkspace, OfflineClient, OfflineError, OfflineConflict, Cancelled
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -275,6 +277,53 @@ class Immich:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ToolError("Immich returned invalid JSON") from None
 
+    def download_original(self, asset_id: str, path: Path, cancel: threading.Event,
+                          max_bytes: int, reserve_bytes: int) -> tuple[int, str, str]:
+        """Stream a separately authorized original; normal request() stays bounded."""
+        if not UUID_RE.fullmatch(asset_id):
+            raise ToolError("Invalid original asset ID")
+        headers = {"Accept": "application/octet-stream"}
+        if self.credential:
+            headers["x-immich-user-token" if self.session else "x-api-key"] = self.credential
+        request = urllib.request.Request(self.base + f"/assets/{asset_id}/original", headers=headers)
+        temp = path.with_suffix(".part")
+        try:
+            with self.opener.open(request, timeout=60) as response:
+                length = response.headers.get("Content-Length")
+                expected = int(length) if length is not None else None
+                if expected is not None and (expected <= 0 or expected > max_bytes
+                                             or expected + reserve_bytes > shutil.disk_usage(path.parent).free):
+                    raise OfflineError("Original exceeds available space or download bounds")
+                mime = response.headers.get_content_type()
+                if mime in {"application/json", "text/html"}:
+                    raise OfflineError("Unexpected original response")
+                size, digest = 0, hashlib.sha256()
+                with temp.open("wb") as output:
+                    while True:
+                        if cancel.is_set():
+                            raise Cancelled("Offline preparation cancelled; completed files can be resumed")
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        if size > max_bytes or shutil.disk_usage(path.parent).free < len(chunk) + reserve_bytes:
+                            raise OfflineError("Original exceeds available space or download bounds")
+                        output.write(chunk)
+                        digest.update(chunk)
+                    output.flush()
+                    os.fsync(output.fileno())
+                if not size or expected is not None and size != expected:
+                    raise OfflineError("Original download was incomplete")
+                os.replace(temp, path)
+                return size, mime, digest.hexdigest()
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            raise UpstreamError(exc.code) from None
+        except urllib.error.URLError:
+            raise ConnectionError("Cannot reach Immich to download originals") from None
+        finally:
+            temp.unlink(missing_ok=True)
+
     def version(self) -> str:
         data = self.json("GET", "/server/version")
         if isinstance(data, dict):
@@ -312,6 +361,8 @@ class Immich:
             if not isinstance(data, dict) or not isinstance(data.get("people"), list):
                 raise ToolError("Unexpected people response from Immich")
             batch = [item for item in data["people"] if isinstance(item, dict) and isinstance(item.get("id"), str)]
+            if len(batch) != len(data["people"]) or data.get("hasNextPage") and not batch:
+                raise ToolError("Incomplete people response from Immich")
             people.extend(batch)
             if not data.get("hasNextPage") or not batch:
                 return people
@@ -389,8 +440,12 @@ class Immich:
         elif isinstance(data, dict):
             assets = data
         else:
-            assets = {}
+            raise ToolError("Unexpected asset search response from Immich")
+        if not isinstance(assets.get("items"), list):
+            raise ToolError("Unexpected asset search items from Immich")
         items = [item for item in assets.get("items", []) if isinstance(item, dict) and isinstance(item.get("id"), str)]
+        if len(items) != len(assets["items"]):
+            raise ToolError("Incomplete asset search response from Immich")
         total = assets.get("total") if isinstance(assets.get("total"), int) else None
         next_page = assets.get("nextPage")
         has_more = bool(next_page) if next_page is not None else total is not None and page * size < total
@@ -402,7 +457,9 @@ class Immich:
 
     def faces(self, asset_id: str) -> list[dict[str, Any]]:
         data = self.json("GET", "/faces?" + urllib.parse.urlencode({"id": asset_id}))
-        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        if not isinstance(data, list) or any(not isinstance(item, dict) or not isinstance(item.get("id"), str) for item in data):
+            raise ToolError("Unexpected face metadata from Immich")
+        return data
 
     def asset(self, asset_id: str) -> dict[str, Any]:
         data = self.json("GET", f"/assets/{asset_id}")
@@ -1042,6 +1099,7 @@ class AppState:
         self.group_filtered = 0
         self.group_below_minimum = 0
         self.group_without_actionable = 0
+        self.offline = OfflineWorkspace(self)
 
     def invalidate_group_scan(self) -> None:
         with self.lock:
@@ -1108,6 +1166,8 @@ class AppState:
         client: Immich | None = None
         try:
             client = self.require_client()
+            if not getattr(client, "offline", False):
+                self.offline.validate(client)
             if not self.set_status_for_client(client, "loading", "Loading people from Immich"):
                 return
             people = client.all_people()
@@ -1156,6 +1216,9 @@ class AppState:
         investigate_ids = self.store.investigate_ids()
         return {
             "connected": connected,
+            "offline": bool(getattr(self.client, "offline", False)),
+            "offlineCoverage": {"availableAssets": len(self.client.assets), "totalAssets": None, "complete": False,
+                                "scope": "Visible unnamed clusters and their still photos; named people may have partial coverage"} if isinstance(self.client, OfflineClient) else None,
             "version": version,
             "connection": dict(getattr(self.client, "connection_metadata", {})) if connected else {},
             "capabilities": {"unnamedGroupMerge": True},
@@ -1209,6 +1272,9 @@ class AppState:
                 scan = inventory.get(person["id"])
                 current = self.face_inventory_current(scan, person)
                 complete = bool(current and scan["complete"])
+                if isinstance(self.client, OfflineClient):
+                    person["offlineCoverage"] = self.client.coverage(person["id"])
+                    complete = complete and person["offlineCoverage"]["complete"]
                 known = int(scan["total"]) if current else 0
                 reviewed = int(scan["handled"] or 0) if current and complete else saved_counts.get(person["id"], 0)
                 person["reviewedCount"] = reviewed
@@ -1734,13 +1800,20 @@ class AppState:
 
     def pending_data(self) -> dict[str, Any]:
         rows, faces = self.store.pending_snapshot()
-        return {"pending": self.pending_public(rows, faces), "reviewToken": pending_review_token(rows, faces)}
+        return {"pending": self.pending_public(rows, faces), "reviewToken": pending_review_token(rows, faces),
+                "offlineConflicts": self.offline.prune_conflicts()}
 
     def pending_page(self, page: int, size: int) -> dict[str, Any]:
         data = self.pending_data()
-        return {**paginate(data["pending"], page, size, "pending"), "reviewToken": data["reviewToken"]}
+        return {**paginate(data["pending"], page, size, "pending"), "reviewToken": data["reviewToken"],
+                "offlineConflicts": data["offlineConflicts"]}
 
     def scan_face_review_page(self, active_person_id: str = "", retry_failed: bool = False) -> dict[str, Any]:
+        if isinstance(self.client, OfflineClient):
+            # A partial offline library cannot establish a global review inventory.
+            # Individual available photos remain pageable and editable on demand.
+            return {"busy": False, "personId": "", "progress": None, "complete": 0,
+                    "total": len(self.people), "failed": 0, "done": True, "offline": True}
         if active_person_id and not UUID_RE.fullmatch(active_person_id):
             raise ToolError("Invalid active person ID")
         if not self.face_scan_lock.acquire(blocking=False):
@@ -1847,12 +1920,14 @@ class AppState:
             face["queued"] = face["faceId"] in queued
             face["reviewed"] = face["faceId"] in reviewed
             face["draftVerdict"] = drafts[face["faceId"]]["verdict"] if face["faceId"] in drafts else None
-        self.store.record_face_review_page(person_id, page, size, faces, has_more, person.get("assetCount"),
+        coverage = client.coverage(person_id) if isinstance(client, OfflineClient) else None
+        self.store.record_face_review_page(person_id, page, size, faces, has_more or bool(coverage and not coverage["complete"]), person.get("assetCount"),
                                            str(person.get("updatedAt") or ""))
         counts = self.face_review_progress(person_id, person)
         pages = max(1, (total + size - 1) // size)
         return {
             "faces": faces, "page": page, "size": size, "pages": pages,
+            "offlineCoverage": coverage,
             "hasPrevious": page > 1, "hasNext": has_more, "hasMore": has_more,
             "from": (page - 1) * size + 1 if total else 0,
             "to": min(page * size, total), "total": total, "totalAssets": total,
@@ -1877,6 +1952,8 @@ class AppState:
         if not self.face_inventory_current(scan, person):
             inventory, scan = set(), None
         complete = bool(scan and scan["complete"])
+        if isinstance(self.client, OfflineClient):
+            complete = complete and self.client.coverage(person_id)["complete"]
         queued = {row["face_id"] for row in self.store.face_detaches() if row["source_person_id"] == person_id}
         drafts = self.store.face_review_drafts(person_id)
         draft_correct = {row["face_id"] for row in drafts if row["verdict"] == "correct"}
@@ -2143,6 +2220,11 @@ class AppState:
                 or not secrets.compare_digest(review_token, pending_review_token(all_pending, all_face_pending))):
             raise SyncInProgress("Pending changed; review updated selections before syncing again.")
         client = self.require_client()
+        if getattr(client, "offline", False):
+            raise OfflineError("Reconnect to Immich, review Pending and explicitly Sync.")
+        conflicts = self.offline.validate(client, all_pending, all_face_pending)
+        if conflicts:
+            raise OfflineConflict(conflicts)
         draft_people = {row["person_id"] for row in self.store.face_review_drafts()}
         pending_by_id = {row["person_id"]: row for row in all_pending}
         rows = [row for row in all_pending if row["included"]]
@@ -2241,6 +2323,7 @@ class AppState:
         temp.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temp, report)
         if rows or face_rows:
+            self.offline.refresh_after_sync(client, rows, face_rows, results)
             self.load()
         return {"results": results, "failed": sum(item["result"] == "failed" for item in results), "report": str(report)}
 
@@ -2368,6 +2451,8 @@ class AdminSession:
         epoch, client, user_id, mode, expires, checked = snapshot
         if time.monotonic() >= expires or client is None:
             raise AuthenticationError("Your Workbench connection expired. Reconnect; local work is saved.", "session_expired")
+        if mode == "offline":
+            return client.connection_metadata
         if mode == "apiKey":
             identity = self.key_identity(client)
             actual_user = identity["userId"]
@@ -2445,6 +2530,8 @@ class AdminSession:
                 snapshot = self._snapshot(cookie)
                 if snapshot is None:
                     raise AuthenticationError("Sign in required", "session_expired")
+                if snapshot[3] == "offline":
+                    raise OfflineError("Reconnect to Immich, review Pending and explicitly Sync.")
                 try:
                     identity = self._verify(snapshot)
                 except AuthenticationError as exc:
@@ -2466,6 +2553,21 @@ class AdminSession:
         with mutation_guard(self.state.mutation_lock), self.lock:
             if cookie and cookie.isascii() and self.cookie and secrets.compare_digest(cookie, self.cookie):
                 self._clear()
+
+    def open_offline(self) -> str:
+        with mutation_guard(self.state.mutation_lock), self.lock:
+            self.state.offline.cancel()
+            client = self.state.offline.open_client()
+            self.state.disconnect()
+            self.state.client, self.state.version = client, client.version()
+            self.state.people = {p["id"]: p for p in client.all_people()}
+            self.state.set_status("ready", "Offline workspace open; changes stay local until reconnect and explicit Sync")
+            self.epoch += 1
+            self.mode, self.user_id = "offline", client.snapshot["owner"]["userId"]
+            self.cookie = secrets.token_urlsafe(32)
+            self.expires = time.monotonic() + SESSION_SECONDS
+            self.checked = time.monotonic()
+            return self.cookie
 
     def _clear(self) -> None:
         # Call only under mutation_lock then auth.lock; persistent work is retained.
@@ -2572,6 +2674,42 @@ class Handler(BaseHTTPRequestHandler):
     def same_origin(self) -> bool:
         return self.policy.same_origin(self.headers, self.client_address[0])
 
+    def offline_local(self) -> bool:
+        """Offline private data is available only on an actual loopback listener."""
+        try:
+            listener = self.server.server_address[0]
+            host = urllib.parse.urlsplit("http://" + self.headers.get("Host", "")).hostname
+            return (ipaddress.ip_address(listener).is_loopback
+                    and ipaddress.ip_address(self.client_address[0]).is_loopback
+                    and (host == "localhost" or ipaddress.ip_address(host).is_loopback)
+                    and not self.headers.get("Forwarded") and not self.headers.get("X-Forwarded-For")
+                    and not self.headers.get("X-Forwarded-Host"))
+        except (ValueError, TypeError):
+            return False
+
+    def authorization(self):
+        if AUTH.mode == "offline" and not self.offline_local():
+            return False, None
+        return AUTH.authorization(self.session_cookie())
+
+    def original(self, asset_id: str) -> None:
+        client = STATE.require_client()
+        if not isinstance(client, OfflineClient):
+            raise OfflineError("Original media is available through the prepared offline workspace")
+        item = client.snapshot["media"]["originals"].get(asset_id)
+        if not item:
+            raise OfflineError("Original is not available offline")
+        path = STATE.offline.media_path(client.snapshot, item["path"])
+        with path.open("rb") as stream:
+            self.send_response(200)
+            self.send_header("Content-Type", item["mime"])
+            self.send_header("Content-Security-Policy", "sandbox; default-src 'none'")
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            shutil.copyfileobj(stream, self.wfile, length=1024 * 1024)
+
     def redirect(self, location: str) -> None:
         self.send_response(303)
         self.send_header("Location", location)
@@ -2662,8 +2800,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect("/naming/clusters")
                 return
             if path == "/login":
-                authorized, failure = AUTH.authorization(self.session_cookie())
-                if authorized:
+                authorized, failure = self.authorization()
+                if authorized and AUTH.mode != "offline":
                     self.redirect("/")
                 elif failure and failure.reconnect and query.get("reason", [""])[0] not in CONNECTION_REASONS:
                     requested = query.get("next", ["/"])[0]
@@ -2674,7 +2812,11 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/styles.css", "/login-key.css", "/login.js"}:
                 self.static(path[1:])
                 return
-            authorized, failure = AUTH.authorization(self.session_cookie())
+            if path == "/api/offline/status":
+                authorized, _ = self.authorization()
+                self.send_json(STATE.offline.status(private=authorized))
+                return
+            authorized, failure = self.authorization()
             if not authorized:
                 if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                     self.login_redirect(path.rstrip("/") or "/", failure)
@@ -2684,7 +2826,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                 self.static("index.html")
-            elif path in {"/app.js", "/navigation.js", "/merge.js", "/face-review.js", "/naming.js", "/group-photos.js", "/investigate.js", "/pending.js", "/browser-storage.js", "/asset-preview.js"}:
+            elif path in {"/app.js", "/navigation.js", "/merge.js", "/face-review.js", "/naming.js", "/group-photos.js", "/investigate.js", "/pending.js", "/browser-storage.js", "/asset-preview.js", "/offline.js"}:
                 self.static(path[1:])
             elif path == "/api/state":
                 self.send_json(STATE.summary())
@@ -2764,6 +2906,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not UUID_RE.fullmatch(asset_id):
                     raise ToolError("Invalid asset ID")
                 self.image(*STATE.require_client().request("GET", f"/assets/{asset_id}/thumbnail?size=preview"))
+            elif path.startswith("/media/original/"):
+                asset_id = path.rsplit("/", 1)[-1]
+                if not UUID_RE.fullmatch(asset_id):
+                    raise ToolError("Invalid asset ID")
+                self.original(asset_id)
             else:
                 self.send_error(404)
         except SyncInProgress as exc:
@@ -2779,8 +2926,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self.same_origin():
             self.send_json({"error": "Invalid request origin"}, 403)
             return
-        if path not in {"/api/login", "/api/connect-key"}:
-            authorized, failure = AUTH.authorization(self.session_cookie())
+        if path not in {"/api/login", "/api/connect-key", "/api/offline/open"}:
+            authorized, failure = self.authorization()
             if not authorized:
                 self.send_json(failure.response() if failure else {"error": "Sign in required"}, 401)
                 return
@@ -2788,9 +2935,27 @@ class Handler(BaseHTTPRequestHandler):
             guard = nullcontext() if path in {"/api/sync", "/api/face-review/scan-next", "/api/group-photos/retry"} else mutation_guard(STATE.mutation_lock)
             with guard:
                 payload = self.body()
-                if path not in {"/api/login", "/api/connect-key", "/api/logout", "/api/sync"}:
+                if path not in {"/api/login", "/api/connect-key", "/api/logout", "/api/sync", "/api/offline/open"}:
                     AUTH.require_capabilities(self.session_cookie())
-                if path == "/api/login":
+                if path == "/api/offline/open":
+                    if not self.offline_local():
+                        self.send_json({"error": "Offline workspaces require a loopback listener and direct local browser connection"}, 403)
+                        return
+                    session_cookie = AUTH.open_offline()
+                    cookie = f"{SESSION_COOKIE}={session_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}"
+                    self.send_json({"ok": True, "offline": True}, cookie=cookie)
+                elif path == "/api/offline/plan":
+                    STATE.offline.start_plan(STATE.require_client())
+                    self.send_json(STATE.offline.status(private=True), 202)
+                elif path == "/api/offline/download":
+                    if payload.get("confirmation") != "DOWNLOAD_ORIGINALS":
+                        raise OfflineError("Original download confirmation missing")
+                    STATE.offline.start_download(STATE.require_client(), payload.get("planId"))
+                    self.send_json(STATE.offline.status(private=True), 202)
+                elif path == "/api/offline/cancel":
+                    STATE.offline.cancel()
+                    self.send_json(STATE.offline.status(private=True))
+                elif path == "/api/login":
                     try:
                         version, session_cookie = AUTH.login(str(payload.get("url", "")), str(payload.get("email", "")), str(payload.get("password", "")), bool(payload.get("insecureTls")))
                     except Exception as exc:
@@ -2908,6 +3073,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(AUTH.sync(self.session_cookie(), review_token if isinstance(review_token, str) else ""))
                 else:
                     self.send_error(404)
+        except OfflineConflict as exc:
+            self.send_json({"error": str(exc), "offlineConflicts": exc.conflicts}, 409)
         except SyncInProgress as exc:
             self.send_json({"error": str(exc)}, 409)
         except AuthenticationError as exc:

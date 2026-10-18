@@ -468,3 +468,11 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; bac
 .face-review-empty { display: grid; justify-items: start; gap: 10px; margin: 12px 0; }
 .face-review-empty p { margin: 0; }
 #face-review-next-person { min-height: 38px; }
+
+.offline-status { white-space: normal; line-height: 1.3; font-size: .8rem; color: var(--muted, #64748b); max-width: 22rem; }
+.offline-actions { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+#offline-workspace-dialog { max-width: 38rem; }
+#offline-workspace-progress { width: 100%; }
+@media (max-width: 700px) { .offline-status { max-width: 12rem; } }
+
+.pending-item.offline-conflict { border-color: var(--danger, #b91c1c); }

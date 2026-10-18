@@ -134,3 +134,23 @@ form.addEventListener("submit", async event => {
     loginMode.disabled = false;
   }
 });
+
+// Presence contains no account or snapshot details before local sign-in.
+const savedOffline = document.querySelector("#saved-offline-workspace");
+const openOffline = document.querySelector("#open-offline-workspace");
+if (savedOffline && openOffline) {
+  fetch("/api/offline/status").then(response => response.ok ? response.json() : {}).then(status => {
+    savedOffline.hidden = status.ready !== true;
+  }).catch(() => { savedOffline.hidden = true; });
+  openOffline.addEventListener("click", async () => {
+    if (submitting) return;
+    submitting = true; openOffline.disabled = true; button.disabled = true; error.hidden = true;
+    try {
+      const response = await fetch("/api/offline/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "The saved workspace could not be opened.");
+      clearSecrets(); window.location.replace("/naming/clusters");
+    } catch (cause) { error.textContent = cause.message; error.hidden = false; }
+    finally { submitting = false; openOffline.disabled = false; button.disabled = false; }
+  });
+}

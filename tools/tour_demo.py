@@ -38,6 +38,7 @@ def main():
     app_dir = runtime / "app"
     app_dir.mkdir(exist_ok=True)
     shutil.copy2(ROOT / "people_workbench.py", app_dir / "people_workbench.py")
+    shutil.copy2(ROOT / "offline_workspace.py", app_dir / "offline_workspace.py")
     shutil.copytree(ROOT / "web", app_dir / "web", dirs_exist_ok=True)
     commands = {
         "mock": [sys.executable, "-u", str(ROOT / "tools/tour_mock.py"), "--port", str(args.mock_port)],
@@ -68,7 +69,7 @@ def main():
         (runtime / "tour-run.json").write_text(json.dumps({
             "appPort": args.app_port, "mockPort": args.mock_port,
             "source": str(ROOT), "stateDir": str(state_dir),
-            "snapshot": "people_workbench.py and web copied unchanged at launch"
+            "snapshot": "people_workbench.py, offline_workspace.py and web copied unchanged at launch"
         }, indent=2) + "\n")
         print(f"App: http://127.0.0.1:{args.app_port}/", flush=True)
         print(f"Mock Immich URL: http://127.0.0.1:{args.mock_port}", flush=True)

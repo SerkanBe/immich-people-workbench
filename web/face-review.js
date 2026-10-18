@@ -251,7 +251,9 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     const pending = person.pendingOperation ? ` · Pending ${person.pendingOperation}${person.pendingName ? ` → ${person.pendingName}` : ""}` : "";
     const reopened = person.reviewReopened ? " · Review reopened" : "";
     const remaining = person.inventoryComplete ? `${result.untouchedCount} untouched` : `${result.untouchedCount} untouched in loaded photos · load all photos for total`;
-    element("face-review-meta").textContent = `${result.correctCount || 0} accepted · ${result.wrongDraftCount || 0} dismissed to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${remaining}${reopened}${pending}`;
+    const coverage = result.offlineCoverage || state.faceReviewResult?.offlineCoverage;
+    const coverageText = coverage ? ` · Saved photos: ${coverage.availableAssets}/${coverage.totalAssets ?? "unknown"}${coverage.complete ? " · complete for this person" : " · partial coverage"}` : "";
+    element("face-review-meta").textContent = `${result.correctCount || 0} accepted · ${result.wrongDraftCount || 0} dismissed to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${remaining}${reopened}${pending}${coverageText}`;
     element("face-review-content").classList.toggle("person-reviewed", person.reviewed);
     renderFacePersonList();
   }

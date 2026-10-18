@@ -86,7 +86,7 @@ function setup(items=[person()], mode={}) {
   const refreshSummary=async()=>{if(mode.summary)await mode.summary();state.summary.counts.included=items.filter(i=>i.included).length;};
   const controls=createPending({api,assetThumb:id=>id,personThumb:id=>id,cleanName:name=>name.trim(),drawFace:async()=>{},
     loadNames:async()=>{},matchingNames:()=>[],openAssetPreview(){},refreshSummary,renderPagination(){},
-    showToast:message=>toasts.push(message),state,ui,waitUntilReady:async()=>{},});
+    showToast:message=>toasts.push(message),state,ui,waitUntilReady:async()=>{},refreshOffline:mode.refreshOffline,});
   controls.bindPendingControls();
   return{el,state,ui,calls,toasts,controls,items,restore:()=>Object.assign(globalThis,previous)};
 }
@@ -296,4 +296,46 @@ test("Deferred old Sync-dialog close cannot cancel a reopened confirmation",asyn
     await click(run,"#sync-button");run.el("#sync-confirm-dialog").listeners.get("close")();
     await click(run,"#sync-confirm-apply");assert.equal(run.calls.filter(c=>c.path==="/api/sync").length,1);
   }finally{run.restore();}
+});
+
+
+test("Offline Pending keeps selection edits local and refuses forced Sync or destructive reload", async () => {
+  const run = setup([person()]);
+  try {
+    run.state.summary.offline = true;
+    await run.controls.renderPending();
+    assert.equal(run.el("#sync-button").disabled, true);
+    assert.equal(run.el("#pending-reconnect").hidden, false);
+    assert.match(run.el("#offline-sync-notice").textContent, /same Immich account/);
+    const checkbox = run.ui.pendingList.children[0].children[0];
+    checkbox.checked = false; await checkbox.listeners.get("change")();
+    await click(run, "#sync-button"); await click(run, "#sync-confirm-apply"); await click(run, "#reset-button");
+    assert.equal(run.calls.some(c => c.path === "/api/sync" || c.path === "/api/reset"), false);
+    assert.equal(run.calls.some(c => c.path.endsWith("/include")), true);
+  } finally { run.restore(); }
+});
+
+test("Reconnect conflict blocks Sync until a fresh Pending review confirms resolution", async () => {
+  let conflicts = [{type:"person",id:"source-A",reason:"Person changed in Immich"}];
+  const run = setup([person()], {pending:(_get,current)=>({pending:current,total:1,page:1,reviewToken:"review",offlineConflicts:conflicts})});
+  try {
+    await run.controls.renderPending(); await confirmSync(run);
+    assert.equal(run.el("#sync-button").disabled, true);
+    assert.match(run.el("#offline-conflicts").textContent, /Person changed/);
+    assert.equal(run.calls.some(c=>c.path === "/api/sync"), false);
+    conflicts = []; await run.controls.renderPending();
+    assert.equal(run.calls.some(c=>c.path === "/api/sync"), false);
+    await confirmSync(run);
+    assert.equal(run.calls.filter(c=>c.path === "/api/sync").length, 1);
+  } finally { run.restore(); }
+});
+
+
+test("confirmed Sync refreshes snapshot availability without opening offline or syncing again", async () => {
+  let refreshed=0;
+  const run=setup([person()],{refreshOffline:async()=>{refreshed++;}});
+  try { await run.controls.renderPending(); await confirmSync(run);
+    assert.equal(refreshed,1); assert.equal(run.calls.filter(call=>call.path === "/api/sync").length,1);
+    assert.equal(run.calls.some(call=>call.path === "/api/offline/open"),false);
+  } finally {run.restore();}
 });

@@ -21,11 +21,12 @@ ROOT = Path(__file__).resolve().parent
 IDENTITIES = ["mira", "asha", "dorian", "eli", "rowan", "nora"]
 NAMES = ["Mira Solis", "Asha Bell", "Dorian Reed", "Eli Tan", "Rowan Finch", "Nora Vale",
          "Mira Solis — studio", "Alexander Morgan-Winterbottom"]
-REQUIRED_PERMISSIONS = frozenset({"user.read", "person.read", "person.statistics", "person.update", "person.create", "person.merge", "asset.read", "asset.view", "face.read", "face.update"})
+REQUIRED_PERMISSIONS = frozenset({"user.read", "person.read", "person.statistics", "person.update", "person.create", "person.merge", "asset.read", "asset.view", "face.read", "face.update", "asset.download"})
 # Invented credentials usable only in this loopback fixture, never an upstream.
 KEY_FIXTURES = {
     "synthetic-owner-key": "owner", "synthetic-rotated-key": "owner",
     "synthetic-missing-key": "missing", "synthetic-broad-key": "broad",
+    "synthetic-no-original-key": "no-original",
     "synthetic-revoked-key": "revoked", "synthetic-wrong-owner-key": "wrong-owner",
     "synthetic-malformed-key": "malformed",
 }
@@ -73,10 +74,11 @@ class Fixtures:
                     self.faces[fid] = face
                     asset_faces.append(fid)
                 self.assets[aid] = {"id": aid, "originalFileName": f"garden-day-{i+1:02}-{j+1:03}.jpg",
-                                    "type": "IMAGE", "width": 1200, "height": 900,
+                                    "originalMimeType": "image/jpeg", "type": "IMAGE", "width": 2400, "height": 1800,
                                     "fileCreatedAt": f"2026-06-{(j % 28)+1:02}T12:00:00Z",
                                     "localDateTime": f"2026-06-{(j % 28)+1:02}T12:00:00Z",
-                                    "exifInfo": {"exifImageWidth": 1200, "exifImageHeight": 900},
+                                    "exifInfo": {"exifImageWidth": 2400, "exifImageHeight": 1800,
+                                                 "fileSizeInByte": 360000},
                                     "_faces": asset_faces, "_shown": shown_ids, "_boxes": boxes}
 
     def public_person(self, p):
@@ -106,11 +108,13 @@ for number, person_indexes in enumerate(((0, 1, 8, 9, 10, 11), (2, 12, 13, 14, 1
                         "boundingBoxX1": x1, "boundingBoxY1": y1, "boundingBoxX2": x2, "boundingBoxY2": y2,
                         "imageWidth": 1200, "imageHeight": 900, "sourceType": "machine-learning"}
         face_ids.append(fid)
-    F.assets[aid] = {"id": aid, "originalFileName": f"synthetic-group-{number + 1}.jpg", "type": "IMAGE",
-                     "width": 1200, "height": 900, "updatedAt": f"2026-10-0{number + 1}T12:00:00Z",
+    F.assets[aid] = {"id": aid, "originalFileName": f"synthetic-group-{number + 1}.jpg",
+                     "originalMimeType": "image/jpeg", "type": "IMAGE",
+                     "width": 2400, "height": 1800, "updatedAt": f"2026-10-0{number + 1}T12:00:00Z",
                      "fileCreatedAt": "2026-06-12T12:00:00Z", "localDateTime": "2026-06-12T12:00:00Z",
                      "isArchived": number == 2, "visibility": "archive" if number == 2 else "timeline",
-                     "exifInfo": {"exifImageWidth": 1200, "exifImageHeight": 900},
+                     "exifInfo": {"exifImageWidth": 2400, "exifImageHeight": 1800,
+                                  "fileSizeInByte": 500000},
                      "_faces": face_ids, "_shown": [index % 6 for index in person_indexes], "_boxes": boxes}
 
 @lru_cache(maxsize=128)
@@ -127,6 +131,15 @@ def photo(shown, boxes):
         canvas.paste(im, (x1, y1))
     out = io.BytesIO()
     canvas.save(out, "JPEG", quality=90)
+    return out.getvalue()
+
+@lru_cache(maxsize=128)
+def original_photo(shown, boxes):
+    """Larger synthetic original; preview and face-coordinate fixtures stay unchanged."""
+    source = Image.open(io.BytesIO(photo(shown, boxes)))
+    canvas = source.resize((2400, 1800), Image.Resampling.LANCZOS)
+    out = io.BytesIO()
+    canvas.save(out, "JPEG", quality=92)
     return out.getvalue()
 
 
@@ -189,6 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send({"message": "Synthetic key revoked"}, 401)
                 permissions = set(F.key_permissions)
                 if fixture == "missing": permissions.discard("face.update")
+                if fixture == "no-original": permissions.discard("asset.download")
                 if fixture == "broad": permissions = {"all"}
             elif token == "synthetic-review-session" and not key:
                 permissions = {"all"}
@@ -209,7 +223,9 @@ class Handler(BaseHTTPRequestHandler):
                               "person.update" if method == "PUT" else "person.read")
             elif path.startswith("/faces"): permission = "face.update" if method == "PUT" else "face.read"
             elif path == "/search/metadata": permission = "asset.read"
-            elif path.startswith("/assets/"): permission = "asset.view" if path.endswith("/thumbnail") else "asset.read"
+            elif path.startswith("/assets/"):
+                permission = ("asset.download" if path.endswith("/original") else
+                              "asset.view" if path.endswith("/thumbnail") else "asset.read")
             if permission and permission not in permissions and "all" not in permissions:
                 return self.send({"message": "Synthetic permission denied"}, 403)
             if path == "/users/me":
@@ -279,6 +295,8 @@ class Handler(BaseHTTPRequestHandler):
                 if a:
                     if path.endswith("/thumbnail"):
                         return self.send(photo(tuple(a["_shown"]), tuple(a["_boxes"])), mime="image/jpeg")
+                    if path.endswith("/original"):
+                        return self.send(original_photo(tuple(a["_shown"]), tuple(a["_boxes"])), mime="image/jpeg")
                     return self.send(F.public_asset(a))
             return self.send({"message": f"Mock endpoint missing: {method} {path}"}, 404)
 

@@ -889,3 +889,14 @@ test("N ignores text fields, dialogs, and modified key chords", async () => {
     assert.equal(h.state.faceReviewPersonId, skipPeople[0].id);
   } finally { h.dispose(); }
 });
+
+
+test("Offline Face review labels the saved subset before any decisions", async () => {
+  const run = await submitHarness({ people:[{id:"synthetic-person",name:"Synthetic person",assetCount:8}],
+    pages:[{faces:[],page:1,hasMore:false,inventoryComplete:true,untouchedCount:0,
+      offlineCoverage:{availableAssets:2,totalAssets:8,complete:false}}], submit:async()=>({}) });
+  try {
+    assert.match(run.elements.get("face-review-meta").textContent, /Saved photos: 2\/8 · partial coverage/);
+    assert.equal(run.calls.some(([path])=>path === "/api/sync"),false);
+  } finally { run.dispose(); }
+});

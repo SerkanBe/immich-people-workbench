@@ -19,6 +19,10 @@
       <p id="connection-notice-copy"></p>
       <p>Saved drafts and Pending stay here. Reconnecting does not Sync them.</p>
     </section>
+    <section id="saved-offline-workspace" hidden>
+      <button id="open-offline-workspace" type="button" class="primary-button">Open saved offline workspace</button>
+      <p class="muted">Use saved photos and continue local work without Immich credentials. Sync becomes available after reconnecting.</p>
+    </section>
     <form id="login-form" class="dialog-form">
       <fieldset class="connection-method">
         <legend>Connection method</legend>
@@ -32,6 +36,7 @@
           <summary>Required permissions</summary>
           <p>Create a key in your Immich account settings with these ten permissions:</p>
           <ul class="permission-list"><li data-permission="user.read">user.read</li><li data-permission="person.read">person.read</li><li data-permission="person.statistics">person.statistics</li><li data-permission="person.update">person.update</li><li data-permission="person.create">person.create</li><li data-permission="person.merge">person.merge</li><li data-permission="asset.read">asset.read</li><li data-permission="asset.view">asset.view</li><li data-permission="face.read">face.read</li><li data-permission="face.update">face.update</li></ul>
+          <p>Offline originals additionally need <code>asset.download</code>.</p>
           <p>Use the account whose library you want to review. Extra permissions produce a warning. Workbench never creates or revokes keys.</p>
         </details>
       </div>

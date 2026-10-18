@@ -50,6 +50,8 @@
               <option value="60">60</option>
             </select>
           </label>
+          <span id="offline-status" class="offline-status" role="status" hidden></span>
+          <button id="offline-workspace-button" class="quiet-button" type="button" aria-haspopup="dialog" aria-controls="offline-workspace-dialog">Offline workspace</button>
           <button id="reload-button" class="quiet-button" hidden>Reload</button>
         </div>
       </header>
@@ -269,6 +271,9 @@
           <button id="sync-button" class="primary-button">Sync checked changes to Immich</button>
         </div>
       </div>
+      <p id="offline-sync-notice" class="muted" hidden></p>
+      <p id="offline-conflicts" class="error-text" role="alert" hidden></p>
+      <a id="pending-reconnect" href="/login?next=/pending" hidden>Reconnect to Immich</a>
       <div id="pending-list" class="pending-list"></div>
       <div id="pending-pagination" class="pagination" hidden></div>
       <div id="pending-empty" class="empty-state" hidden><h2>No pending changes</h2><p>Accepted names, merges and ignored clusters will appear here.</p></div>
@@ -356,6 +361,24 @@
     </div>
   </dialog>
 
+  <dialog id="offline-workspace-dialog" aria-labelledby="offline-workspace-title">
+    <div class="dialog-form">
+      <div class="detail-heading"><h2 id="offline-workspace-title">Offline workspace</h2><button class="icon-button" data-close aria-label="Close">×</button></div>
+      <p>Save originals of photos containing unnamed detected clusters, with the other faces in each photo for context. Your API key also needs <code>asset.download</code>.</p>
+      <p id="offline-workspace-description" role="status" aria-live="polite"></p>
+      <progress id="offline-workspace-progress" hidden></progress>
+      <p id="offline-workspace-error" class="error-text" role="alert" hidden></p>
+      <p>Names, groups, Investigate and available Face review stay local. Changes wait in Pending until you reconnect to the same account, resolve conflicts and explicitly Sync. Named people's photos may be incomplete.</p>
+      <div class="offline-actions">
+        <button id="offline-plan" class="primary-button" type="button">Prepare for offline use</button>
+        <button id="offline-download" class="primary-button" type="button" hidden>Download originals</button>
+        <button id="offline-cancel" class="quiet-button" type="button" hidden>Cancel download</button>
+        <button id="offline-open" class="quiet-button" type="button" hidden>Open offline workspace</button>
+        <a id="offline-reconnect" href="/login?next=/pending" hidden>Reconnect to Immich</a>
+      </div>
+      <p class="muted">To use another computer, stop Workbench and export the workspace as described in the offline guide. Start Python in the exported folder, then choose Open saved offline workspace.</p>
+    </div>
+  </dialog>
   <dialog id="sync-confirm-dialog" aria-labelledby="sync-confirm-title" aria-describedby="sync-confirm-description">
     <div class="dialog-form">
       <h2 id="sync-confirm-title">Sync checked changes to Immich?</h2>
@@ -378,7 +401,7 @@
 
   <dialog id="asset-preview-dialog" class="asset-preview-dialog">
     <div class="dialog-form">
-      <div class="detail-heading"><div><h2 id="asset-preview-title">Photo preview</h2><p id="asset-preview-caption" class="muted"></p></div><button class="icon-button" data-close aria-label="Close">×</button></div>
+      <div class="detail-heading"><div><h2 id="asset-preview-title">Photo preview</h2><p id="asset-preview-caption" class="muted"></p><a id="asset-preview-original" target="_blank" rel="noopener" hidden>Open stored original</a></div><button class="icon-button" data-close aria-label="Close">×</button></div>
       <div class="asset-preview-tools">
         <button id="asset-preview-toggle-box" class="quiet-button" type="button" hidden><span id="asset-preview-toggle-label">Hide box</span> <kbd>H</kbd></button>
         <button id="asset-preview-rotate-box" class="quiet-button" type="button" title="Rotate face rectangle 90 degrees clockwise" hidden>Rotate box <kbd>R</kbd> <span id="asset-preview-rotate-label">0°</span></button>

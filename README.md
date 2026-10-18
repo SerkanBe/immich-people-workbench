@@ -4,6 +4,7 @@ Name people faster and review incorrect face assignments in your
 [Immich](https://immich.app/) library, using keyboard shortcuts and photo context.
 
 [Getting started](#getting-started) · [User guide](docs/user-guide.md) ·
+[Offline workspace](docs/offline.md) ·
 [Visual tour](docs/visual-tour.md) · [Report a bug](docs/reporting-bugs.md)
 
 <a href="docs/images/visual-tour/name-suggestions.jpg">
@@ -21,6 +22,8 @@ Name people faster and review incorrect face assignments in your
   the keyboard.
 - **Pending review:** check queued names, merges and corrections before applying
   them to Immich.
+- **Offline workspace:** prepare a private copy of selected photos for review
+  away from your Immich server.
 
 **Changes stay local until you review Pending and explicitly Sync.** Keep a
 backup of your library before applying changes.

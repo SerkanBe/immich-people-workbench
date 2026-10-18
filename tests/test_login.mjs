@@ -6,13 +6,16 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('../web/login.js', import.meta.url), 'utf8');
-function setup({ storageError = false, readError = false, next = '', reason = '', missing = '', initialUrl = 'http://synthetic.test', savedEntries, fetchResult } = {}) {
+function setup({ storageError = false, readError = false, next = '', reason = '', missing = '', initialUrl = 'http://synthetic.test', savedEntries, fetchResult, offlineControls = false, offlineReady = false } = {}) {
   const elements = {};
   for (const id of ['login-form', 'login-error', 'immich-url', 'immich-api-key', 'immich-email', 'immich-password', 'mode-key', 'mode-login', 'login-button', 'key-fields', 'login-fields', 'insecure-tls', 'key-permissions', 'connection-notice', 'connection-notice-title', 'connection-notice-copy']) {
     elements[id] = { value: '', checked: id === 'mode-key', hidden: false, disabled: false, textContent: '', listeners: {},
       classList: { toggle(name, active) { elements[id].classes ??= new Set(); active ? elements[id].classes.add(name) : elements[id].classes.delete(name); } },
       dataset: {}, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; }, removeAttribute(name) { delete this.attributes[name]; },
       addEventListener(kind, fn) { this.listeners[kind] = fn; }, focus() { this.focused = true; } };
+  }
+  if (offlineControls) {
+    for (const id of ['saved-offline-workspace', 'open-offline-workspace']) elements[id] = {hidden:true,disabled:false,listeners:{},addEventListener(event,fn) {this.listeners[event] = fn;}};
   }
   elements['connection-notice'].hidden = true;
   const permissions = ['user.read', 'person.read', 'person.statistics', 'person.update', 'person.create', 'person.merge', 'asset.read', 'asset.view', 'face.read', 'face.update'].map(value => ({
@@ -33,7 +36,7 @@ function setup({ storageError = false, readError = false, next = '', reason = ''
       removeItem(key) { removals.push(key); if (storageError) throw Error('Storage unavailable'); saved.delete(key); },
       setItem(key, value) { if (storageError) throw Error('Storage unavailable'); saved.set(key, value); },
     },
-    fetch: async (url, options) => { calls.push([url, JSON.parse(options.body)]); return fetchResult ? fetchResult(url, options) : { ok: true, json: async () => ({ ok: true }) }; },
+    fetch: async (url, options) => { if (url === "/api/offline/status") { calls.push([url]); return {ok:true,json:async()=>({ready:offlineReady})}; } calls.push([url, JSON.parse(options.body)]); return fetchResult ? fetchResult(url, options) : { ok: true, json: async () => ({ ok: true }) }; },
   });
   vm.runInContext(source, context);
   return { elements, permissions, calls, redirects, saved, removals,
@@ -195,4 +198,31 @@ test('a deployment default works when optional browser storage is unavailable', 
   const x = setup({ initialUrl: 'http://immich-server:2283', storageError: true });
   assert.equal(x.elements['immich-url'].value, 'http://immich-server:2283');
   assert.equal(x.calls.length, 0);
+});
+
+
+test('saved offline workspace appears only when complete and opens without credentials', async () => {
+  for (const ready of [false,true]) {
+    const x = setup({offlineControls:true,offlineReady:ready});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(x.elements['saved-offline-workspace'].hidden,!ready);
+    if (!ready) continue;
+    await x.elements['open-offline-workspace'].listeners.click();
+    assert.deepEqual(x.calls, [['/api/offline/status'], ['/api/offline/open', {}]]);
+    assert.deepEqual(x.redirects,['/naming/clusters']);
+    assert.equal(x.calls.some(call=>call[0] === '/api/connect-key' || call[0] === '/api/sync'),false);
+  }
+});
+
+test('offline open failure retains login and blocks duplicate open requests', async () => {
+  let finish;
+  const x = setup({offlineControls:true,offlineReady:true,fetchResult:()=>new Promise(resolve=>{finish=resolve;})});
+  await new Promise(resolve=>setImmediate(resolve));
+  const opening=x.elements['open-offline-workspace'].listeners.click();
+  await x.elements['open-offline-workspace'].listeners.click();
+  assert.equal(x.calls.filter(call=>call[0] === '/api/offline/open').length,1);
+  finish({ok:false,json:async()=>({error:'Synthetic workspace missing'})}); await opening;
+  assert.match(x.elements['login-error'].textContent,/Synthetic workspace missing/);
+  assert.equal(x.elements['open-offline-workspace'].disabled,false);
+  assert.deepEqual(x.redirects,[]);
 });
