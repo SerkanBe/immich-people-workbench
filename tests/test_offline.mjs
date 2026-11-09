@@ -34,10 +34,14 @@ function setup() {
 test("preparation reviews unique count and size before explicit original download", async () => {
   const run=setup(); await run.workspace.refresh();
   assert.equal(run.node("offline-download").hidden,true);
+  assert.equal(run.node("offline-plan").textContent,"Check photos & size");
+  assert.match(run.node("offline-workspace-description").textContent,/No photos are downloaded yet/);
   run.status({job:{phase:"planned",planId:"synthetic-plan",assetCount:3,estimatedBytes:2048,unknownSizes:1}});
   await run.click("offline-plan");
-  assert.match(run.node("offline-workspace-description").textContent,/3 unique photos · estimated 2.0 KiB plus 1/);
+  assert.match(run.node("offline-workspace-description").textContent,/3 photos · estimated 2.0 KiB plus 1/);
   assert.equal(run.calls.some(call=>call.path === "/api/offline/download"),false);
+  assert.equal(run.node("offline-download").textContent,"Download & prepare");
+  assert.equal(run.node("offline-plan").hidden,true);
   run.status({job:{phase:"downloading",planId:"synthetic-plan",assetCount:3,downloadedFiles:1,downloadedBytes:1000}});
   await run.click("offline-download");
   const download=run.calls.find(call=>call.path === "/api/offline/download");
@@ -58,7 +62,7 @@ test("offline state exposes saved coverage and reconnect while creation actions 
   assert.match(run.node("offline-status").textContent,/Offline · 4 saved photos/);
   assert.equal(run.node("offline-reconnect").hidden,false); assert.equal(run.node("offline-plan").hidden,true);
   await run.click("offline-plan"); await run.click("offline-download");
-  assert.equal(run.calls.length,1); assert.match(run.node("offline-workspace-description").textContent,/partial/);
+  assert.equal(run.calls.length,1); assert.match(run.node("offline-workspace-description").textContent,/Pending/);
 });
 
 test("open is explicit, unavailable for partial download, and never Syncs", async () => {
@@ -78,7 +82,7 @@ test("duplicate action and stale progress replies cannot overwrite current statu
   assert.equal(run.calls.filter(call=>call.path === "/api/offline/plan").length,1);
   action.resolve({}); await preparing;
   old.resolve({job:{phase:"planned",planId:"old",assetCount:1,estimatedBytes:1}}); await previous;
-  assert.match(run.node("offline-workspace-description").textContent,/9 unique photos/);
+  assert.match(run.node("offline-workspace-description").textContent,/9 photos/);
 });
 
 test("dialog restores focus only after closing and errors remain reviewable", async () => {
@@ -104,11 +108,33 @@ test("a snapshot made stale by Sync keeps originals and requires fresh preparati
   run.status({ready:false,stale:true,staleReason:"Saved snapshot changed after Sync.",snapshot:{assetCount:3,totalBytes:1024},job:{phase:"idle"}});
   await run.workspace.refresh();
   assert.match(run.node("offline-status").textContent,/needs refresh/);
-  assert.match(run.node("offline-workspace-description").textContent,/Saved snapshot changed after Sync.*originals are retained/);
+  assert.match(run.node("offline-workspace-description").textContent,/needs refreshing after Sync.*Stored files are kept/);
   assert.equal(run.node("offline-open").hidden,true);
   assert.equal(run.node("offline-plan").hidden,false);
   await run.click("offline-open");
   assert.equal(run.calls.some(call=>call.path === "/api/offline/open"),false);
   await run.click("offline-plan");
   assert.equal(run.calls.some(call=>call.path === "/api/offline/plan"),true);
+});
+
+
+test("destination uses the authenticated server path as text, not browser storage", async () => {
+  const run=setup();
+  run.status({storagePath:"/synthetic/custom-state/offline",job:{phase:"idle"}});
+  await run.workspace.refresh();
+  assert.equal(run.node("offline-storage-path").textContent,"/synthetic/custom-state/offline");
+  run.status({storagePath:"<synthetic-path>",job:{phase:"idle"}});
+  await run.workspace.refresh();
+  assert.equal(run.node("offline-storage-path").textContent,"<synthetic-path>");
+});
+
+
+test("a fresh check on a stale workspace shows its new estimate and download action", async () => {
+  const run=setup();
+  run.status({ready:false,stale:true,snapshot:{assetCount:3},job:{phase:"planned",planId:"replacement",assetCount:5,estimatedBytes:4096}});
+  await run.workspace.refresh();
+  assert.match(run.node("offline-workspace-description").textContent,/5 photos .*4.0 KiB/);
+  assert.equal(run.node("offline-plan").hidden,true);
+  assert.equal(run.node("offline-download").hidden,false);
+  assert.equal(run.node("offline-open").hidden,true);
 });

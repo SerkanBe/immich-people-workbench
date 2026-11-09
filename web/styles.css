@@ -476,3 +476,5 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; bac
 @media (max-width: 700px) { .offline-status { max-width: 12rem; } }
 
 .pending-item.offline-conflict { border-color: var(--danger, #b91c1c); }
+
+.offline-storage code { overflow-wrap: anywhere; }

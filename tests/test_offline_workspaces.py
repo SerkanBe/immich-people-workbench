@@ -153,6 +153,21 @@ class OfflineFixture:
 
 class OfflineTests(OfflineFixture, unittest.TestCase):
 
+    def test_check_reads_metadata_without_downloading_photos(self):
+        with mock.patch.object(self.client, "request", wraps=self.client.request) as media:
+            self.manager.start_plan(self.client)
+            self.assertEqual(self.wait_job(), "planned")
+            self.assertEqual(self.manager.job["assetCount"], 2)
+            self.assertEqual(self.manager.job["estimatedBytes"], 16)
+            media.assert_not_called()
+        self.assertEqual(self.client.download_calls, [])
+        self.assertEqual(self.client.writes, [])
+        self.assertEqual(self.manager.job["downloadedFiles"], 0)
+
+    def test_storage_destination_is_only_in_authenticated_status(self):
+        self.assertNotIn("storagePath", self.manager.status())
+        self.assertEqual(self.manager.status(private=True)["storagePath"], str(self.manager.root.resolve()))
+
     def test_all_source_pages_deduplicate_stills_and_no_writes(self):
         snapshot = self.prepare()
         self.assertEqual(set(snapshot["assets"]), {A1, A2})

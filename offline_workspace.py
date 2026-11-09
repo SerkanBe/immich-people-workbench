@@ -216,6 +216,7 @@ class OfflineWorkspace:
         if stale:
             result["staleReason"] = "Changes were synced to Immich. Prepare a fresh workspace before opening offline again. Stored files have been retained."
         if private:
+            result["storagePath"] = str(self.root.resolve())
             with self.lock:
                 result["job"] = dict(self.job)
                 result["conflicts"] = list(self.conflicts)

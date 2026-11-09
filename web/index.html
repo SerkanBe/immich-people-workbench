@@ -364,19 +364,24 @@
   <dialog id="offline-workspace-dialog" aria-labelledby="offline-workspace-title">
     <div class="dialog-form">
       <div class="detail-heading"><h2 id="offline-workspace-title">Offline workspace</h2><button class="icon-button" data-close aria-label="Close">×</button></div>
-      <p>Save originals of photos containing unnamed detected clusters, with the other faces in each photo for context. Your API key also needs <code>asset.download</code>.</p>
+      <p>Save photos with unnamed people for offline review.</p>
       <p id="offline-workspace-description" role="status" aria-live="polite"></p>
+      <p class="muted offline-storage">Saved on the Workbench server: <code id="offline-storage-path"></code><br>Files are not downloaded to your browser.</p>
       <progress id="offline-workspace-progress" hidden></progress>
       <p id="offline-workspace-error" class="error-text" role="alert" hidden></p>
-      <p>Names, groups, Investigate and available Face review stay local. Changes wait in Pending until you reconnect to the same account, resolve conflicts and explicitly Sync. Named people's photos may be incomplete.</p>
       <div class="offline-actions">
-        <button id="offline-plan" class="primary-button" type="button">Prepare for offline use</button>
-        <button id="offline-download" class="primary-button" type="button" hidden>Download originals</button>
-        <button id="offline-cancel" class="quiet-button" type="button" hidden>Cancel download</button>
+        <button id="offline-plan" class="primary-button" type="button">Check photos &amp; size</button>
+        <button id="offline-download" class="primary-button" type="button" hidden>Download &amp; prepare</button>
+        <button id="offline-cancel" class="quiet-button" type="button" hidden>Cancel</button>
         <button id="offline-open" class="quiet-button" type="button" hidden>Open offline workspace</button>
         <a id="offline-reconnect" href="/login?next=/pending" hidden>Reconnect to Immich</a>
       </div>
-      <p class="muted">To use another computer, stop Workbench and export the workspace as described in the offline guide. Start Python in the exported folder, then choose Open saved offline workspace.</p>
+      <details>
+        <summary>What’s included and how to take it with you</summary>
+        <p>Original still photos containing unnamed people, with the other faces for context. Videos are excluded; named people may have only some photos available. Preparing originals needs the API-key permission <code>asset.download</code>.</p>
+        <p>To use another computer, stop Workbench and export a portable folder using <code>tools/export_workspace.py</code>. ZIP download and importing a copy back are not available yet.</p>
+        <p>Continue from the portable folder, then reconnect to the same Immich URL and account to review Pending and Sync. Keep one active copy; separately edited copies are not combined. In Docker, the path above is inside the container’s state volume.</p>
+      </details>
     </div>
   </dialog>
   <dialog id="sync-confirm-dialog" aria-labelledby="sync-confirm-title" aria-describedby="sync-confirm-description">

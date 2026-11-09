@@ -7,12 +7,18 @@ state directory and keeps offline review separate from the connected library.
 ## Prepare the workspace
 
 1. Connect to the Immich server and account you want to review.
-2. Open **Offline workspace** and choose **Prepare for offline use**. Review the
-   unique photo count and estimated storage; assets with unknown sizes are
-   called out in the estimate.
-3. Choose **Download originals**. Keep Workbench open while it downloads. Use
-   **Cancel download** to stop; reopen the dialog and choose **Resume download**
+2. Open **Offline workspace** and choose **Check photos & size**. This reads
+   metadata only. Review the unique photo count and estimated storage before
+   downloading; photos with unknown sizes are listed separately.
+3. Choose **Download & prepare**. Keep Workbench open while it downloads. Use
+   **Cancel** to stop; reopen the dialog and choose **Resume download**
    to continue later. Completed files are kept.
+
+Photos are saved on the computer running Workbench, under its state directory
+(default: `.people-workbench/offline/`). The dialog shows the configured path;
+in Docker it is inside the state volume, normally `/data/offline/`. This is not
+a browser download. Only one prepared workspace is shown; there is no workspace
+list, ZIP download or import-back feature.
 
 Preparation includes accessible still photos containing visible unnamed-cluster
 faces, including their named face context. It skips videos, hidden, locked,
@@ -48,8 +54,8 @@ refuses an existing destination and checks the saved snapshot before copying.
 Keep Workbench stopped until export finishes. Treat the exported folder as the
 one active copy: later edits to the source and exported copy are not merged.
 The resulting folder contains the app, database, downloaded photos, and local
-review data; treat the whole
-copy as private and protect or delete it as you would the originals.
+review data; treat the whole copy as private and protect or delete it as you
+would the originals.
 
 Install Python 3.10 or newer on the notebook; Workbench has no third-party
 Python requirements. From the copied folder, start the app with `python
