@@ -57,9 +57,10 @@ const person = (id="source-A", operation="merge") => ({kind:"person", personId:i
 
 function setup(items=[person()], mode={}) {
   const previous = {document:globalThis.document, confirm:globalThis.confirm};
-  const elements=new Map(), events=new Map();
+  const elements=new Map(), events=new Map(), dispatched=[];
   const el=selector=>{if(!elements.has(selector))elements.set(selector,node());return elements.get(selector);};
-  globalThis.document={querySelector:el, createElement:()=>node(), addEventListener:(name,fn)=>events.set(name,fn)};
+  globalThis.document={querySelector:el, createElement:()=>node(), addEventListener:(name,fn)=>events.set(name,fn),
+    dispatchEvent(event){dispatched.push(event.type);events.get(event.type)?.(event);}};
   globalThis.confirm=()=>true;
   const state={pages:{pending:1},pageSize:24,summary:{counts:{included:items.filter(i=>i.included).length,pending:items.length}},faceReviewSaving:false};
   const ui={pendingList:node(),detail:node()}, calls=[],toasts=[];
@@ -88,7 +89,7 @@ function setup(items=[person()], mode={}) {
     loadNames:async()=>{},matchingNames:()=>[],openAssetPreview(){},refreshSummary,renderPagination(){},
     showToast:message=>toasts.push(message),state,ui,waitUntilReady:async()=>{},refreshOffline:mode.refreshOffline,});
   controls.bindPendingControls();
-  return{el,state,ui,calls,toasts,controls,items,restore:()=>Object.assign(globalThis,previous)};
+  return{el,state,ui,calls,toasts,controls,items,dispatched,restore:()=>Object.assign(globalThis,previous)};
 }
 const inspect=(run,index)=>run.ui.pendingList.children[index].children[4].children[0].listeners.get("click")();
 const click=(run,id)=>run.el(id).listeners.get("click")();
@@ -338,4 +339,99 @@ test("confirmed Sync refreshes snapshot availability without opening offline or 
     assert.equal(refreshed,1); assert.equal(run.calls.filter(call=>call.path === "/api/sync").length,1);
     assert.equal(run.calls.some(call=>call.path === "/api/offline/open"),false);
   } finally {run.restore();}
+});
+
+test('portable Pending hides reconnect and Sync even if an offline flag is absent', async () => {
+  const run = setup([person()]);
+  try {
+    run.state.summary.portable = true;
+    await run.controls.renderPending();
+    assert.equal(run.el('#sync-button').hidden, true);
+    assert.equal(run.el('#sync-button').disabled, true);
+    assert.equal(run.el('#pending-reconnect').hidden, true);
+    assert.match(run.el('#offline-sync-notice').textContent, /return the file to the Workbench/);
+    const checkbox = run.ui.pendingList.children[0].children[0];
+    checkbox.checked = false; await checkbox.listeners.get('change')();
+    await click(run, '#sync-button'); await click(run, '#sync-confirm-apply'); await click(run, '#reset-button');
+    assert.equal(run.calls.some(call => ['/api/sync','/api/reset'].includes(call.path)), false);
+    assert.equal(run.calls.some(call => call.path.endsWith('/include')), true);
+    run.state.summary.portable = false; run.state.summary.offline = true;
+    await run.controls.renderPending();
+    assert.equal(run.el('#sync-button').hidden, false);
+    assert.equal(run.el('#pending-reconnect').hidden, false);
+    assert.match(run.el('#offline-sync-notice').textContent, /same Immich account/);
+  } finally { run.restore(); }
+});
+
+test('portable mode discovered after confirmation blocks captured Sync', async () => {
+  const run = setup([person()]);
+  try {
+    await run.controls.renderPending(); await click(run, '#sync-button');
+    run.state.summary.portable = true;
+    await click(run, '#sync-confirm-apply');
+    assert.equal(run.calls.some(call => call.path === '/api/sync'), false);
+  } finally { run.restore(); }
+});
+
+test('Pending publishes save and confirmation busy state for capture guards', async () => {
+  const wait = defer(), item = person();
+  const run = setup([item], {include:async body=>{await wait.promise;item.included=body.included;}});
+  try {
+    await run.controls.renderPending();
+    assert.equal(run.state.pendingBusy, false); assert.equal(run.state.pendingUnverified, false);
+    const checkbox = run.ui.pendingList.children[0].children[0];
+    checkbox.checked = false; const saving = checkbox.listeners.get('change')();
+    assert.equal(run.state.pendingBusy, true); assert.equal(run.state.pendingUnverified, true);
+    wait.resolve(); await saving;
+    assert.equal(run.state.pendingBusy, false); assert.equal(run.state.pendingUnverified, false);
+    item.included = true; run.state.summary.counts.included = 1;
+    await run.controls.renderPending(); await click(run, '#sync-button');
+    assert.equal(run.state.pendingBusy, true);
+    await click(run, '#sync-confirm-cancel'); assert.equal(run.state.pendingBusy, false);
+    assert.ok(run.dispatched.filter(name=>name==='workbench-save-state').length >= 4);
+    assert.equal(run.calls.some(call=>call.path==='/api/sync'), false);
+  } finally { wait.resolve();run.restore(); }
+});
+
+test('ambiguous Pending save remains unverified until an authoritative review succeeds', async () => {
+  let refreshFails = true;
+  const run = setup([person()], {include:async()=>{throw Error('synthetic lost response');},summary:async()=>{if(refreshFails)throw Error('synthetic read failure');}});
+  try {
+    await run.controls.renderPending();
+    const checkbox=run.ui.pendingList.children[0].children[0];checkbox.checked=false;
+    await checkbox.listeners.get('change')();
+    assert.equal(run.state.pendingBusy, false); assert.equal(run.state.pendingUnverified, true);
+    refreshFails=false;await run.controls.renderPending();
+    assert.equal(run.state.pendingUnverified, false);
+    assert.equal(run.calls.some(call=>call.path==='/api/sync'), false);
+  } finally {run.restore();}
+});
+
+test("Unverified import guards show safe text and require explicit Reload after Sync refusal", async () => {
+  const item = {...person(), guardStatus:"baseline_unverified", guardReason:"<Reload> then review Pending"};
+  const run = setup([item], {sync: async () => { throw Object.assign(Error("Unverified facts"), {status:409, code:"baseline_unverified"}); }});
+  try {
+    await run.controls.renderPending();
+    assert.equal(run.ui.pendingList.querySelector(".error-text").textContent, "<Reload> then review Pending");
+    await confirmSync(run);
+    assert.match(run.toasts.at(-1), /Reload from the toolbar/);
+    assert.equal(run.el("#sync-button").disabled, true);
+    await confirmSync(run);
+    assert.equal(run.calls.filter(call => call.path === "/api/sync").length, 1);
+    assert.equal(run.calls.some(call => call.path === "/api/reload" || call.applied), false);
+  } finally { run.restore(); }
+});
+
+test("Import activity invalidates old Pending tokens even when the import response is lost", async () => {
+  const run = setup();
+  try {
+    await run.controls.renderPending();
+    run.state.offlineImporting = true; document.dispatchEvent(new Event("offline-import-state"));
+    await confirmSync(run); assert.equal(run.el("#sync-button").disabled, true);
+    await run.controls.renderPending();
+    run.state.offlineImporting = false; document.dispatchEvent(new Event("offline-import-state"));
+    await confirmSync(run); assert.equal(run.calls.some(call => call.path === "/api/sync"), false);
+    await run.controls.renderPending(); await confirmSync(run);
+    assert.equal(run.calls.filter(call => call.path === "/api/sync").length, 1);
+  } finally { run.restore(); }
 });

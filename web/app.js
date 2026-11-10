@@ -42,6 +42,23 @@ const state = {
 };
 
 async function api(path, options = {}) {
+  // Face inventory scans are read-only for logical review state despite using POST.
+  const mutation = options.method && options.method !== "GET" && !path.startsWith("/api/offline/") && path !== "/api/face-review/scan-next";
+  if (mutation) {
+    state.localRequests = (state.localRequests || 0) + 1;
+    state.localRevision = (state.localRevision || 0) + 1;
+    document.dispatchEvent(new Event("workbench-save-state"));
+  }
+  try { return await requestJson(path, options); }
+  finally {
+    if (mutation) {
+      state.localRequests -= 1;
+      document.dispatchEvent(new Event("workbench-save-state"));
+    }
+  }
+}
+
+async function requestJson(path, options = {}) {
   const init = { method: options.method || "GET", headers: {} };
   if (options.body !== undefined) {
     init.headers["Content-Type"] = "application/json";
@@ -57,9 +74,9 @@ async function api(path, options = {}) {
     const missing = Array.isArray(data.missingPermissions) ? [...new Set(data.missingPermissions.filter(value => known.has(value)))].slice(0, 10) : [];
     if (data.code === "missing_permissions" && missing.length) params.set("missing", missing.join(","));
     window.location.assign(`/login?${params}`);
-    throw new Error("Sign in required");
+    throw Object.assign(new Error("Sign in required"), {status:response.status, code:data.code});
   }
-  if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
+  if (!response.ok) throw Object.assign(new Error(data.error || `${response.status} ${response.statusText}`), {status:response.status, code:data.code, limit:data.limit});
   return data;
 }
 
@@ -136,20 +153,21 @@ async function refreshSummary() {
   state.sort = summary.sort || state.sort;
   syncPeopleSortControls();
   const connection = summary.connection;
+  const offline = summary.offline || summary.portable;
   const account = connection?.displayName || "Account connected";
-  const mode = summary.offline ? "Offline workspace" : connection?.authMode === "apiKey" ? "API key" : "Admin login";
+  const mode = offline ? "Offline workspace" : connection?.authMode === "apiKey" ? "API key" : "Admin login";
   const warning = connection?.overbroad ? " · Warning: key grants extra permissions" : "";
-  document.querySelector("#connection-status").textContent = summary.offline ? "Offline workspace · local queue enabled" : summary.connected
+  document.querySelector("#connection-status").textContent = offline ? "Offline workspace · local queue enabled" : summary.connected
     ? (connection?.authMode ? `${account} · ${mode} · Immich ${summary.version}${warning}` : `Immich ${summary.version} · local queue enabled`)
     : "Not connected";
-  document.querySelector("#reload-button").hidden = !summary.connected || summary.offline;
+  document.querySelector("#reload-button").hidden = !summary.connected || offline;
   offlineWorkspace.updateSummary();
   for (const key of ["unnamed", "investigate", "faces", "pending", "named", "ignored"]) {
     document.querySelector(`#${key}-count`).textContent = summary.counts[key] ?? 0;
   }
   if (MERGE_WORKSPACE_ENABLED) document.querySelector("#merge-count").textContent = summary.counts.unnamed ?? 0;
   document.querySelector("#pending-count").textContent = summary.counts.pending ?? 0;
-  document.querySelector("#reset-button").disabled = !!summary.offline || !summary.connected || !(summary.counts.pending > 0);
+  document.querySelector("#reset-button").disabled = !!offline || !summary.connected || !(summary.counts.pending > 0);
   document.querySelector("#investigate-return-all").disabled = !summary.connected || !(summary.counts.investigate > 0);
   const working = ["loading", "statistics"].includes(summary.phase);
   const panel = document.querySelector("#progress-panel");
@@ -235,7 +253,20 @@ async function renderIgnored() {
   }
 }
 
-const offlineWorkspace = createOfflineWorkspace({ api, state, document, window, showToast });
+const offlineWorkspace = createOfflineWorkspace({ api, state, document, window, showToast, onImported: async (_result, {navigate = true} = {}) => {
+  state.faceReviewNeedsRefresh = true;
+  state.pages.pending = 1;
+  if (navigate) switchView("pending", true, false);
+  const priorFocus = document.activeElement;
+  await refreshSummary();
+  await loadNames();
+  if (state.view === "pending") {
+    await renderPending();
+    if (navigate && state.view === "pending" && document.activeElement === priorFocus && !document.querySelector("dialog[open]")) {
+      const heading = document.querySelector("#pending-heading"); heading.setAttribute("tabindex", "-1"); heading.focus();
+    }
+  }
+} });
 
 document.querySelector("#page-size-select").value = String(state.pageSize);
 document.querySelector('.nav-button[data-view="merge"]').hidden = !MERGE_WORKSPACE_ENABLED;

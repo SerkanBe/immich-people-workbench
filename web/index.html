@@ -268,7 +268,7 @@
         <div><h2 id="pending-heading">Pending changes</h2><p>Excluded items remain here for later. Sync only applies checked items.</p></div>
         <div class="pending-heading-actions">
           <button id="reset-button" class="danger-button">Discard all local changes and reload</button>
-          <button id="sync-button" class="primary-button">Sync checked changes to Immich</button>
+          <button id="sync-button" class="primary-button" hidden>Sync checked changes to Immich</button>
         </div>
       </div>
       <p id="offline-sync-notice" class="muted" hidden></p>
@@ -364,9 +364,9 @@
   <dialog id="offline-workspace-dialog" aria-labelledby="offline-workspace-title">
     <div class="dialog-form">
       <div class="detail-heading"><h2 id="offline-workspace-title">Offline workspace</h2><button class="icon-button" data-close aria-label="Close">×</button></div>
-      <p>Save photos with unnamed people for offline review.</p>
+      <p id="offline-workspace-intro">Save photos with unnamed people for offline review.</p>
       <p id="offline-workspace-description" role="status" aria-live="polite"></p>
-      <p class="muted offline-storage">Saved on the Workbench server: <code id="offline-storage-path"></code><br>Files are not downloaded to your browser.</p>
+      <p id="offline-storage" class="muted offline-storage">Saved on the Workbench server: <code id="offline-storage-path"></code><br>Preparing saves photos here; use a portable ZIP to take them with you.</p>
       <progress id="offline-workspace-progress" hidden></progress>
       <p id="offline-workspace-error" class="error-text" role="alert" hidden></p>
       <div class="offline-actions">
@@ -376,11 +376,55 @@
         <button id="offline-open" class="quiet-button" type="button" hidden>Open offline workspace</button>
         <a id="offline-reconnect" href="/login?next=/pending" hidden>Reconnect to Immich</a>
       </div>
+      <p id="offline-save-notice" class="muted" role="status">Only saved changes are included.</p>
+      <div id="offline-results" hidden>
+        <a id="offline-results-download" class="primary-button">Download offline changes</a>
+        <p class="muted">Return this small file to the Workbench that created this copy. Photos stay here.</p>
+      </div>
+      <div id="offline-source-sections">
+        <section id="offline-package-create" class="offline-section" hidden aria-labelledby="offline-package-heading">
+          <h3 id="offline-package-heading">Take it with you</h3>
+          <label>Workspace name <input id="offline-package-name" type="text" maxlength="256" placeholder="Family review" autocomplete="off"></label>
+          <button id="offline-package-build" class="primary-button" type="button">Create portable ZIP</button>
+          <p id="offline-package-message" role="status" aria-live="polite"></p>
+          <progress id="offline-package-progress" aria-label="Preparing portable ZIP" hidden></progress>
+          <a id="offline-package-download" class="primary-button" hidden>Download portable ZIP</a>
+          <p class="muted">Extract the ZIP and start Python. No Immich login is needed on that computer.</p>
+        </section>
+        <p id="offline-packages-error" class="error-text" role="alert" hidden></p>
+        <details class="offline-section">
+          <summary>Portable exports</summary>
+          <div id="offline-package-list" class="offline-history"></div>
+        </details>
+        <details id="offline-import-section" class="offline-section">
+          <summary>Bring back offline changes</summary>
+          <label>Result ZIP <input id="offline-import-file" type="file" accept=".zip,application/zip"></label>
+          <p id="offline-import-message" role="status" aria-live="polite"></p>
+          <p id="offline-import-error" class="error-text" role="alert" hidden></p>
+          <button id="offline-import-retry" class="quiet-button" type="button" hidden>Review selected file again</button>
+          <div id="offline-import-review" hidden>
+            <p id="offline-import-counts"></p>
+            <div class="offline-actions"><button id="offline-import-all" class="quiet-button" type="button">Select all ready</button><button id="offline-import-none" class="quiet-button" type="button">Exclude all</button></div>
+            <p id="offline-import-selection" class="muted" role="status"></p>
+            <div id="offline-import-rows" class="offline-import-rows"></div>
+            <div class="offline-actions"><button id="offline-import-previous" class="quiet-button" type="button">Previous page</button><span id="offline-import-page" role="status"></span><button id="offline-import-next" class="quiet-button" type="button">Next page</button></div>
+            <button id="offline-import-apply" class="primary-button" type="button" disabled>Import selected changes</button>
+            <p class="muted">Import saves locally. Review Pending, then explicitly Sync checked changes to Immich.</p>
+          </div>
+        </details>
+        <details class="offline-section">
+          <summary>State snapshots</summary>
+          <p class="muted">Saved Workbench progress, without photos or credentials. A snapshot is saved before each import. Restore is not available here.</p>
+          <label>Snapshot name <input id="offline-snapshot-name" type="text" maxlength="256" placeholder="Before review" autocomplete="off"></label>
+          <button id="offline-snapshot-create" class="quiet-button" type="button">Save state snapshot</button>
+          <div id="offline-snapshot-list" class="offline-history"></div>
+        </details>
+      </div>
+      <button id="offline-refresh" class="quiet-button" type="button">Refresh status and history</button>
       <details>
-        <summary>What’s included and how to take it with you</summary>
-        <p>Original still photos containing unnamed people, with the other faces for context. Videos are excluded; named people may have only some photos available. Preparing originals needs the API-key permission <code>asset.download</code>.</p>
-        <p>To use another computer, stop Workbench and export a portable folder using <code>tools/export_workspace.py</code>. ZIP download and importing a copy back are not available yet.</p>
-        <p>Continue from the portable folder, then reconnect to the same Immich URL and account to review Pending and Sync. Keep one active copy; separately edited copies are not combined. In Docker, the path above is inside the container’s state volume.</p>
+        <summary>What’s included</summary>
+        <p>Original still photos containing unnamed people, with other faces for context. Videos are excluded; named people may have only some photos available. Preparing originals needs the API-key permission <code>asset.download</code>.</p>
+        <p>Portable ZIPs contain private photos, names and review data. Share and store them with care. Return a results ZIP to this source Workbench; conflicts preserve existing work and may require reconciliation or a fresh export.</p>
       </details>
     </div>
   </dialog>
