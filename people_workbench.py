@@ -296,10 +296,14 @@ class Immich:
         if not hasattr(self, "_validation_local"):
             self._validation_local = threading.local()
         previous = getattr(self._validation_local, "budget", None)
-        self._validation_local.budget = {"deadline": deadline, "reads": 0, "bytes": 0}
+        previous_deadline = previous["deadline"] if previous is not None else None
+        self._validation_local.budget = previous if previous is not None else {"deadline": deadline, "reads": 0, "bytes": 0}
+        self._validation_local.budget["deadline"] = min(deadline, previous_deadline) if previous_deadline is not None else deadline
         try:
             yield
         finally:
+            if previous is not None:
+                previous["deadline"] = previous_deadline
             self._validation_local.budget = previous
 
     def json(self, method: str, path: str, payload: Any = None) -> Any:
