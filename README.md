@@ -22,8 +22,9 @@ Name people faster and review incorrect face assignments in your
   the keyboard.
 - **Pending review:** check queued names, merges and corrections before applying
   them to Immich.
-- **Offline workspace:** prepare a private copy of selected photos for review
-  away from your Immich server.
+- **Offline workspace:** download a private portable ZIP of selected photos,
+  review on another computer, and return saved changes to the original
+  Workbench for Pending review and explicit Sync.
 
 **Changes stay local until you review Pending and explicitly Sync.** Keep a
 backup of your library before applying changes.
