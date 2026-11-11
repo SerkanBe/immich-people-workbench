@@ -39,6 +39,7 @@ from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
+from workspace_state import guard_token_rows, install_schema, record_event, state_revision
 from offline_workspace import OfflineWorkspace, OfflineClient, OfflineError, OfflineConflict, Cancelled
 
 ROOT = Path(__file__).resolve().parent
@@ -46,6 +47,7 @@ WEB = ROOT / "web"
 DEFAULT_STATE_DIR = ROOT / ".people-workbench"
 DEFAULT_IMMICH_URL = "http://localhost:2283"
 MAX_BODY = 1_000_000
+WORKFLOW_BUSY_TIMEOUT_MS = 5_000
 MAX_IMAGE = 20_000_000
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{20,50}$")
 PAGE_ROUTES = frozenset({"/unnamed", "/naming/clusters", "/naming/group-photos", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"})
@@ -142,7 +144,8 @@ def mutation_guard(lock):
 def local_mutation(method):
     @wraps(method)
     def guarded(self, *args, **kwargs):
-        with mutation_guard(self.mutation_lock):
+        with (self.workflow_transaction(method.__name__) if isinstance(self, Store)
+              else mutation_guard(self.mutation_lock)):
             return method(self, *args, **kwargs)
     return guarded
 
@@ -508,6 +511,10 @@ class StoreConnection(sqlite3.Connection):
     """Keep SQLite's transaction context semantics and close on context exit."""
 
     def __exit__(self, *args: Any) -> bool:
+        if getattr(self, "workflow_active", False):
+            if args[0] is not None:
+                self.workflow_failed = True
+            return False
         try:
             return super().__exit__(*args)
         finally:
@@ -518,6 +525,7 @@ class Store:
     def __init__(self, path: Path):
         self.path = path
         self.mutation_lock = threading.RLock()
+        self._workflow = threading.local()
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(
@@ -610,8 +618,51 @@ class Store:
                 db.execute("ALTER TABLE pending ADD COLUMN merge_step TEXT NOT NULL DEFAULT 'ready'")
             if "operation" not in {row["name"] for row in db.execute("PRAGMA table_info(group_photo_drafts)")}:
                 db.execute("ALTER TABLE group_photo_drafts ADD COLUMN operation TEXT NOT NULL DEFAULT 'rename'")
+            install_schema(db)
+
+    @contextmanager
+    def workflow_transaction(self, kind: str, origin: str = "source_user"):
+        """Commit one logical action, borrowing its connection in nested helpers."""
+        with mutation_guard(self.mutation_lock):
+            active = getattr(self._workflow, "connection", None)
+            if active is not None:
+                try:
+                    yield active
+                except BaseException:
+                    active.workflow_failed = True
+                    raise
+                return
+            db = self.connect()
+            try:
+                db.execute(f"PRAGMA busy_timeout={WORKFLOW_BUSY_TIMEOUT_MS}")
+                db.execute("BEGIN IMMEDIATE")
+                start = state_revision(db)
+                db.workflow_active = True
+                db.workflow_failed = False
+                self._workflow.connection = db
+                yield db
+                if db.workflow_failed:
+                    raise ToolError("Local action failed; no changes were saved")
+                record_event(db, kind, origin, start)
+                db.commit()
+            except sqlite3.OperationalError as exc:
+                db.rollback()
+                code = getattr(exc, "sqlite_errorcode", 0) & 0xff
+                if code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or str(exc).startswith(("database is locked", "database table is locked", "database schema is locked")):
+                    raise SyncInProgress("Local changes are busy. Wait for the current save to finish, then retry.") from None
+                raise
+            except BaseException:
+                db.rollback()
+                raise
+            finally:
+                self._workflow.connection = None
+                db.workflow_active = False
+                db.close()
 
     def connect(self) -> sqlite3.Connection:
+        active = getattr(self._workflow, "connection", None)
+        if active is not None:
+            return active
         db = sqlite3.connect(self.path, timeout=30, factory=StoreConnection)
         db.row_factory = sqlite3.Row
         return db
@@ -760,10 +811,20 @@ class Store:
         # One SQLite read transaction binds both queues to the token. A write
         # between separate reads must not produce a token for a mixed snapshot.
         with self.connect() as db:
-            db.execute("BEGIN")
-            rows = db.execute("SELECT * FROM pending ORDER BY created_at, person_id").fetchall()
-            faces = db.execute("SELECT * FROM face_detach_pending ORDER BY created_at, face_id").fetchall()
-        return [dict(row) for row in rows], [dict(row) for row in faces]
+            if getattr(self._workflow, "connection", None) is None:
+                db.execute("BEGIN")
+            rows = [dict(row) for row in db.execute("SELECT * FROM pending ORDER BY created_at, person_id")]
+            faces = [dict(row) for row in db.execute("SELECT * FROM face_detach_pending ORDER BY created_at, face_id")]
+            guards = {(entity, key[0]): (action_id, revision, guard)
+                      for entity, key, action_id, revision, guard in guard_token_rows(db)}
+        # Bind guarded intent to the same review token without serializing it to
+        # the browser. Unguarded rows retain the existing token format.
+        for entity, id_field, items in (("pending", "person_id", rows), ("face_detach_pending", "face_id", faces)):
+            for row in items:
+                guard = guards.get((entity, row[id_field]))
+                if guard is not None:
+                    row["_review_guard"] = guard
+        return rows, faces
 
     def pending(self) -> list[dict[str, Any]]:
         with self.connect() as db:
@@ -869,7 +930,8 @@ class Store:
     def submit_face_review(self, person_id: str, expected: list[dict[str, Any]]) -> dict[str, int]:
         counts = {"correct": 0, "wrong": 0, "unreviewed": 0}
         with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+            if not db.in_transaction:
+                db.execute("BEGIN IMMEDIATE")
             drafts = db.execute("SELECT * FROM face_review_drafts WHERE person_id=?", (person_id,)).fetchall()
             identity = lambda rows: sorted((row["face_id"], row["asset_id"], row["verdict"]) for row in rows)
             if identity(drafts) != identity(expected):
@@ -1060,9 +1122,11 @@ class Store:
         return str(row["value"]) if row else default
 
     def set_setting(self, key: str, value: str) -> None:
-        with self.connect() as db:
+        if self.setting(key, None) == value:
+            return
+        with self.workflow_transaction("setting") as db:
             db.execute(
-                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE settings.value != excluded.value",
                 (key, value),
             )
 
@@ -1345,13 +1409,14 @@ class AppState:
             order = payload.get("order")
             if minimum < 2 or minimum > 20 or order not in GROUP_ORDERS or not isinstance(payload.get("includeArchived"), bool):
                 raise ToolError("Invalid Group photos settings")
-            old = self.group_settings()
-            self.store.set_setting("group_min_faces", str(minimum))
-            self.store.set_setting("group_archived", "true" if payload["includeArchived"] else "false")
-            self.store.set_setting("group_order", order)
-            if minimum != old["minFaces"] or payload["includeArchived"] != old["includeArchived"]:
-                self.store.restart_group_initial()
-                self.invalidate_group_scan()
+            with self.store.workflow_transaction("group_settings"):
+                old = self.group_settings()
+                self.store.set_setting("group_min_faces", str(minimum))
+                self.store.set_setting("group_archived", "true" if payload["includeArchived"] else "false")
+                self.store.set_setting("group_order", order)
+                if minimum != old["minFaces"] or payload["includeArchived"] != old["includeArchived"]:
+                    self.store.restart_group_initial()
+                    self.invalidate_group_scan()
             return self.group_settings()
 
     def _group_actionable(self, person_id: str | None, pending_ids: set[str], merge_targets: set[str]) -> bool:
@@ -1504,7 +1569,7 @@ class AppState:
         threading.Thread(target=self._group_scan, args=(generation, client, person_ids), daemon=True).start()
 
     @local_mutation
-    def group_photo_state(self) -> dict[str, Any]:
+    def group_photo_state(self, *, _repairs: list[tuple[str, tuple[Any, ...]]] | None = None) -> dict[str, Any]:
         self.start_group_scan()
         with self.group_lock:
             settings = self.group_settings()
@@ -1524,24 +1589,30 @@ class AppState:
             deferred_pass = self.store.setting("group_pass", "initial") == "deferred"
             current = self.store.setting("group_current")
             indexed_ids = {row["id"] for row in candidates}
+            # Project the repair plan locally while the remote reads are still
+            # ahead. Only the final application opens a writer transaction.
+            repairs: list[tuple[str, tuple[Any, ...]]] = []
+
+            def mark_done(asset_id: str) -> None:
+                repairs.append(("group_advance", (asset_id, "done", [])))
+                progress[asset_id] = "done"
+
             reopened = False
             for candidate in candidates:
                 status = progress.get(candidate["id"])
                 if status == "done" and candidate["unnamedCount"]:
-                    self.store.clear_group_progress(candidate["id"])
+                    repairs.append(("clear_group_progress", (candidate["id"],)))
                     progress.pop(candidate["id"], None)
                     reopened = True
                 elif status != "done" and not candidate["unnamedCount"]:
-                    self.store.group_advance(candidate["id"], "done", [])
-                    progress[candidate["id"]] = "done"
+                    mark_done(candidate["id"])
             if complete and not failures:
                 for asset_id, status in list(progress.items()):
                     if status in {"deferred", "ready"} and asset_id not in indexed_ids:
-                        self.store.group_advance(asset_id, "done", [])
-                        progress[asset_id] = "done"
+                        mark_done(asset_id)
             if reopened and deferred_pass:
-                self.store.restart_group_initial()
-                progress = self.store.group_progress()
+                repairs.append(("restart_group_initial", ()))
+                progress = {key: "deferred" if value == "ready" else value for key, value in progress.items()}
                 deferred_pass = False
                 current = ""
             eligible = [row for row in candidates if (progress.get(row["id"]) == "ready" if deferred_pass else row["id"] not in progress)]
@@ -1553,7 +1624,7 @@ class AppState:
                     client = self.require_client()
                     asset = client.asset(candidate["id"])
                     if not group_asset_allowed(asset, settings["includeArchived"]):
-                        self.store.group_advance(candidate["id"], "done", [])
+                        mark_done(candidate["id"])
                         continue
                     faces, actionable = self._group_face_data(client.faces(candidate["id"]))
                 except Exception:
@@ -1561,14 +1632,19 @@ class AppState:
                         self.group_failures += 1
                     break
                 if len(faces) < settings["minFaces"] or not actionable:
-                    self.store.group_advance(candidate["id"], "done", [])
+                    mark_done(candidate["id"])
                     continue
                 if current != candidate["id"]:
-                    self.store.set_setting("group_current", candidate["id"])
+                    repairs.append(("set_setting", ("group_current", candidate["id"])))
                 photo = {key: value for key, value in candidate.items() if key != "clusterCounts"}
                 photo.update({"faces": faces, "drafts": self.store.group_drafts(candidate["id"]), "unnamedCount": sum(face["status"] == "actionable" for face in faces)})
                 break
-            progress = self.store.group_progress()
+            if _repairs is not None:
+                _repairs.extend(repairs)
+            elif repairs:
+                with self.store.workflow_transaction("group_photo_repairs", origin="local_maintenance"):
+                    for method, args in repairs:
+                        getattr(self.store, method)(*args)
             deferred = sum(status == "deferred" for status in progress.values())
             with self.lock:
                 failures = self.group_failures
@@ -1663,10 +1739,14 @@ class AppState:
     @local_mutation
     def start_group_deferred(self) -> dict[str, Any]:
         with self.group_lock:
-            state = self.group_photo_state()
+            repairs = []
+            state = self.group_photo_state(_repairs=repairs)
             if not state["checkpoint"] or state["deferred"] == 0:
                 raise ToolError("Deferred photos are not ready for review")
-            self.store.start_group_deferred()
+            with self.store.workflow_transaction("group_deferred_pass"):
+                for method, args in repairs:
+                    getattr(self.store, method)(*args)
+                self.store.start_group_deferred()
             return {"ok": True}
 
     @local_mutation
@@ -1697,9 +1777,10 @@ class AppState:
                 raise ToolError("Merge target does not have a current or pending name")
             payload["targetName"] = target_name
             payload["name"] = target_name
-        self.store.upsert_pending(payload)
-        self.store.unmark_investigate(person_id)
-        self.store.clear_progress(person_id)
+        with self.store.workflow_transaction("person_queue"):
+            self.store.upsert_pending(payload)
+            self.store.unmark_investigate(person_id)
+            self.store.clear_progress(person_id)
 
     @local_mutation
     def queue_merge_group(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1757,10 +1838,11 @@ class AppState:
             )
             result = {"targetPersonId": survivor_id, "targetName": name, "merged": len(person_ids) - 1, "renamed": bool(name)}
 
-        self.store.upsert_pending_many(entries)
-        for person_id in person_ids:
-            self.store.unmark_investigate(person_id)
-            self.store.clear_progress(person_id)
+        with self.store.workflow_transaction("merge_group"):
+            self.store.upsert_pending_many(entries)
+            for person_id in person_ids:
+                self.store.unmark_investigate(person_id)
+                self.store.clear_progress(person_id)
         return result
 
     def pending_public(self, rows: list[dict[str, Any]] | None = None,
@@ -2089,14 +2171,16 @@ class AppState:
                 break
         if not matching:
             raise ToolError("This face is no longer assigned to that person")
-        self.store.queue_face_detach(face_id, person_id, asset_id, str(payload.get("fileName") or ""))
-        self.store.set_face_reviewed(face_id, person_id, False)
+        with self.store.workflow_transaction("face_detach"):
+            self.store.queue_face_detach(face_id, person_id, asset_id, str(payload.get("fileName") or ""))
+            self.store.set_face_reviewed(face_id, person_id, False)
 
     @local_mutation
     def discard_pending(self) -> int:
         with self.group_lock:
-            discarded = self.store.clear_pending()
-            self.store.reset_group_pass()
+            with self.store.workflow_transaction("discard_pending"):
+                discarded = self.store.clear_pending()
+                self.store.reset_group_pass()
             self.invalidate_group_scan()
             with self.lock:
                 self.sample_cache = {}
@@ -2234,6 +2318,11 @@ class AppState:
         rows.sort(key=lambda row: (priority.get(row["operation"], 9), row["created_at"], row["person_id"]))
         results = []
         failed_ids: set[str] = set()
+
+        def checkpoint(write, *args: Any) -> None:
+            with self.store.workflow_transaction(write.__name__, origin="sync_checkpoint"):
+                write(*args)
+
         for row in face_rows:
             face_id = row["face_id"]
             try:
@@ -2241,18 +2330,17 @@ class AppState:
                 target_id = row.get("target_person_id")
                 if not target_id:
                     target_id = client.create_person()["id"]
-                    self.store.set_face_detach_target(face_id, target_id)
+                    checkpoint(self.store.set_face_detach_target, face_id, target_id)
                 self.store.invalidate_face_review_inventory(target_id)
                 client.reassign_face(target_id, face_id)
-                self.store.remove_face_detach(face_id)
-                self.store.remove_face_review(face_id)
+                checkpoint(self.store.remove_face_detach, face_id)
                 results.append({
                     "faceId": face_id, "personId": row["source_person_id"],
                     "operation": "detach-face", "result": "synced", "targetPersonId": target_id,
                 })
             except Exception as exc:
                 unresolved_faces.add(row["source_person_id"])
-                self.store.set_face_detach_error(face_id, str(exc))
+                checkpoint(self.store.set_face_detach_error, face_id, str(exc))
                 results.append({
                     "faceId": face_id, "personId": row["source_person_id"],
                     "operation": "detach-face", "result": "failed", "error": str(exc),
@@ -2284,21 +2372,21 @@ class AppState:
                     self.store.invalidate_face_review_inventory(target_id)
                     step = row["merge_step"]
                     if step in {"inflight", "uncertain"}:
-                        self.store.set_merge_step(person_id, "uncertain")
+                        checkpoint(self.store.set_merge_step, person_id, "uncertain")
                         raise MergeUncertain("Merge outcome is uncertain. Check source and destination in Immich; remove this request only after reconciling the result. Sync will not repeat the merge automatically.")
                     if step != "complete":
                         # Commit before the request: a crash or lost reply must not
                         # automatically replay a possibly completed upstream merge.
-                        self.store.set_merge_step(person_id, "inflight")
+                        checkpoint(self.store.set_merge_step, person_id, "inflight")
                         try:
                             client.merge(target_id, person_id)
                         except MergeRejected:
-                            self.store.set_merge_step(person_id, "ready")
+                            checkpoint(self.store.set_merge_step, person_id, "ready")
                             raise
                         except Exception:
-                            self.store.set_merge_step(person_id, "uncertain")
+                            checkpoint(self.store.set_merge_step, person_id, "uncertain")
                             raise
-                        self.store.set_merge_step(person_id, "complete")
+                        checkpoint(self.store.set_merge_step, person_id, "complete")
                     if row.get("feature_asset_id"):
                         try:
                             client.update_person(target_id, {"featureFaceAssetId": row["feature_asset_id"]})
@@ -2310,12 +2398,13 @@ class AppState:
                     client.update_person(person_id, {"isHidden": False})
                 else:
                     raise ToolError("Unsupported pending operation")
-                self.store.remove_pending(person_id)
-                self.store.clear_progress(person_id)
+                with self.store.workflow_transaction("person_synced", origin="sync_checkpoint"):
+                    self.store.remove_pending(person_id)
+                    self.store.clear_progress(person_id)
                 results.append({"personId": person_id, "operation": operation, "result": "synced"})
             except Exception as exc:
                 failed_ids.add(person_id)
-                self.store.set_error(person_id, str(exc))
+                checkpoint(self.store.set_error, person_id, str(exc))
                 results.append({"personId": person_id, "operation": row["operation"], "result": "failed", "error": str(exc)})
         self.reports.mkdir(parents=True, exist_ok=True)
         report = self.reports / f"sync-{dt.datetime.now().astimezone():%Y%m%d-%H%M%S}.json"
@@ -2833,7 +2922,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/people":
                 kind = query.get("kind", ["unnamed"])[0]
                 order = query.get("sort", [STATE.store.setting("sort", "most")])[0]
-                STATE.store.set_setting("sort", order)
+                if "sort" in query:
+                    STATE.store.set_setting("sort", order)
                 if "page" in query or "size" in query or "q" in query or "hideCompleted" in query or "nameFilter" in query:
                     try:
                         page = int(query.get("page", ["1"])[0])
@@ -3013,7 +3103,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True})
                 elif path == "/api/pending/return":
                     person_id = str(payload.get("personId", ""))
-                    with STATE.group_lock:
+                    with STATE.group_lock, STATE.store.workflow_transaction("person_return"):
                         STATE.store.remove_pending(person_id)
                         STATE.store.skip(person_id)
                         STATE.invalidate_group_scan()
