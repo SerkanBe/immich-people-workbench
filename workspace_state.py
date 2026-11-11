@@ -147,6 +147,7 @@ REGISTRY_FIELDS = {
     "workspace_import_groups": ("export_id", "group_id", "payload_sha", "import_id"),
     "workspace_accepted": ("export_id", "operation_id", "payload_sha", "event_id"),
     "workspace_emitted": ("entity", "row_key"),
+    "workspace_emitted_operations": ("operation_id", "event_id", "entity", "row_key", "payload_sha"),
     "workspace_actions": ("entity", "row_key", "parent_id", "intent_sha", "intent_json", "guard_json"),
     "workspace_action_heads": ("entity", "row_key", "action_id"),
     "workspace_effects": ("action_id", "kind", "payload_json"),
@@ -239,6 +240,8 @@ def install_schema(db: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS workspace_import_groups(export_id TEXT NOT NULL, group_id TEXT NOT NULL, payload_sha TEXT NOT NULL, import_id TEXT NOT NULL, PRIMARY KEY(export_id,group_id))",
         "CREATE TABLE IF NOT EXISTS workspace_accepted(export_id TEXT NOT NULL, operation_id TEXT NOT NULL, payload_sha TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(export_id,operation_id))",
         "CREATE TABLE IF NOT EXISTS workspace_emitted(entity TEXT NOT NULL, row_key TEXT NOT NULL, PRIMARY KEY(entity,row_key))",
+        "CREATE TABLE IF NOT EXISTS workspace_emitted_operations(operation_id TEXT PRIMARY KEY,event_id TEXT NOT NULL,entity TEXT NOT NULL,row_key TEXT NOT NULL,payload_sha TEXT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS workspace_emitted_payload ON workspace_emitted_operations(entity,row_key,payload_sha)",
         "CREATE TABLE IF NOT EXISTS workspace_actions(id TEXT PRIMARY KEY, entity TEXT NOT NULL, row_key TEXT NOT NULL, parent_id TEXT, origin TEXT NOT NULL, intent_sha TEXT NOT NULL, intent_json TEXT NOT NULL, disposition TEXT NOT NULL, guard_json TEXT NOT NULL, guard_revision INTEGER NOT NULL)",
         "CREATE TABLE IF NOT EXISTS workspace_action_heads(entity TEXT NOT NULL, row_key TEXT NOT NULL, action_id TEXT NOT NULL, PRIMARY KEY(entity,row_key))",
         "CREATE TABLE IF NOT EXISTS workspace_effects(id TEXT PRIMARY KEY, action_id TEXT NOT NULL, kind TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL)",
@@ -855,15 +858,46 @@ def compute_changes(db: sqlite3.Connection, *, limits: Limits = DEFAULT_LIMITS) 
     old = {(row["entity"], _key(row["key"])): row for row in local_base["rows"]}
     by_event: dict[str, list[Operation]] = {}
     emitted = set(map(tuple, db.execute("SELECT entity,row_key FROM workspace_emitted")))
-    touched: dict[tuple[str, str], str] = {}
+    if emitted and db.execute("SELECT 1 FROM workspace_emitted e WHERE NOT EXISTS(SELECT 1 FROM workspace_emitted_operations o WHERE o.entity=e.entity AND o.row_key=e.row_key) LIMIT 1").fetchone():
+        raise WorkspaceError("Previously returned work has no saved event bindings. Review earlier results and prepare a fresh workspace before returning further changes.", "not_ready")
+    parents: dict[tuple[str, str], tuple[str, str]] = {}
+    sizes: dict[tuple[str, str], int] = {}
+    first_event: dict[tuple[str, str], tuple[int, str]] = {}
+    def component(item):
+        trail = []
+        while parents[item] != item:
+            trail.append(item)
+            item = parents[item]
+        for member in trail:
+            parents[member] = item
+        return item
     references = 0
-    for event_id, event_keys in db.execute("SELECT id,keys_json FROM workspace_events ORDER BY end_revision,id"):
+    for order, (event_id, event_keys) in enumerate(db.execute("SELECT id,keys_json FROM workspace_events ORDER BY end_revision,id")):
         keys = json.loads(event_keys)
         references += len(keys)
         if references > limits.references:
             raise WorkspaceError("Change dependencies exceed the limit", "resource_limit")
-        for entity, key in keys:
-            touched[entity, _key(key)] = event_id
+        members = [(entity, _key(key)) for entity, key in keys if not (entity == "settings" and key == ["group_current"])]
+        for member in members:
+            if member not in parents:
+                parents[member] = member
+                sizes[member] = 1
+                first_event[member] = order, event_id
+        # Retain original command closure through edits, including non-delta
+        # bridge keys. A later one-row command cannot split an earlier submit.
+        if members:
+            root = component(members[0])
+            for member in members[1:]:
+                other = component(member)
+                if other == root:
+                    continue
+                if sizes[other] > sizes[root]:
+                    root, other = other, root
+                parents[other] = root
+                sizes[root] += sizes[other]
+                first_event[root] = min(first_event[root], first_event[other])
+    pending_groups: dict[tuple[str, str], list[Operation]] = {}
+    declared_events: dict[tuple[str, str], set[str]] = {}
     count = 0
     for row in current["rows"]:
         entity, key = row["entity"], row["key"]
@@ -889,10 +923,21 @@ def compute_changes(db: sqlite3.Connection, *, limits: Limits = DEFAULT_LIMITS) 
         count += 1
         if count > limits.operations:
             raise WorkspaceError("Too many returned operations", "resource_limit")
-        event_id = touched.get(row_key)
-        if not event_id:
+        if row_key not in parents:
             raise WorkspaceError("Portable change history is unavailable", "portable_invalid")
-        by_event.setdefault(event_id, []).append({"id": operation_id, **operation})
+        root = component(row_key)
+        emitted_op = db.execute("SELECT operation_id,event_id FROM workspace_emitted_operations WHERE entity=? AND row_key=? AND payload_sha=? ORDER BY operation_id LIMIT 1",
+                                (entity, _key(key), digest(operation))).fetchone()
+        if emitted_op:
+            operation_id = emitted_op[0]
+            declared_events.setdefault(root, set()).add(emitted_op[1])
+        pending_groups.setdefault(root, []).append({"id": operation_id, **operation})
+    for root, operations in pending_groups.items():
+        prior = declared_events.get(root, set())
+        if len(prior) > 1:
+            raise WorkspaceError("Previously returned work was regrouped. Review earlier results and prepare a fresh workspace before returning further changes.", "not_ready")
+        event_id = next(iter(prior)) if prior else first_event[root][1]
+        by_event.setdefault(event_id, []).extend(operations)
     events: list[ChangeGroup] = [{"id": event_id, "kind": _kind(members), "operations": sorted(members, key=lambda op: op["id"])}
         for event_id, members in sorted(by_event.items())]
     result: Results = {"format": "people-workbench.results", "formatVersion": FORMAT_VERSION,
@@ -916,8 +961,21 @@ def note_results_emitted(db: sqlite3.Connection, result: Results, *, limits: Lim
     keys = {(OP_ENTITIES[op["type"].rsplit(".", 1)[0]], _key(op["key"])) for event in result["events"] for op in event["operations"]}
     existing = set(map(tuple, db.execute("SELECT entity,row_key FROM workspace_emitted")))
     added = keys - existing
-    _capacity(db, sum(len(entity.encode()) + len(key.encode()) + 128 for entity, key in added), len(added), limits=limits)
+    notes = []
+    for event in result["events"]:
+        for op in event["operations"]:
+            entity = OP_ENTITIES[op["type"].rsplit(".", 1)[0]]
+            payload_sha = digest({key: value for key, value in op.items() if key != "id"})
+            note = (op["id"], event["id"], entity, _key(op["key"]), payload_sha)
+            old = db.execute("SELECT operation_id,event_id,entity,row_key,payload_sha FROM workspace_emitted_operations WHERE operation_id=?", (op["id"],)).fetchone()
+            if old and tuple(old) != note:
+                raise WorkspaceError("Emitted operation identity changed", "portable_invalid")
+            if not old:
+                notes.append(note)
+    _capacity(db, sum(len(entity.encode()) + len(key.encode()) + 128 for entity, key in added) + sum(sum(len(item.encode()) for item in note) + 128 for note in notes),
+              len(added) + len(notes), limits=limits)
     db.executemany("INSERT INTO workspace_emitted VALUES(?,?)", sorted(added))
+    db.executemany("INSERT INTO workspace_emitted_operations VALUES(?,?,?,?,?)", notes)
 
 
 def accepted_operation(db: sqlite3.Connection, export_id: str, operation: Operation, event_id: str) -> bool:

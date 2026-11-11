@@ -192,6 +192,99 @@ class WorkspaceStateTests(unittest.TestCase):
         self.assertEqual(error.exception.code, "not_ready")
         self.assertEqual(portable.skips()[Q], 1)
 
+    def test_superseding_edit_preserves_original_group_photo_command(self):
+        record = self.export()
+        portable, _ = self.portable(record)
+        portable.group_advance(ASSET, "done", [rename(P), rename(Q)])
+        original = self.result(portable)
+        portable.upsert_pending(rename(P, "Edited after submit"))
+        result = self.result(app.Store(portable.path))
+        groups, _ = ws.group_results(result, record["baseline"]["state"])
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]["operations"]), 3)
+        self.assertEqual(len(result["events"]), 1)
+        self.assertEqual(result["events"][0]["id"], original["events"][0]["id"])
+        changed = next(op for op in groups[0]["operations"] if op["type"] == "person.pending.set" and op["key"] == [P])
+        self.assertEqual(changed["value"]["name"], "Edited after submit")
+
+    def test_unchanged_emitted_members_keep_ids_after_superseding_edit(self):
+        record = self.export()
+        portable, _ = self.portable(record)
+        portable.group_advance(ASSET, "done", [rename(P), rename(Q)])
+        original = self.result(portable, emit=True)
+        original_groups, event_ids = ws.group_results(original, record["baseline"]["state"])
+        with self.source.workflow_transaction("apply", origin="import") as db:
+            snapshot = ws.create_snapshot(db, "Before group import", "pre-import")
+            self.source.group_advance(ASSET, "done", [rename(P), rename(Q)])
+            ws.record_import(db, record["id"], original_groups, snapshot["id"], event_ids=event_ids)
+        # A same-value queue save changes SQL revision/timestamps, but it does
+        # not change the already emitted desired operation or declared event.
+        portable.upsert_pending(rename(Q))
+        self.assertEqual(self.result(portable), original)
+        portable.upsert_pending(rename(P, "Later desired name"))
+        portable.skip(R)
+        result = self.result(app.Store(portable.path))
+        groups, current_ids = ws.group_results(result, record["baseline"]["state"])
+        original_by_key = {(op["type"], tuple(op["key"])): op for event in original["events"] for op in event["operations"]}
+        current_by_key = {(op["type"], tuple(op["key"])): op for event in result["events"] for op in event["operations"]}
+        for key in (("person.pending.set", (Q,)), ("group.progress.set", (ASSET,))):
+            self.assertEqual(current_by_key[key], original_by_key[key])
+            op_id = original_by_key[key]["id"]
+            self.assertEqual(current_ids[op_id], event_ids[op_id])
+        with self.source.connect() as db:
+            statuses = sorted(ws.acceptance_status(db, record["id"], group, current_ids) for group in groups)
+        self.assertEqual(statuses, ["conflict", "ready"])
+
+    def test_shared_member_keeps_transitive_command_closure_after_edit(self):
+        record = self.export()
+        portable, _ = self.portable(record)
+        portable.group_advance(ASSET, "done", [rename(P), rename(Q)])
+        portable.group_advance(OTHER, "done", [rename(Q), rename(R)])
+        portable.upsert_pending(rename(P, "Changed first member"))
+        groups, _ = ws.group_results(self.result(portable), record["baseline"]["state"])
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]["operations"]), 5)
+
+    def test_joining_distinct_emitted_events_is_refused_without_rebinding(self):
+        portable, _ = self.portable(self.export())
+        portable.upsert_pending(rename(P))
+        portable.upsert_pending(rename(Q))
+        original = self.result(portable, emit=True)
+        self.assertEqual(len(original["events"]), 2)
+        portable.group_advance(ASSET, "done", [rename(P), rename(Q)])
+        with self.assertRaisesRegex(ws.WorkspaceError, "regrouped") as error:
+            self.result(app.Store(portable.path))
+        self.assertEqual(error.exception.code, "not_ready")
+        self.assertEqual(len(portable.pending()), 2)
+        self.assertEqual(portable.group_progress(), {ASSET: "done"})
+
+    def test_cursor_navigation_does_not_join_independent_photo_commands(self):
+        record = self.export()
+        portable, _ = self.portable(record)
+        for asset, person in ((ASSET, P), (OTHER, Q)):
+            portable.set_setting("group_current", asset)
+            portable.group_advance(asset, "done", [rename(person)])
+        result = self.result(portable)
+        groups, _ = ws.group_results(result, record["baseline"]["state"])
+        self.assertEqual(sorted(len(group["operations"]) for group in groups), [2, 2])
+
+    def test_legacy_emission_without_event_bindings_fails_closed(self):
+        portable, _ = self.portable(self.export())
+        portable.upsert_pending(rename(P))
+        with portable.workflow_transaction("legacy_emission") as db:
+            db.execute("INSERT INTO workspace_emitted VALUES(?,?)", ("pending", ws._key([P])))
+        with self.assertRaisesRegex(ws.WorkspaceError, "no saved event bindings") as error:
+            self.result(app.Store(portable.path))
+        self.assertEqual(error.exception.code, "not_ready")
+
+    def test_historical_command_closure_respects_reference_budget(self):
+        portable, _ = self.portable(self.export())
+        portable.group_advance(ASSET, "done", [rename(P), rename(Q)])
+        portable.upsert_pending(rename(P, "Later desired name"))
+        with portable.connect() as db, self.assertRaises(ws.WorkspaceError) as error:
+            ws.compute_changes(db, limits=ws.Limits(references=2))
+        self.assertEqual(error.exception.code, "resource_limit")
+
     def test_accepted_event_survives_regrouping_and_local_removal(self):
         record = self.export()
         portable, _ = self.portable(record)
