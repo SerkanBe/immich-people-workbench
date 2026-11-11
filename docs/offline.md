@@ -1,84 +1,106 @@
-# Work offline with an Immich copy
+# Work offline with portable photos
 
-An offline workspace lets you review a prepared, local copy of selected Immich
-photos while the notebook is disconnected. Workbench saves originals in its
-state directory and keeps offline review separate from the connected library.
+Use an **Offline workspace** to prepare selected Immich photos on the Workbench
+server, review them on another computer, then return your saved changes to the
+original Workbench. A portable ZIP contains private photos, names, and review
+data, but no Immich credentials. Share and store it with care.
 
-## Prepare the workspace
+## Prepare photos and create a portable ZIP
 
 1. Connect to the Immich server and account you want to review.
-2. Open **Offline workspace** and choose **Check photos & size**. This reads
-   metadata only. Review the unique photo count and estimated storage before
-   downloading; photos with unknown sizes are listed separately.
-3. Choose **Download & prepare**. Keep Workbench open while it downloads. Use
-   **Cancel** to stop; reopen the dialog and choose **Resume download**
-   to continue later. Completed files are kept.
+2. Open **Offline workspace** and choose **Check photos & size**. Review the
+   unique photo count, estimated size, and the save path shown for the Workbench
+   server. This check reads metadata; it does not download photos. An API key
+   needs the `asset.download` permission even for this check. See [API key
+   connection](api-key-authentication.md).
+3. Choose **Download & prepare**. The Workbench saves the selected originals on
+   its server. In Docker, the path is inside the Workbench state volume; it is
+   not a folder your browser downloads to. Keep the Workbench available while
+   preparation runs. Choose **Cancel** to stop a download and **Resume download**
+   to continue it later. Completed files are kept.
+4. When the workspace is ready, enter a **Workspace name**, choose **Create
+   portable ZIP**, wait for it to finish, then choose **Download portable ZIP**.
+   You can download a ready ZIP later from **Portable exports**. This browser
+   download contains the app, selected photos, and saved review state. It is
+   private but contains no credentials.
 
-Photos are saved on the computer running Workbench, under its state directory
-(default: `.people-workbench/offline/`). The dialog shows the configured path;
-in Docker it is inside the state volume, normally `/data/offline/`. This is not
-a browser download. Only one prepared workspace is shown; there is no workspace
-list, ZIP download or import-back feature.
+Preparation includes selected still photos with unnamed detected people and
+other faces in those photos for context. It excludes videos and photos outside
+the selection. A named person may have only partial photo coverage, so
+unavailable photos and incomplete face inventories stay unavailable or marked
+partial. If a browser cannot display an original image format, Workbench can
+show its cached preview and offer **Open stored original**.
 
-Preparation includes accessible still photos containing visible unnamed-cluster
-faces, including their named face context. It skips videos, hidden, locked,
-trashed, deleted, and other photos outside that selection; it does not copy the
-whole library. Named-person coverage can be partial, and Face Review reports
-that rather than treating the copy as a complete inventory. Immich remains
-needed for unavailable photos and videos. Original image formats are kept as
-downloaded; if a browser cannot display one, Workbench uses its cached preview
-and offers **Open stored original**.
+## Review on another computer
 
-The optional `asset.download` API-key permission is used only to prepare or
-download originals. Everyday connected features do not require it. An API key
-without this permission can still connect and use normal Workbench features.
+Extract the ZIP into a new local folder. Install Python 3.10 or newer; no extra
+packages are required. From that folder, run:
 
-## Move to a notebook
+```sh
+python people_workbench.py
+```
 
-After the workspace is ready, stop Workbench. From the source folder, export a
-self-contained portable folder. Choose a new destination on the drive you will
-move to the notebook:
+On Windows, use `python people_workbench.py` or `py -3 people_workbench.py`.
+Choose **Open saved offline workspace**. It opens for a browser on that
+computer; the computer does not need Immich, an Immich account, or credentials.
 
-```bash
+Use Naming, Group photos, Investigate, and available Face Review. Your saved
+progress stays in this portable copy across restarts. Wait for saves to finish
+before creating a results file: **Only saved changes are included**. Videos,
+unselected photos, and unavailable people or faces still require the original
+Immich library.
+
+When ready to return your work, choose **Download offline changes** and send
+that small results ZIP back to the person using the original Workbench. The
+results file contains review changes, not photos or the app.
+
+## Import results at the original Workbench
+
+Open the exact Workbench that created the portable ZIP, using its original
+Immich account. Under **Bring back offline changes**, choose the results file
+in **Result ZIP**. Review the groups labeled **Ready**, **Conflict**, or
+**Already imported**. Conflicts stay unchanged; their reason explains what
+needs attention. Reconcile the issue at the source or prepare a fresh export
+before returning further changes. Already imported work is not applied twice.
+
+Select the ready changes you want and choose **Import selected changes**. This
+saves them locally and records a state snapshot before import. It does not
+change Immich. Review the imported items with any other work in **Pending
+changes**, then choose **Sync checked changes to Immich** when you are ready.
+Only checked items apply to Immich.
+
+The result belongs to its originating Workbench and account. Another Workbench,
+even if connected to the same Immich account, cannot import it. If you exclude
+a conflict, that change remains unresolved in the portable results; import does
+not choose a winner for you.
+
+## State snapshots
+
+Workbench saves a state snapshot before every import. To save another one, open
+**State snapshots** and choose **Save state snapshot**. You can list and
+download saved snapshots there. They contain Workbench progress, not photos or
+credentials. Snapshots cannot be restored from this screen and do not undo
+changes already synced to Immich; they are not a photo-library backup.
+
+## Existing folder copies
+
+An older offline folder made with `tools/export_workspace.py` is separate from the portable ZIP workflow above. To make a folder copy, stop Workbench and run:
+
+```sh
 python tools/export_workspace.py /path/to/new/PeopleWorkbench
 ```
 
-On Windows PowerShell, use a Windows-local destination, for example:
+In PowerShell, use a Windows-local destination, such as `E:\PeopleWorkbench`.
+Add `--state-dir PATH` when the source uses a custom state directory. The
+destination must not already exist.
 
-```powershell
-python tools/export_workspace.py E:\PeopleWorkbench
-```
-
-To export from a custom state directory, add `--state-dir PATH`. The exporter
-refuses an existing destination and checks the saved snapshot before copying.
-Keep Workbench stopped until export finishes. Treat the exported folder as the
-one active copy: later edits to the source and exported copy are not merged.
-The resulting folder contains the app, database, downloaded photos, and local
-review data; treat the whole copy as private and protect or delete it as you
-would the originals.
-
-Install Python 3.10 or newer on the notebook; Workbench has no third-party
-Python requirements. From the copied folder, start the app with `python
-people_workbench.py` (or `py -3 people_workbench.py` in PowerShell). Choose
-**Open saved offline workspace** on the login page. An explicit offline open
-starts the saved snapshot; login or reconnect does not silently switch modes.
-Offline opening requires a local Python instance bound to loopback (the default).
-It is unavailable through remote access or a container listening on all interfaces.
-
-## Review and reconnect
-
-Offline mode supports photo context for unnamed clusters and available named
-person context. Local drafts and review progress are saved in the copied state.
-Pending changes remain local: **Sync** is unavailable offline. To apply them,
-connect to the same Immich URL and account, review Pending again, then choose
-**Sync** yourself.
-
-After a confirmed Sync, prepare a fresh snapshot before your next offline trip.
-
-Changes made on the connected server after preparation can conflict with the
-saved snapshot. Reconnect to the same URL and account. Workbench blocks Sync
-when included Pending work conflicts and identifies affected people or
-photos. Review those changes in Immich, remove the affected items from Pending,
-then review the remaining Pending before choosing **Sync**. A
-copied workspace is a private working copy, not a replacement for a current
-Immich backup.
+To use an existing unmarked folder copy, run `python people_workbench.py`
+from that folder and choose **Open saved offline workspace**. To apply its
+Pending changes, reconnect that copy to the same Immich server and account,
+review Pending, and explicitly Sync. If Sync reports conflicts, check the
+affected people or photos in Immich, remove those items from Pending, then
+review and Sync the remaining items. After a confirmed Sync, prepare a fresh
+snapshot before another trip. The folder's local progress does not import into
+the original Workbench, and changes in the source and copy are not merged
+automatically. Keep the folder private; it contains the app, photos, and local
+review data. It is not a replacement for an Immich backup.
