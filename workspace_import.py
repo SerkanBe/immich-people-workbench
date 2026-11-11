@@ -982,6 +982,19 @@ class ImportManager:
                 for row in items:
                     if not row["included"]:
                         continue
+                    if entity == "pending" and row.get("operation") == "merge" and row.get("merge_step") == "complete":
+                        with self.state.store.connect() as db:
+                            saved = ws.action_head(db, entity, [row[key_field]])
+                            has_view = saved and any(guard.get("view") or guard.get("extra_view") for guard in self._guards(saved["guard"]))
+                            receipt = saved and db.execute("SELECT 1 FROM workspace_effects WHERE action_id=? AND kind='merge' LIMIT 1", (saved["id"],)).fetchone()
+                        if has_view and not receipt:
+                            # The durable complete checkpoint proves the merge
+                            # response was validated. A crash before projection
+                            # must recover only its own expected guard deltas;
+                            # it must never request the deleted source or merge
+                            # again. Projection and receipt commit together.
+                            if not self.effect("merge", row, row["target_person_id"], budget=budget):
+                                raise ws.WorkspaceError("Completed merge target facts require reconciliation before the remaining photo update.", "preview_stale")
                     action = self.action_ready(entity, row[key_field])
                     if not action:
                         continue
@@ -1075,10 +1088,10 @@ class ImportManager:
                 guard.pop("createState", None)
                 ws.set_action_guard(db, "face_detach_pending", [row["face_id"]], guard)
 
-    def effect(self, kind, row, target=None):
+    def effect(self, kind, row, target=None, *, budget=None):
         """Project only verified own deltas, never wholesale fresh remote state."""
         client = self.state.require_client()
-        budget = ReadBudget(client, 30)
+        budget = budget or ReadBudget(client, 30)
         updates = []
         own_entity = "face_detach_pending" if "face_id" in row else "pending"
         own_key = row.get("face_id", row.get("person_id"))

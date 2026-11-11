@@ -218,6 +218,50 @@ class ReturnImportTests(OfflineFixture, unittest.TestCase):
             self.assertEqual(ws.list_snapshots(db), [])
         self.assertEqual(self.client.writes, [])
 
+    def interrupted_merge(self):
+        self.local.queue({"personId": P1, "operation": "merge", "targetPersonId": P3, "featureAssetId": A1})
+        self.apply(self.preview())
+        calls = []
+        def merge(target, source):
+            calls.append((target, source))
+            del self.client.rows[source]
+            self.client.rows[target]["updatedAt"] = "verified-own-merge"
+            for face in self.client.face_rows[A1]:
+                if face["person"]["id"] == source:
+                    face["person"] = {"id": target}
+        self.client.merge = merge
+        # Fail inside the projection/receipt transaction, after its guard
+        # updates but before commit. The earlier complete checkpoint survives.
+        with mock.patch.object(ws, "record_effect", side_effect=RuntimeError("Synthetic interrupted receipt")):
+            self.assertEqual(self.state.sync()["failed"], 1)
+        self.assertEqual(self.state.store.pending()[0]["merge_step"], "complete")
+        with self.state.store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM workspace_effects WHERE kind='merge'").fetchone()[0], 0)
+        self.state = app.AppState(app.Store(self.state.store.path), self.state.reports)
+        self.state.client = self.client
+        self.state.people = copy.deepcopy(self.client.rows)
+        return calls
+
+    def test_completed_merge_recovers_guard_receipt_after_restart_without_remerge(self):
+        calls = self.interrupted_merge()
+        with mock.patch.object(self.client, "person", wraps=self.client.person) as reads:
+            self.assertEqual(self.state.sync(self.state.pending_data()["reviewToken"])["failed"], 0)
+        self.assertNotIn(P1, [call.args[0] for call in reads.call_args_list])
+        self.assertEqual(calls, [(P3, P1)])
+        self.assertEqual(self.client.writes, [("person", P3, {"featureFaceAssetId": A1})])
+        with self.state.store.connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM workspace_effects WHERE kind='merge'").fetchone()[0], 1)
+
+    def test_completed_merge_recovery_never_blesses_foreign_target_change(self):
+        calls = self.interrupted_merge()
+        self.client.rows[P3]["name"] = "Unexpected external name"
+        with self.assertRaises(ws.WorkspaceError) as error:
+            self.state.sync(self.state.pending_data()["reviewToken"])
+        self.assertEqual(error.exception.code, "preview_stale")
+        self.assertEqual(calls, [(P3, P1)])
+        self.assertEqual(self.client.writes, [])
+        self.assertEqual(self.state.store.pending()[0]["merge_step"], "complete")
+
 
 if __name__ == "__main__":
     unittest.main()
