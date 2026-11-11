@@ -25,7 +25,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
     }
     const notice = document.querySelector("#offline-sync-notice");
     if (notice) { notice.hidden = !offline; notice.textContent = portable
-      ? "Changes stay local. Download offline changes from Offline workspace, then return the file to the Workbench that created this package for Pending review and Sync."
+      ? "Working offline"
       : "Working offline: changes stay in Pending. Reconnect to the same Immich account to review conflicts and Sync."; }
     const reconnect = document.querySelector("#pending-reconnect");
     if (reconnect) reconnect.hidden = portable || !offline;

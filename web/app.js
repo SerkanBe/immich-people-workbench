@@ -8,14 +8,14 @@ import { createGroupPhotos } from "./group-photos.js";
 import { createInvestigate } from "./investigate.js";
 import { createPending } from "./pending.js";
 import { createAssetPreview } from "./asset-preview.js";
-import { createNavigationDrawer, routeForView, updateNavigationState, viewFromPath } from "./navigation.js";
+import { createNavigationDrawer, OFFLINE_ROUTES, routeForView, updateNavigationState, viewFromPath } from "./navigation.js";
 import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM, readMergeCanvasState, readPageSize, savePageSize, saveMergeCanvasState } from "./browser-storage.js";
 
 "use strict";
 
 const MERGE_CARD_WIDTH = 220, MERGE_CARD_HEIGHT = 260;
 const MERGE_WORKSPACE_ENABLED = false;
-const VIEW_ROUTES = new Set(["unnamed", "group-photos", ...(MERGE_WORKSPACE_ENABLED ? ["merge"] : []), "investigate", "faces", "pending", "named", "ignored"]);
+const VIEW_ROUTES = new Set(["unnamed", "group-photos", ...(MERGE_WORKSPACE_ENABLED ? ["merge"] : []), "investigate", "faces", "pending", "named", "ignored", ...Object.keys(OFFLINE_ROUTES)]);
 
 const ui = {
   duplicate: document.querySelector("#duplicate-dialog"),
@@ -206,6 +206,8 @@ function switchView(view, pushHistory = true, render = true, focusDestination = 
   if (!MERGE_WORKSPACE_ENABLED && /^\/merge\/?$/.test(window.location.pathname)) window.history.replaceState(null, "", routeForView(view));
   else if (pushHistory && window.location.pathname !== routeForView(view)) window.history.pushState(null, "", routeForView(view));
   state.view = view;
+  offlineWorkspace.setView(view);
+  document.querySelector(".page-size-control").hidden = Object.hasOwn(OFFLINE_ROUTES, view);
   updateNavigationState(document, view);
   document.querySelectorAll(".view").forEach(section => section.classList.toggle("active", section.id === `${view}-view`));
   if (render) return renderCurrentView(!focusDestination).catch(error => showToast(error.message));
@@ -213,6 +215,7 @@ function switchView(view, pushHistory = true, render = true, focusDestination = 
 
 async function renderCurrentView(focusFirst = false, refresh = true) {
   if (refresh) await refreshSummary();
+  if (Object.hasOwn(OFFLINE_ROUTES, state.view)) { await offlineWorkspace.showView(state.view); return; }
   if (state.summary.phase !== "ready") return;
   if (state.view === "unnamed") await renderPeopleGrid("unnamed", ui.grid, focusFirst);
   if (state.view === "group-photos") await renderGroupPhotos();
@@ -253,25 +256,29 @@ async function renderIgnored() {
   }
 }
 
-const offlineWorkspace = createOfflineWorkspace({ api, state, document, window, showToast, onImported: async (_result, {navigate = true} = {}) => {
+const offlineWorkspace = createOfflineWorkspace({ api, state, document, window, showToast, onNavigate: view => switchView(view), onImported: async () => {
   state.faceReviewNeedsRefresh = true;
   state.pages.pending = 1;
-  if (navigate) switchView("pending", true, false);
-  const priorFocus = document.activeElement;
   await refreshSummary();
   await loadNames();
-  if (state.view === "pending") {
-    await renderPending();
-    if (navigate && state.view === "pending" && document.activeElement === priorFocus && !document.querySelector("dialog[open]")) {
-      const heading = document.querySelector("#pending-heading"); heading.setAttribute("tabindex", "-1"); heading.focus();
-    }
-  }
+  if (state.view === "pending") await renderPending();
 } });
 
 document.querySelector("#page-size-select").value = String(state.pageSize);
 document.querySelector('.nav-button[data-view="merge"]').hidden = !MERGE_WORKSPACE_ENABLED;
 createNavigationDrawer({ document, window, onNavigate: (view, fromDrawer) => switchView(view, true, true, fromDrawer) });
 window.addEventListener("popstate", () => switchView(viewFromPath(window.location.pathname), false));
+document.addEventListener("click", event => {
+  const link = event.target.closest?.("a[data-view]");
+  if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  const before = state.view;
+  Promise.resolve(switchView(link.dataset.view)).then(() => {
+    if (state.view !== link.dataset.view || before === state.view) return;
+    const heading = document.querySelector(".view.active h2");
+    if (heading && document.activeElement === link) { heading.setAttribute("tabindex", "-1"); heading.focus(); }
+  });
+});
 document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => switchView(button.dataset.go)));
 document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
 document.querySelector("#reload-button").addEventListener("click", async () => { resetListPages(); await api("/api/reload", { method: "POST", body: {} }); await waitUntilReady(); });

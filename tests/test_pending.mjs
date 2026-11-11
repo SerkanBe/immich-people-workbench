@@ -349,7 +349,7 @@ test('portable Pending hides reconnect and Sync even if an offline flag is absen
     assert.equal(run.el('#sync-button').hidden, true);
     assert.equal(run.el('#sync-button').disabled, true);
     assert.equal(run.el('#pending-reconnect').hidden, true);
-    assert.match(run.el('#offline-sync-notice').textContent, /return the file to the Workbench/);
+    assert.match(run.el('#offline-sync-notice').textContent, /Working offline/);
     const checkbox = run.ui.pendingList.children[0].children[0];
     checkbox.checked = false; await checkbox.listeners.get('change')();
     await click(run, '#sync-button'); await click(run, '#sync-confirm-apply'); await click(run, '#reset-button');

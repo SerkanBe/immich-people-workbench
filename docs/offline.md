@@ -1,121 +1,124 @@
-# Work offline with portable photos
+# Review an offline copy
 
-Use an **Offline workspace** to prepare selected Immich photos on the Workbench
-server, review them on another computer, then return your saved changes to the
-original Workbench. A portable ZIP contains private photos, names, and review
-data, but no Immich credentials. Share and store it with care.
+Create a portable copy in the source Workbench, review it on another computer,
+then return saved changes for local import and explicit Pending Sync. The copy
+contains private photos, names and review data, without Immich credentials.
 
-## Prepare photos and create a portable ZIP
+## Create and download a copy
 
-1. Connect to the Immich server and account you want to review.
-2. Open **Offline workspace** and choose **Check photos & size**. Review the
-   unique photo count, estimated size, and the save path shown for the Workbench
-   server. This check reads metadata; it does not download photos. An API key
-   needs the `asset.download` permission even for this check. See [API key
-   connection](api-key-authentication.md).
-3. Choose **Download & prepare**. The Workbench saves the selected originals on
-   its server. In Docker, the path is inside the Workbench state volume; it is
-   not a folder your browser downloads to. Keep the Workbench available while
-   preparation runs. Choose **Cancel** to stop a download and **Resume download**
-   to continue it later. Completed files are kept.
-4. When the workspace is ready, enter a **Workspace name**, choose **Create
-   portable ZIP**, wait for it to finish, then choose **Download portable ZIP**.
-   You can download a ready ZIP later from **Portable exports**. This browser
-   download contains the app, selected photos, and saved review state. It is
-   private but contains no credentials.
+1. Connect to the Immich server and account you want to review. Under **Offline**,
+   open **Create offline copy** and choose **Find photos**.
+2. Review the photo count and size. **Size unknown** means metadata did not give
+   a usable estimate; a partial estimate identifies photos with unknown sizes.
+   Enter a **Copy name** if you want a label other than **Offline copy**.
+3. Choose **Create offline copy**. This one action saves the selected photos on
+   the Workbench server and creates the portable ZIP. You can use other pages
+   while it runs. The page shows the current step, saved count and bytes.
+4. When ready, choose **Download offline copy**. **Exports** appears in navigation
+   when an export exists and lets you download a ready copy again.
 
-If preparation fails, its message identifies the step (original, preview,
-thumbnail, or local storage) and includes an HTTP status when Immich supplies
-one. Checking metadata does not test those later downloads. Original downloads
-require `asset.download`; an individual item can still be unavailable. A missing
-size estimate means the check could not obtain usable size metadata.
-Space checks use the drive containing Workbench's state directory and retain a
-64 MiB reserve. **Resume download** keeps completed originals, including an
-original whose preview failed; the saved count includes those originals even
-while the workspace is incomplete.
+**Cancel** stops the current work. Completed originals are retained. Return to
+creation and choose **Resume** when offered. After a reload or lost response,
+refresh the status, then choose **Continue** or **Resume** explicitly; the browser
+never replays a transfer automatically. Prior ready exports remain available.
 
-Preparation includes selected still photos with unnamed detected people and
-other faces in those photos for context. It excludes videos and photos outside
-the selection. A named person may have only partial photo coverage, so
-unavailable photos and incomplete face inventories stay unavailable or marked
-partial. If a browser cannot display an original image format, Workbench can
-show its cached preview and offer **Open stored original**.
+**Storage details** shows the server path. In Docker this is inside Workbench's
+state volume, not a browser download directory. Only **Download offline copy**
+saves the ZIP through your browser. The storage drive must have sufficient space;
+Workbench keeps a 64 MiB reserve.
+
+Find photos reads metadata without downloading media. It requires the optional
+`asset.download` API-key permission, as does downloading originals. Preparation
+includes accessible still photos containing unnamed people and other faces in
+those photos for context. Videos and photos outside that selection are excluded;
+named people can have partial coverage. The page's **?** help explains selection,
+size estimates and copy names.
+
+Errors identify the failed step and an HTTP status when Immich provides one.
+Checking metadata does not test later original, preview or portrait downloads.
+Resume keeps completed originals, including originals whose previews failed.
 
 ## Review on another computer
 
-Extract the ZIP into a new local folder. Install Python 3.10 or newer; no extra
-packages are required. From that folder, run:
+Extract the ZIP into a new folder. Install Python 3.10 or newer; no extra packages
+are needed. From that folder, run:
 
 ```sh
 python people_workbench.py
 ```
 
 On Windows, use `python people_workbench.py` or `py -3 people_workbench.py`.
-Choose **Open saved offline workspace**. It opens for a browser on that
-computer; the computer does not need Immich, an Immich account, or credentials.
+Choose **Open saved offline workspace**. No Immich connection, account or
+credentials are needed on that computer.
 
-Use Naming, Group photos, Investigate, and available Face Review. Your saved
-progress stays in this portable copy across restarts. Wait for saves to finish
-before creating a results file: **Only saved changes are included**. Videos,
-unselected photos, and unavailable people or faces still require the original
-Immich library.
+Use Naming, Group photos, Investigate and available Face Review. Saved progress
+persists across restart. Unavailable photos and incomplete face inventories stay
+unavailable or partial. Workbench can show cached previews for original formats
+that the browser cannot display and offer **Open stored original**.
 
-When ready to return your work, choose **Download offline changes** and send
-that small results ZIP back to the person using the original Workbench. The
-results file contains review changes, not photos or the app.
+The header shows **Working offline** and **Download changes**. Wait for saves to
+finish, then download the small results ZIP and return it to the original
+Workbench. It contains saved review changes, not photos or application code.
+Keep your portable copy until its returned work is accepted at the source.
+The **?** link opens Help while preserving your current workflow.
 
-After returning results, some overlapping edits, such as undoing or regrouping
-previously returned work, require a fresh export. Workbench keeps your saved
-portable work and explains when it cannot return a continuation. Keep that
-copy until you have reconciled the work at the source.
+## Import offline changes
 
-## Import results at the original Workbench
+1. Open the exact Workbench that created the copy, using its original Immich
+   account. Under **Offline**, choose **Import offline changes**.
+2. Choose the returned changes file. Review **Ready**, **Conflict** and
+   **Already imported** groups, including any additional pages. Ready groups
+   start selected; exclude any you do not want to import.
+3. Choose **Import selected changes**. Workbench saves accepted changes locally
+   and takes a state snapshot first. It never Syncs automatically.
+4. If proposed Immich changes are queued, choose **Review Pending**. Check them
+   alongside existing work, then explicitly **Sync checked changes to Immich**.
+   Only checked actions are applied to Immich. Accepted local reviews, progress
+   and eligible preferences can be saved without creating a Pending action.
 
-Open the exact Workbench that created the portable ZIP, using its original
-Immich account. Under **Bring back offline changes**, choose the results file
-in **Result ZIP**. Review the groups labeled **Ready**, **Conflict**, or
-**Already imported**. Conflicts stay unchanged; their reason explains what
-needs attention. Reconcile the issue at the source or prepare a fresh export
-before returning further changes. Already imported work is not applied twice.
+Help visits preserve the selected file, preview and exclusions until expiry or a
+context change. After an expired or stale preview, review the file again. If an
+import response is lost, explicitly review the same file to reconcile its saved
+outcome before another import.
 
-Select the ready changes you want and choose **Import selected changes**. This
-saves them locally and records a state snapshot before import. It does not
-change Immich. Review the imported items with any other work in **Pending
-changes**, then choose **Sync checked changes to Immich** when you are ready.
-Only checked items apply to Immich.
-
-The result belongs to its originating Workbench and account. Another Workbench,
-even if connected to the same Immich account, cannot import it. If you exclude
-a conflict, that change remains unresolved in the portable results; import does
-not choose a winner for you.
+Another Workbench cannot import the result, even when connected to the same
+Immich account. Already imported changes are not applied twice. Conflict reasons
+explain the current problem; excluding a conflict does not resolve it. Reconcile
+at the source or create a fresh export where required. Keep a portable copy with
+unsupported overlapping continuation changes until its work is reconciled.
 
 ## State snapshots
 
-Workbench saves a state snapshot before every import. To save another one, open
-**State snapshots** and choose **Save state snapshot**. You can list and
-download saved snapshots there. They contain Workbench progress, not photos or
-credentials. Snapshots cannot be restored from this screen and do not undo
-changes already synced to Immich; they are not a photo-library backup.
+Open **State snapshots** from the local-data link below the main navigation.
+Save, list and download snapshots there. Workbench also takes one before each
+actual nonempty import. Snapshots contain saved Workbench progress and media
+references, not duplicated photos or credentials. The page's **?** explains their
+scope.
+
+There is no restore or delete action. Snapshots cannot undo changes already
+Synced to Immich and are not photo-library backups. Unsubmitted browser text and
+failed saves are not part of a snapshot.
 
 ## Existing folder copies
 
-An older offline folder made with `tools/export_workspace.py` is separate from the portable ZIP workflow above. To make a folder copy, stop Workbench and run:
+Older unmarked folder copies retain their original reconnect workflow. To make
+one, stop Workbench and run:
 
 ```sh
 python tools/export_workspace.py /path/to/new/PeopleWorkbench
 ```
 
-In PowerShell, use a Windows-local destination, such as `E:\PeopleWorkbench`.
-Add `--state-dir PATH` when the source uses a custom state directory. The
-destination must not already exist.
+In PowerShell, use a Windows-local destination such as `E:\PeopleWorkbench`.
+Use `--state-dir PATH` for a custom source state directory. The destination must
+not already exist.
 
-To use an existing unmarked folder copy, run `python people_workbench.py`
-from that folder and choose **Open saved offline workspace**. To apply its
-Pending changes, reconnect that copy to the same Immich server and account,
-review Pending, and explicitly Sync. If Sync reports conflicts, check the
-affected people or photos in Immich, remove those items from Pending, then
-review and Sync the remaining items. After a confirmed Sync, prepare a fresh
-snapshot before another trip. The folder's local progress does not import into
-the original Workbench, and changes in the source and copy are not merged
-automatically. Keep the folder private; it contains the app, photos, and local
-review data. It is not a replacement for an Immich backup.
+Run `python people_workbench.py` from the copy and choose **Open saved offline
+workspace**. To apply its Pending changes, reconnect that copy to the same
+Immich server and account, review Pending and explicitly Sync. If Sync reports
+conflicts, check affected people or photos in Immich, remove those items from
+Pending, then review the remaining selection. Prepare a fresh snapshot after a
+confirmed Sync before another trip.
+
+The folder's progress does not import automatically into the original Workbench;
+independently edited copies are not merged automatically. Keep it private: it
+contains the app, photos and local review data.

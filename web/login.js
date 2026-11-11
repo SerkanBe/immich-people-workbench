@@ -138,7 +138,7 @@ form.addEventListener("submit", async event => {
     try { localStorage.setItem(URL_KEY, url); } catch { /* Optional convenience. */ }
     clearSecrets();
     const next = new URLSearchParams(window.location.search).get("next");
-    const routes = new Set(["/", "/unnamed", "/naming/clusters", "/naming/group-photos", "/investigate", "/faces", "/pending", "/named", "/ignored"]);
+    const routes = new Set(["/", "/unnamed", "/naming/clusters", "/naming/group-photos", "/investigate", "/faces", "/pending", "/named", "/ignored", "/offline/create", "/offline/import", "/offline/exports", "/settings/snapshots", "/help/offline", "/help/snapshots"]);
     window.location.replace(routes.has(next) ? next : "/");
   } catch (cause) {
     error.textContent = cause instanceof TypeError ? "Cannot reach Workbench. Check the connection and retry." : cause.message;

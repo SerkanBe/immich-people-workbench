@@ -210,3 +210,10 @@ test("a delayed navigation cannot steal focus after another focus or route chang
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(next.heading.focusCount, 1);
 });
+
+test("offline, local-data and Help routes map both ways including direct trailing-slash loads",()=>{
+  const expected={"offline-create":"/offline/create","offline-import":"/offline/import","offline-exports":"/offline/exports",snapshots:"/settings/snapshots","offline-help":"/help/offline","snapshots-help":"/help/snapshots"};
+  for(const [view,path] of Object.entries(expected)){
+    assert.equal(routeForView(view),path);assert.equal(viewFromPath(path),view);assert.equal(viewFromPath(path+"/"),view);
+  }
+});

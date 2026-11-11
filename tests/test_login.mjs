@@ -87,7 +87,7 @@ test('optional storage failure permits connection', async () => {
 });
 
 test('all permitted next routes and untrusted redirects', async () => {
-  for (const next of ['/', '/unnamed', '/naming/clusters', '/naming/group-photos', '/investigate', '/faces', '/pending', '/named', '/ignored', 'https://evil.test', '//evil.test', '/merge', '/unknown']) {
+  for (const next of ['/', '/unnamed', '/naming/clusters', '/naming/group-photos', '/investigate', '/faces', '/pending', '/named', '/ignored', '/offline/create', '/offline/import', '/offline/exports', '/settings/snapshots', '/help/offline', '/help/snapshots', 'https://evil.test', '//evil.test', '/merge', '/unknown']) {
     const x = await setupReady({ next }); x.elements['immich-api-key'].value = 'synthetic-key'; await x.submit();
     assert.equal(x.redirects[0], ['https://evil.test', '//evil.test', '/merge', '/unknown'].includes(next) ? '/' : next);
   }

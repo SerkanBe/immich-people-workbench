@@ -3,13 +3,21 @@
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+export const OFFLINE_ROUTES = Object.freeze({
+  "offline-create": "/offline/create", "offline-import": "/offline/import", "offline-exports": "/offline/exports",
+  snapshots: "/settings/snapshots", "offline-help": "/help/offline", "snapshots-help": "/help/snapshots",
+});
+
 const ROUTED_VIEWS = ["unnamed", "group-photos", "investigate", "faces", "pending", "named", "ignored"];
 
 export function routeForView(view) {
+  if (Object.hasOwn(OFFLINE_ROUTES, view)) return OFFLINE_ROUTES[view];
   return view === "unnamed" ? "/naming/clusters" : view === "group-photos" ? "/naming/group-photos" : `/${view}`;
 }
 
 export function viewFromPath(path, mergeEnabled = false) {
+  const route = path.replace(/\/$/, "");
+  for (const [view, value] of Object.entries(OFFLINE_ROUTES)) if (value === route) return view;
   const view = path.replace(/^\/|\/$/g, "");
   if (view === "naming/clusters") return "unnamed";
   if (view === "naming/group-photos") return "group-photos";
