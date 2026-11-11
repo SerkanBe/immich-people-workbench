@@ -5,8 +5,11 @@ import hashlib
 from contextlib import closing
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -74,6 +77,16 @@ class WorkspaceExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "already exists"):
             EXPORT.export_workspace(self.target, self.state, self.source)
         self.assertEqual((self.target / "keep.txt").read_text(), "keep")
+
+    def test_exported_runtime_imports_without_checkout_or_site_packages(self):
+        EXPORT.export_workspace(self.target, self.state, Path(__file__).resolve().parents[1])
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        env["PYTHONNOUSERSITE"] = "1"
+        result = subprocess.run([sys.executable, "-S", str(self.target / "people_workbench.py"), "--help"],
+                                cwd=self.target, env=env, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Keyboard-first local", result.stdout)
 
     def test_incomplete_or_escaping_media_is_refused(self):
         for path in ("../outside", "/outside"):

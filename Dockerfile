@@ -10,7 +10,7 @@ RUN groupadd --gid 10001 workbench \
     && useradd --uid 10001 --gid workbench --no-create-home workbench \
     && mkdir /data && chown workbench:workbench /data
 
-COPY people_workbench.py offline_workspace.py LICENSE /app/
+COPY people_workbench.py offline_workspace.py workspace_state.py workspace_packages.py workspace_import.py LICENSE /app/
 COPY web/ /app/web/
 USER 10001:10001
 EXPOSE 8766

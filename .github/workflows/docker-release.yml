@@ -64,7 +64,7 @@ jobs:
 
           assert os.getuid() == 10001 and os.getgid() == 10001
           root = Path('/app')
-          assert {path.name for path in root.iterdir()} == {'people_workbench.py', 'offline_workspace.py', 'LICENSE', 'web'}
+          assert {path.name for path in root.iterdir()} == {'people_workbench.py', 'offline_workspace.py', 'workspace_state.py', 'workspace_packages.py', 'workspace_import.py', 'LICENSE', 'web'}
           assert (root / 'web/navigation.js').is_file()
           assert (root / 'web/login-key.css').is_file()
           assert not list(Path('/data/reports').glob('*'))

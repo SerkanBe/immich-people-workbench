@@ -17,7 +17,8 @@ import sqlite3
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME = ("people_workbench.py", "offline_workspace.py", "LICENSE")
+RUNTIME = ("people_workbench.py", "offline_workspace.py", "workspace_state.py",
+           "workspace_packages.py", "workspace_import.py", "LICENSE")
 WEB_FILES = (
     "index.html", "login.html", "styles.css", "login-key.css", "app.js",
     "login.js", "navigation.js", "asset-preview.js", "browser-storage.js",
