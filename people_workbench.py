@@ -40,6 +40,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
 from workspace_state import guard_token_rows, install_schema, record_event, state_revision
+import workspace_state as workspace_state
+from workspace_import import ImportManager, ResultsError
 from offline_workspace import OfflineWorkspace, OfflineClient, OfflineError, OfflineConflict, Cancelled
 
 ROOT = Path(__file__).resolve().parent
@@ -251,6 +253,16 @@ class Immich:
         self.connection_metadata: dict[str, Any] = {}
 
     def request(self, method: str, path: str, payload: Any = None) -> tuple[bytes, str]:
+        budget = getattr(getattr(self, "_validation_local", None), "budget", None)
+        timeout, response_limit = 60, MAX_IMAGE
+        if budget is not None:
+            if time.monotonic() >= budget["deadline"]:
+                raise workspace_state.WorkspaceError("Validation timed out; no changes were applied.", "validation_timeout")
+            if budget["reads"] >= 1000:
+                raise workspace_state.WorkspaceError("Validation read limit exceeded.", "resource_limit")
+            budget["reads"] += 1
+            timeout = min(5, max(0.001, budget["deadline"] - time.monotonic()))
+            response_limit = min(2 * 1024 ** 2, 64 * 1024 ** 2 - budget["bytes"])
         data = json.dumps(payload).encode() if payload is not None else None
         headers = {"Accept": "application/json"}
         if self.credential:
@@ -259,9 +271,15 @@ class Immich:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
-            with self.opener.open(request, timeout=60) as response:
-                body = response.read(MAX_IMAGE + 1)
-                if len(body) > MAX_IMAGE:
+            with self.opener.open(request, timeout=timeout) as response:
+                body = response.read(response_limit + 1)
+                if budget is not None:
+                    budget["bytes"] += len(body)
+                    if time.monotonic() >= budget["deadline"]:
+                        raise workspace_state.WorkspaceError("Validation timed out; no changes were applied.", "validation_timeout")
+                if len(body) > response_limit:
+                    if budget is not None:
+                        raise workspace_state.WorkspaceError("Validation data limit exceeded.", "resource_limit")
                     raise ToolError("Immich response exceeded the safety limit")
                 return body, response.headers.get_content_type()
         except urllib.error.HTTPError as exc:
@@ -272,6 +290,17 @@ class Immich:
             raise ConnectionError("Cannot reach Immich. Check its URL, network and HTTPS certificate.") from None
         except (ValueError, OSError):
             raise ConnectionError("Cannot reach Immich. Check its URL, network and HTTPS certificate.") from None
+
+    @contextmanager
+    def validation_budget(self, deadline):
+        if not hasattr(self, "_validation_local"):
+            self._validation_local = threading.local()
+        previous = getattr(self._validation_local, "budget", None)
+        self._validation_local.budget = {"deadline": deadline, "reads": 0, "bytes": 0}
+        try:
+            yield
+        finally:
+            self._validation_local.budget = previous
 
     def json(self, method: str, path: str, payload: Any = None) -> Any:
         body, _ = self.request(method, path, payload)
@@ -621,7 +650,7 @@ class Store:
             install_schema(db)
 
     @contextmanager
-    def workflow_transaction(self, kind: str, origin: str = "source_user"):
+    def workflow_transaction(self, kind: str, origin: str = "source_user", *, commit_guard=None):
         """Commit one logical action, borrowing its connection in nested helpers."""
         with mutation_guard(self.mutation_lock):
             active = getattr(self._workflow, "connection", None)
@@ -644,7 +673,8 @@ class Store:
                 if db.workflow_failed:
                     raise ToolError("Local action failed; no changes were saved")
                 record_event(db, kind, origin, start)
-                db.commit()
+                with commit_guard() if commit_guard else nullcontext():
+                    db.commit()
             except sqlite3.OperationalError as exc:
                 db.rollback()
                 code = getattr(exc, "sqlite_errorcode", 0) & 0xff
@@ -1164,6 +1194,38 @@ class AppState:
         self.group_below_minimum = 0
         self.group_without_actionable = 0
         self.offline = OfflineWorkspace(self)
+        self.source_root = Path(__file__).resolve().parent
+        self.transfers = ImportManager(self)
+        self._packages = None
+
+    def portable_policy(self) -> dict[str, bool]:
+        marker = self.source_root / "portable-workspace.json"
+        exists = marker.exists() or marker.is_symlink()
+        try:
+            with self.store.connect() as db:
+                identity = workspace_state.instance_identity(db)
+                portable = identity["mode"] != "source" or exists
+                descriptor = workspace_state.portable_descriptor(db)
+            if not portable:
+                return {"portable": False, "valid": True}
+            valid = (exists and not marker.is_symlink() and marker.is_file() and marker.stat().st_size <= 65536
+                     and descriptor is not None and json.loads(marker.read_text(encoding="utf-8")) == descriptor)
+            return {"portable": True, "valid": bool(valid)}
+        except (OSError, ValueError, workspace_state.WorkspaceError):
+            return {"portable": True, "valid": False}
+
+    def assert_online(self) -> None:
+        policy = self.portable_policy()
+        if policy["portable"]:
+            code = "portable_restricted" if policy["valid"] else "portable_invalid"
+            raise workspace_state.WorkspaceError("This portable workspace stays offline. Return results to its source Workbench.", code)
+
+    def package_manager(self):
+        self.assert_online()
+        if self._packages is None:
+            from workspace_packages import PackageManager
+            self._packages = PackageManager(self, self.source_root)
+        return self._packages
 
     def invalidate_group_scan(self) -> None:
         with self.lock:
@@ -1209,7 +1271,10 @@ class AppState:
         with self.lock:
             if self.client is None:
                 raise ToolError("Connect to Immich first")
-            return self.client
+            client = self.client
+        if not getattr(client, "offline", False):
+            self.assert_online()
+        return client
 
     @staticmethod
     def face_inventory_current(scan: dict[str, Any] | None, person: dict[str, Any]) -> bool:
@@ -1217,6 +1282,7 @@ class AppState:
                     and scan["person_updated_at"] == str(person.get("updatedAt") or ""))
 
     def connect(self, client: Immich) -> str:
+        self.assert_online()
         version = client.version()
         with self.lock:
             self.client, self.version = client, version
@@ -1226,12 +1292,14 @@ class AppState:
         self.set_status("connected", f"Connected to Immich {version}")
         return version
 
-    def load(self) -> None:
+    def load(self, refresh_guards: bool = False) -> None:
         client: Immich | None = None
         try:
             client = self.require_client()
             if not getattr(client, "offline", False):
                 self.offline.validate(client)
+                if refresh_guards:
+                    self.transfers.refresh_unverified(client)
             if not self.set_status_for_client(client, "loading", "Loading people from Immich"):
                 return
             people = client.all_people()
@@ -1280,6 +1348,7 @@ class AppState:
         investigate_ids = self.store.investigate_ids()
         return {
             "connected": connected,
+            "portable": self.portable_policy()["portable"],
             "offline": bool(getattr(self.client, "offline", False)),
             "offlineCoverage": {"availableAssets": len(self.client.assets), "totalAssets": None, "complete": False,
                                 "scope": "Visible unnamed clusters and their still photos; named people may have partial coverage"} if isinstance(self.client, OfflineClient) else None,
@@ -1878,6 +1947,15 @@ class AppState:
                 "lastError": row["last_error"], "currentName": person.get("name", ""),
                 "assetCount": person.get("assetCount"),
             })
+        guarded = {}
+        for row in [*rows, *face_rows]:
+            if row.get("_review_guard"):
+                guarded[row.get("face_id", row.get("person_id"))] = json.loads(row["_review_guard"][2])
+        for item in result:
+            guard = guarded.get(item.get("faceId", item.get("personId")), {})
+            if guard.get("status") == "baseline_unverified":
+                item["guardStatus"] = "baseline_unverified"
+                item["guardReason"] = "Use Reload, then review Pending again before Sync. Your local intent is saved."
         return result
 
     def pending_data(self) -> dict[str, Any]:
@@ -2298,6 +2376,7 @@ class AppState:
             self.sync_lock.release()
 
     def _sync(self, review_token: str | None = None) -> dict[str, Any]:
+        self.assert_online()
         all_pending, all_face_pending = self.store.pending_snapshot()
         if review_token is not None and (not isinstance(review_token, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", review_token)
@@ -2306,6 +2385,7 @@ class AppState:
         client = self.require_client()
         if getattr(client, "offline", False):
             raise OfflineError("Reconnect to Immich, review Pending and explicitly Sync.")
+        self.transfers.validate_pending(client, all_pending, all_face_pending)
         conflicts = self.offline.validate(client, all_pending, all_face_pending)
         if conflicts:
             raise OfflineConflict(conflicts)
@@ -2326,13 +2406,23 @@ class AppState:
         for row in face_rows:
             face_id = row["face_id"]
             try:
+                self.transfers.action_ready("face_detach_pending", face_id)
                 self.store.invalidate_face_review_inventory(row["source_person_id"])
                 target_id = row.get("target_person_id")
                 if not target_id:
-                    target_id = client.create_person()["id"]
+                    self.transfers.before_create(row)
+                    try:
+                        target_id = client.create_person()["id"]
+                    except UpstreamError as exc:
+                        if exc.status in {400, 401, 403, 404}:
+                            self.transfers.create_refused(row)
+                        raise
                     checkpoint(self.store.set_face_detach_target, face_id, target_id)
+                    if not self.transfers.effect("create", row, target_id):
+                        raise ToolError("Created face target could not be verified; reconcile before retrying")
                 self.store.invalidate_face_review_inventory(target_id)
                 client.reassign_face(target_id, face_id)
+                self.transfers.effect("detach", row, target_id)
                 checkpoint(self.store.remove_face_detach, face_id)
                 results.append({
                     "faceId": face_id, "personId": row["source_person_id"],
@@ -2348,6 +2438,7 @@ class AppState:
         for row in rows:
             person_id = row["person_id"]
             try:
+                self.transfers.action_ready("pending", person_id)
                 operation = row["operation"]
                 target_id = row.get("target_person_id") if operation == "merge" else None
                 if person_id in draft_people or target_id in draft_people:
@@ -2359,6 +2450,7 @@ class AppState:
                     if row.get("feature_asset_id"):
                         body["featureFaceAssetId"] = row["feature_asset_id"]
                     client.update_person(person_id, body)
+                    self.transfers.effect("rename", row)
                 elif operation == "merge":
                     target_id = row.get("target_person_id")
                     if not target_id:
@@ -2387,15 +2479,20 @@ class AppState:
                             checkpoint(self.store.set_merge_step, person_id, "uncertain")
                             raise
                         checkpoint(self.store.set_merge_step, person_id, "complete")
+                        if not self.transfers.effect("merge", row, target_id):
+                            raise ToolError("Merge completed; its remaining target facts require reconciliation")
                     if row.get("feature_asset_id"):
                         try:
                             client.update_person(target_id, {"featureFaceAssetId": row["feature_asset_id"]})
+                            self.transfers.effect("feature", row, target_id)
                         except Exception as exc:
                             raise ToolError("Merge completed; representative photo update failed. Retry Sync to apply only the photo update. " + str(exc)) from exc
                 elif operation == "hide":
                     client.update_person(person_id, {"isHidden": True})
+                    self.transfers.effect("hide", row)
                 elif operation == "unhide":
                     client.update_person(person_id, {"isHidden": False})
+                    self.transfers.effect("unhide", row)
                 else:
                     raise ToolError("Unsupported pending operation")
                 with self.store.workflow_transaction("person_synced", origin="sync_checkpoint"):
@@ -2500,6 +2597,7 @@ class AdminSession:
             return version, self.cookie
 
     def login(self, url: str, email: str, password: str, insecure: bool) -> tuple[str, str]:
+        self.state.assert_online()
         if not email.strip() or not password:
             raise ToolError("Immich email and password are required")
         with mutation_guard(self.state.mutation_lock):
@@ -2514,6 +2612,7 @@ class AdminSession:
             return self._install(client, identity, client.version())
 
     def connect_key(self, url: str, key: str, insecure: bool) -> tuple[str, str]:
+        self.state.assert_online()
         if not isinstance(url, str):
             raise AuthenticationError("Enter a valid Immich URL.", "invalid_input")
         if not isinstance(key, str) or not key.strip() or any(ord(c) < 32 or ord(c) == 127 for c in key):
@@ -2612,6 +2711,7 @@ class AdminSession:
                 raise AuthenticationError("Reconnect with the required permissions; local work is saved.", "missing_permissions", missing)
 
     def sync(self, cookie: str, review_token: str) -> dict[str, Any]:
+        self.state.assert_online()
         if not self.state.sync_lock.acquire(blocking=False):
             raise SyncInProgress("Sync already in progress")
         try:
@@ -2644,6 +2744,9 @@ class AdminSession:
                 self._clear()
 
     def open_offline(self) -> str:
+        policy = self.state.portable_policy()
+        if policy["portable"] and not policy["valid"]:
+            raise workspace_state.WorkspaceError("Portable workspace is incomplete or damaged.", "portable_invalid")
         with mutation_guard(self.state.mutation_lock), self.lock:
             self.state.offline.cancel()
             client = self.state.offline.open_client()
@@ -2777,6 +2880,9 @@ class Handler(BaseHTTPRequestHandler):
             return False
 
     def authorization(self):
+        policy = STATE.portable_policy()
+        if policy["portable"] and (not policy["valid"] or AUTH.mode != "offline"):
+            return False, None
         if AUTH.mode == "offline" and not self.offline_local():
             return False, None
         return AUTH.authorization(self.session_cookie())
@@ -2829,17 +2935,148 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0 or length > MAX_BODY:
-            raise ToolError("Invalid request size")
+    def body(self, limit: int = MAX_BODY) -> dict[str, Any]:
+        sizes = self.headers.get_all("Content-Length", [])
+        if len(sizes) != 1 or not sizes[0].isdigit() or self.headers.get("Transfer-Encoding"):
+            raise workspace_state.WorkspaceError("Invalid request framing.")
+        length = int(sizes[0])
+        if length <= 0:
+            raise workspace_state.WorkspaceError("Invalid request size.")
+        if length > limit:
+            raise workspace_state.WorkspaceError("Request exceeds its size limit.", "resource_limit")
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise workspace_state.WorkspaceError("Duplicate request field.")
+                value[key] = item
+            return value
         try:
-            value = json.loads(self.rfile.read(length))
-        except json.JSONDecodeError as exc:
+            data = self.rfile.read(length)
+            if len(data) != length:
+                raise workspace_state.WorkspaceError("Incomplete request body.")
+            value = json.loads(data, object_pairs_hook=unique)
+        except (UnicodeError, json.JSONDecodeError) as exc:
             raise ToolError("Invalid JSON") from exc
         if not isinstance(value, dict):
             raise ToolError("JSON object required")
         return value
+
+    def transfer_error(self, exc) -> None:
+        code = getattr(exc, "code", "invalid_results")
+        status = {"resource_limit": 413, "source_mismatch": 403, "portable_restricted": 403, "portable_invalid": 403,
+                  "mutation_busy": 409, "resource_busy": 409, "preview_capacity": 409, "preview_expired": 409, "preview_stale": 409,
+                  "not_ready": 409, "storage_quota": 409, "snapshot_quota": 409, "cancelled": 409, "baseline_unverified": 409,
+                  "validation_timeout": 504, "export_timeout": 504, "insufficient_storage": 507,
+                  "snapshot_failed": 500, "import_failed": 500}.get(code, 400)
+        self.send_json({"error": str(exc), "code": code}, status)
+
+    def transfer_context(self):
+        with AUTH.lock:
+            return (AUTH.epoch, AUTH.user_id, id(STATE.client))
+
+    def private_download_origin(self):
+        return self.headers.get("Sec-Fetch-Site") != "cross-site" and (not self.headers.get_all("Origin", []) or self.same_origin())
+
+    def download(self, path: Path, filename: str, kind: str = "application/zip"):
+        if not self.private_download_origin():
+            raise workspace_state.WorkspaceError("Invalid download origin.", "source_mismatch")
+        with path.open("rb") as stream:
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Disposition", 'attachment; filename="' + filename + '"')
+            self.send_header("Content-Length", str(os.fstat(stream.fileno()).st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            shutil.copyfileobj(stream, self.wfile, length=1024 * 1024)
+
+    def offline_get(self, path):
+        if not self.private_download_origin():
+            raise workspace_state.WorkspaceError("Invalid download origin.", "source_mismatch")
+        if path == "/api/offline/packages":
+            STATE.assert_online()
+            with STATE.store.connect() as db:
+                snapshots = workspace_state.list_snapshots(db)
+            self.send_json({"portable": False, "workspaces": STATE.package_manager().list(), "snapshots": snapshots})
+        elif path == "/api/offline/results":
+            policy = STATE.portable_policy()
+            if not policy["portable"] or not policy["valid"] or AUTH.mode != "offline":
+                raise workspace_state.WorkspaceError("Open a valid portable workspace to return changes.", "portable_restricted")
+            from workspace_packages import write_results_zip
+            artifact = None
+            try:
+                with STATE.store.workflow_transaction("results_export") as db:
+                    result = workspace_state.compute_changes(db)
+                    artifact = write_results_zip(result, STATE.store.path.parent)
+                    workspace_state.note_results_emitted(db, result)
+                self.download(artifact.path, "offline-changes.zip")
+            finally:
+                if artifact is not None:
+                    artifact.path.unlink(missing_ok=True)
+        elif re.fullmatch(r"/api/offline/packages/[0-9a-f-]{36}/download", path):
+            export_id = path.split("/")[4]
+            self.download(STATE.package_manager().download(export_id), "people-workbench-" + export_id + ".zip")
+        elif re.fullmatch(r"/api/offline/state-snapshots/[0-9a-f-]{36}/download", path):
+            STATE.assert_online()
+            snapshot_id = path.split("/")[4]
+            with STATE.store.connect() as db:
+                _, body = workspace_state.read_snapshot(db, snapshot_id)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Disposition", 'attachment; filename="workbench-state-' + snapshot_id + '.json"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            for offset in range(0, len(body), 1024 * 1024):
+                self.wfile.write(body[offset:offset + 1024 * 1024])
+        else:
+            return False
+        return True
+
+    def offline_post(self, path):
+        known = {"/api/offline/packages", "/api/offline/import/preview", "/api/offline/import/preview/page", "/api/offline/import/apply", "/api/offline/state-snapshots"}
+        if path not in known and not re.fullmatch(r"/api/offline/packages/[0-9a-f-]{36}/cancel", path):
+            return False
+        STATE.assert_online()
+        AUTH.require_capabilities(self.session_cookie())
+        context = self.transfer_context()
+        if path == "/api/offline/import/preview":
+            with STATE.transfers.slot():
+                payload = self.body(24 * 1024 ** 2)
+                if set(payload) != {"zipBase64"} or not isinstance(payload["zipBase64"], str) or len(payload["zipBase64"]) > (16 * 1024 ** 2 + 2) // 3 * 4:
+                    raise workspace_state.WorkspaceError("Invalid results upload.", "resource_limit")
+                import base64
+                try:
+                    wire = base64.b64decode(payload["zipBase64"], validate=True)
+                except (ValueError, UnicodeError):
+                    raise workspace_state.WorkspaceError("Invalid results encoding.") from None
+                self.send_json(STATE.transfers.preview(wire, context, locked=True))
+        elif path == "/api/offline/import/preview/page":
+            payload = self.body()
+            self.send_json(STATE.transfers.page(payload.get("token"), payload.get("cursor"), context))
+        elif path == "/api/offline/import/apply":
+            payload = self.body(4 * 1024 ** 2)
+            if payload.get("confirmation") != "IMPORT_LOCAL":
+                raise workspace_state.WorkspaceError("Local import confirmation required.")
+            self.send_json(STATE.transfers.apply(payload.get("token"), payload.get("ids"), context))
+        elif path == "/api/offline/state-snapshots":
+            payload = self.body()
+            with STATE.store.workflow_transaction("manual_snapshot") as db:
+                snapshot = workspace_state.create_snapshot(db, payload.get("name", "State snapshot"), "manual")
+            self.send_json(snapshot)
+        elif path == "/api/offline/packages":
+            payload = self.body()
+            with mutation_guard(STATE.mutation_lock):
+                result = STATE.package_manager().start(payload.get("name", "Offline review"))
+            self.send_json(result, 202)
+        else:
+            self.body()
+            with mutation_guard(STATE.mutation_lock):
+                result = STATE.package_manager().cancel(path.split("/")[4])
+            self.send_json(result)
+        return True
 
     def static(self, name: str) -> None:
         target = (WEB / name).resolve()
@@ -2912,6 +3149,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     response = failure.response() if failure else {"error": "Sign in required"}
                     self.send_json(response, 401)
+                return
+            if path.startswith("/api/offline/") and self.offline_get(path):
                 return
             if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                 self.static("index.html")
@@ -3003,10 +3242,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.original(asset_id)
             else:
                 self.send_error(404)
+        except (workspace_state.WorkspaceError, ResultsError) as exc:
+            self.transfer_error(exc)
         except SyncInProgress as exc:
-            self.send_json({"error": str(exc)}, 409)
+            self.send_json({"error": str(exc), "code": "mutation_busy"}, 409)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, 502)
+            if path.startswith("/api/offline/"):
+                self.transfer_error(workspace_state.WorkspaceError("Offline transfer failed safely; existing work is retained.", "import_failed"))
+            else:
+                self.send_json({"error": str(exc)}, 502)
 
     def do_POST(self) -> None:
         if not self.allowed():
@@ -3022,6 +3266,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(failure.response() if failure else {"error": "Sign in required"}, 401)
                 return
         try:
+            if path in {"/api/login", "/api/connect-key", "/api/sync"}:
+                STATE.assert_online()
+            if self.offline_post(path):
+                return
             guard = nullcontext() if path in {"/api/sync", "/api/face-review/scan-next", "/api/group-photos/retry"} else mutation_guard(STATE.mutation_lock)
             with guard:
                 payload = self.body()
@@ -3067,7 +3315,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True}, cookie=f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
                 elif path == "/api/reload":
                     STATE.set_status("loading", "Reloading people from Immich")
-                    threading.Thread(target=STATE.load, daemon=True).start()
+                    threading.Thread(target=STATE.load, kwargs={"refresh_guards": True}, daemon=True).start()
                     self.send_json({"ok": True}, 202)
                 elif path == "/api/reset":
                     if payload.get("confirmation") != "DISCARD":
@@ -3163,14 +3411,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(AUTH.sync(self.session_cookie(), review_token if isinstance(review_token, str) else ""))
                 else:
                     self.send_error(404)
+        except (workspace_state.WorkspaceError, ResultsError) as exc:
+            self.transfer_error(exc)
         except OfflineConflict as exc:
             self.send_json({"error": str(exc), "offlineConflicts": exc.conflicts}, 409)
         except SyncInProgress as exc:
-            self.send_json({"error": str(exc)}, 409)
+            self.send_json({"error": str(exc), "code": "mutation_busy"}, 409)
         except AuthenticationError as exc:
             self.send_json(exc.response(), 403)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, 400)
+            if path.startswith("/api/offline/") and path not in {"/api/offline/open", "/api/offline/plan", "/api/offline/download", "/api/offline/cancel"}:
+                self.transfer_error(workspace_state.WorkspaceError("Offline transfer failed safely; existing work is retained.", "import_failed"))
+            else:
+                self.send_json({"error": str(exc)}, 400)
 
 
 class WorkbenchServer(ThreadingHTTPServer):
@@ -3295,6 +3548,9 @@ def main() -> int:
             deadline = time.monotonic() + args.shutdown_timeout
             server.stop_admission()
             threading.Thread(target=enforce_deadline, daemon=True).start()
+            STATE.transfers.close()
+            if STATE._packages is not None:
+                threading.Thread(target=STATE._packages.close, daemon=True).start()
             threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, stop)
@@ -3311,6 +3567,9 @@ def main() -> int:
     finally:
         server.stop_admission()
         server.server_close()
+        STATE.transfers.close()
+        if STATE._packages is not None:
+            STATE._packages.close()
     if not server.drain(deadline if deadline is not None else time.monotonic() + args.shutdown_timeout):
         force_exit()
     return 0

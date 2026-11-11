@@ -213,6 +213,11 @@ class OfflineWorkspace:
             stale = False
         result = {"available": snapshot is not None, "ready": snapshot is not None and not stale,
                   "offline": bool(private and getattr(self.state.client, "offline", False)), "stale": stale}
+        policy = self.state.portable_policy()
+        if policy["portable"]:
+            result["portable"] = True
+        if policy["portable"] and not policy["valid"]:
+            result.update({"available": False, "ready": False, "code": "portable_invalid"})
         if stale:
             result["staleReason"] = "Changes were synced to Immich. Prepare a fresh workspace before opening offline again. Stored files have been retained."
         if private:
