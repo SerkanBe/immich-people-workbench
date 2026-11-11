@@ -56,11 +56,15 @@ Each operation has `id`, a fixed domain `type`, `key` and `value` (an object or
 null for removal). Values never contain SQL or incoming Sync checkpoints.
 
 `compute_changes(db)` derives stable changed operations and their event
-identity from saved portable state. `note_results_emitted(db, result)` records
-an emitted result without clearing review work. If a later change reverses an
-already emitted intent back to its original baseline, the helper refuses the
-unsupported overlapping continuation instead of silently dropping it. Preserve
-local work and use a fresh export/review for that case.
+identity from saved portable state. Original command membership remains
+transitive when a later edit supersedes one member of a group-photo submission;
+navigation cursors do not connect unrelated commands.
+`note_results_emitted(db, result)` records emitted operation payloads and event
+bindings without clearing review work. Unchanged emitted operations retain
+their identities. Reverting an emitted intent to its original baseline,
+joining distinct emitted events, or continuing an older emitted copy without
+saved bindings is refused explicitly. Preserve local work and use a fresh
+export/review for those unsupported overlapping continuations.
 
 `group_results(result, baseline)` derives atomic dependency components and the
 immutable event identity for each operation. A component can change as related

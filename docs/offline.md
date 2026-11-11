@@ -54,6 +54,11 @@ When ready to return your work, choose **Download offline changes** and send
 that small results ZIP back to the person using the original Workbench. The
 results file contains review changes, not photos or the app.
 
+After returning results, some overlapping edits, such as undoing or regrouping
+previously returned work, require a fresh export. Workbench keeps your saved
+portable work and explains when it cannot return a continuation. Keep that
+copy until you have reconciled the work at the source.
+
 ## Import results at the original Workbench
 
 Open the exact Workbench that created the portable ZIP, using its original
