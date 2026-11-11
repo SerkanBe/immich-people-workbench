@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Synthetic portable snapshots, local sessions and fail-closed reconciliation."""
 import copy
+import errno
 import hashlib
 import io
 import json
@@ -17,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import people_workbench as app
-from offline_workspace import OfflineClient, OfflineConflict, OfflineError, OfflineWorkspace, atomic_json
+from offline_workspace import OfflineClient, OfflineConflict, OfflineError, OfflineWorkspace, atomic_json, preparation_error
 
 
 P1 = "11111111-1111-4111-8111-111111111111"
@@ -212,6 +213,89 @@ class OfflineTests(OfflineFixture, unittest.TestCase):
         self.assertEqual(self.wait_job(), "ready")
         self.assertEqual(self.client.download_calls.count(A1), 1)
         self.assertEqual(self.client.download_calls.count(A2), 1)
+
+    def test_first_original_failures_explain_cause_without_private_exception_text(self):
+        self.manager.start_plan(self.client)
+        self.assertEqual(self.wait_job(), "planned")
+        secret = "synthetic-secret-body /synthetic/private/path.jpg"
+        forbidden = app.UpstreamError(403)
+        forbidden.args = (secret,)
+        cases = [
+            (forbidden, "upstream_http_403", "asset.download"),
+            (app.UpstreamError(404), "upstream_http_404", "HTTP 404"),
+            (app.UpstreamError(502), "upstream_http_502", "HTTP 502"),
+            (TimeoutError(secret), "network_timeout", "timed out"),
+            (ConnectionError(secret), "connection_failed", "connection"),
+            (OSError(errno.ENOSPC, secret), "insufficient_storage", "state storage"),
+            (PermissionError(errno.EACCES, secret), "storage_not_writable", "permissions"),
+            (RuntimeError(secret), "preparation_failed", "unexpected"),
+        ]
+        for exc, code, explanation in cases:
+            with self.subTest(code=code), mock.patch.object(self.client, "download_original", side_effect=exc):
+                self.manager.start_download(self.client, self.manager.job["planId"])
+                self.assertEqual(self.wait_job(), "error")
+                job = self.manager.status(private=True)["job"]
+                self.assertEqual(job["step"], "original")
+                self.assertEqual(job["errorCode"], code)
+                self.assertIn(explanation, job["error"])
+                self.assertIn("downloading an original", job["error"])
+                self.assertNotIn(secret, json.dumps(job))
+                self.assertEqual(job["downloadedFiles"], 0)
+                self.assertFalse(self.manager.status()["ready"])
+                self.assertEqual(OfflineWorkspace(self.state).job["errorCode"], code)
+        self.manager.start_download(self.client, self.manager.job["planId"])
+        self.assertEqual(self.wait_job(), "ready")
+        self.assertEqual(self.manager.job["errorCode"], "")
+        self.assertEqual(self.client.writes, [])
+
+    def test_preview_failure_counts_saved_original_and_resume_reuses_it(self):
+        self.manager.start_plan(self.client)
+        self.assertEqual(self.wait_job(), "planned")
+        with mock.patch.object(self.client, "request", side_effect=app.UpstreamError(500)):
+            self.manager.start_download(self.client, self.manager.job["planId"])
+            self.assertEqual(self.wait_job(), "error")
+        self.assertEqual(self.manager.job["step"], "preview")
+        self.assertEqual(self.manager.job["errorCode"], "upstream_http_500")
+        self.assertIn("photo preview", self.manager.job["error"])
+        self.assertEqual(self.manager.job["downloadedFiles"], 1)
+        self.assertFalse(self.manager.status()["ready"])
+        self.manager = OfflineWorkspace(self.state)
+        self.state.offline = self.manager
+        self.manager.start_download(self.client, self.manager.job["planId"])
+        self.assertEqual(self.wait_job(), "ready")
+        self.assertEqual(self.client.download_calls.count(A1), 1)
+        self.assertEqual(self.client.download_calls.count(A2), 1)
+        self.assertEqual(self.client.writes, [])
+
+    def test_workspace_bound_is_distinct_from_individual_original_limit(self):
+        self.manager.start_plan(self.client)
+        self.assertEqual(self.wait_job(), "planned")
+        transport = app.Immich("https://synthetic.example", "synthetic-key")
+        def response(*args, **kwargs):
+            stream = io.BytesIO(b"original")
+            stream.headers = mock.Mock()
+            stream.headers.get.return_value = "8"
+            stream.headers.get_content_type.return_value = "image/jpeg"
+            return stream
+        transport.opener.open = mock.Mock(side_effect=response)
+        with mock.patch.object(self.client, "download_original", side_effect=transport.download_original), \
+                mock.patch("offline_workspace.MAX_ORIGINAL_BYTES", 10), \
+                mock.patch("offline_workspace.MAX_WORKSPACE_BYTES", 12):
+            self.manager.start_download(self.client, self.manager.job["planId"])
+            self.assertEqual(self.wait_job(), "error")
+        self.assertEqual(self.manager.job["errorCode"], "workspace_limit")
+        self.assertEqual(self.manager.job["downloadedFiles"], 1)
+        self.assertEqual(self.client.writes, [])
+
+    def test_failed_progress_write_does_not_lose_the_preparation_error(self):
+        self.manager.start_plan(self.client)
+        self.assertEqual(self.wait_job(), "planned")
+        with mock.patch.object(self.client, "download_original", side_effect=app.UpstreamError(404)), \
+                mock.patch.object(self.manager, "_persist_plan", side_effect=OSError(errno.ENOSPC, "synthetic private path")):
+            self.manager.start_download(self.client, self.manager.job["planId"])
+            self.assertEqual(self.wait_job(), "error")
+        self.assertEqual(self.manager.job["errorCode"], "upstream_http_404")
+        self.assertNotIn("synthetic private path", self.manager.job["error"])
 
     def test_missing_original_never_claims_ready(self):
         snapshot = self.prepare()
@@ -516,6 +600,61 @@ class OfflineHTTPTests(OfflineFixture, unittest.TestCase):
 
 
 class OriginalStreamTests(unittest.TestCase):
+    def test_original_connection_timeout_keeps_timeout_category_without_private_details(self):
+        client = app.Immich("https://synthetic.example", "synthetic-key")
+        client.opener.open = mock.Mock(side_effect=urllib.error.URLError(TimeoutError("synthetic private address")))
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(TimeoutError) as error:
+            client.download_original(A1, Path(directory) / A1, threading.Event(), 1000, 0)
+        code, message = preparation_error(error.exception, "original")
+        self.assertEqual(code, "network_timeout")
+        self.assertNotIn("synthetic private address", message)
+
+    def test_original_space_and_file_bounds_are_distinct_and_preserve_existing_file(self):
+        cases = [
+            ("2097152", 10 * 1024 ** 2, 1024 ** 2, "insufficient_storage"),
+            ("8", 3, 1024 ** 3, "original_limit"),
+            ("synthetic-private-header", 100, 1024 ** 3, "invalid_original_response"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / A1
+            path.write_bytes(b"existing")
+            for length, limit, free, code in cases:
+                with self.subTest(code=code):
+                    response = io.BytesIO(b"original")
+                    response.headers = mock.Mock()
+                    response.headers.get.return_value = length
+                    response.headers.get_content_type.return_value = "image/jpeg"
+                    client = app.Immich("https://synthetic.example", "synthetic-key")
+                    client.opener.open = mock.Mock(return_value=response)
+                    with mock.patch.object(app.shutil, "disk_usage", return_value=mock.Mock(free=free)), self.assertRaises(OfflineError) as error:
+                        client.download_original(A1, path, threading.Event(), limit, 64 * 1024 ** 2)
+                    self.assertEqual(error.exception.code, code)
+                    if code == "insufficient_storage":
+                        self.assertEqual(error.exception.available_bytes, free)
+                        self.assertEqual(error.exception.required_bytes, 66 * 1024 ** 2)
+                        _, message = preparation_error(error.exception, "original")
+                        self.assertIn("1.0 MiB", message)
+                        self.assertIn("66.0 MiB", message)
+                    self.assertEqual(path.read_bytes(), b"existing")
+                    self.assertFalse(path.with_suffix(".part").exists())
+
+    def test_truncated_http_stream_is_reported_without_reflecting_response_bytes(self):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.headers.get.return_value = "100"
+        response.headers.get_content_type.return_value = "image/jpeg"
+        response.read.side_effect = app.http.client.IncompleteRead(b"synthetic-secret-body", 100)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / A1
+            client = app.Immich("https://synthetic.example", "synthetic-key")
+            client.opener.open = mock.Mock(return_value=response)
+            with self.assertRaises(OfflineError) as error:
+                client.download_original(A1, path, threading.Event(), 1000, 0)
+            self.assertEqual(error.exception.code, "incomplete_original")
+            self.assertNotIn("synthetic-secret-body", str(error.exception))
+            self.assertFalse(path.exists())
+            self.assertFalse(path.with_suffix(".part").exists())
+
     def test_original_over_normal_image_limit_streams_atomically_and_can_cancel(self):
         class Response(io.BytesIO):
             headers = mock.Mock()

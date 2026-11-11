@@ -24,6 +24,16 @@ data, but no Immich credentials. Share and store it with care.
    download contains the app, selected photos, and saved review state. It is
    private but contains no credentials.
 
+If preparation fails, its message identifies the step (original, preview,
+thumbnail, or local storage) and includes an HTTP status when Immich supplies
+one. Checking metadata does not test those later downloads. Original downloads
+require `asset.download`; an individual item can still be unavailable. A missing
+size estimate means the check could not obtain usable size metadata.
+Space checks use the drive containing Workbench's state directory and retain a
+64 MiB reserve. **Resume download** keeps completed originals, including an
+original whose preview failed; the saved count includes those originals even
+while the workspace is incomplete.
+
 Preparation includes selected still photos with unnamed detected people and
 other faces in those photos for context. It excludes videos and photos outside
 the selection. A named person may have only partial photo coverage, so

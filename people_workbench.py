@@ -14,6 +14,7 @@ import concurrent.futures
 import datetime as dt
 import hashlib
 import html
+import http.client
 import http.cookies
 import ipaddress
 import json
@@ -326,13 +327,21 @@ class Immich:
         try:
             with self.opener.open(request, timeout=60) as response:
                 length = response.headers.get("Content-Length")
-                expected = int(length) if length is not None else None
-                if expected is not None and (expected <= 0 or expected > max_bytes
-                                             or expected + reserve_bytes > shutil.disk_usage(path.parent).free):
-                    raise OfflineError("Original exceeds available space or download bounds")
+                try:
+                    expected = int(length) if length is not None else None
+                except ValueError:
+                    raise OfflineError("Unexpected original response", code="invalid_original_response") from None
+                if expected is not None and expected <= 0:
+                    raise OfflineError("Original download was incomplete", code="incomplete_original")
+                if expected is not None and expected > max_bytes:
+                    raise OfflineError("Original exceeds download bounds", code="original_limit", limit_bytes=max_bytes)
+                free = shutil.disk_usage(path.parent).free
+                if expected is not None and expected + reserve_bytes > free:
+                    raise OfflineError("Insufficient space for original", code="insufficient_storage",
+                                       required_bytes=expected + reserve_bytes, available_bytes=free)
                 mime = response.headers.get_content_type()
                 if mime in {"application/json", "text/html"}:
-                    raise OfflineError("Unexpected original response")
+                    raise OfflineError("Unexpected original response", code="invalid_original_response")
                 size, digest = 0, hashlib.sha256()
                 with temp.open("wb") as output:
                     while True:
@@ -342,21 +351,29 @@ class Immich:
                         if not chunk:
                             break
                         size += len(chunk)
-                        if size > max_bytes or shutil.disk_usage(path.parent).free < len(chunk) + reserve_bytes:
-                            raise OfflineError("Original exceeds available space or download bounds")
+                        if size > max_bytes:
+                            raise OfflineError("Original exceeds download bounds", code="original_limit", limit_bytes=max_bytes)
+                        free = shutil.disk_usage(path.parent).free
+                        if free < len(chunk) + reserve_bytes:
+                            raise OfflineError("Insufficient space for original", code="insufficient_storage",
+                                               required_bytes=len(chunk) + reserve_bytes, available_bytes=free)
                         output.write(chunk)
                         digest.update(chunk)
                     output.flush()
                     os.fsync(output.fileno())
                 if not size or expected is not None and size != expected:
-                    raise OfflineError("Original download was incomplete")
+                    raise OfflineError("Original download was incomplete", code="incomplete_original")
                 os.replace(temp, path)
                 return size, mime, digest.hexdigest()
         except urllib.error.HTTPError as exc:
             exc.close()
             raise UpstreamError(exc.code) from None
-        except urllib.error.URLError:
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise TimeoutError("Immich original download timed out") from None
             raise ConnectionError("Cannot reach Immich to download originals") from None
+        except http.client.IncompleteRead:
+            raise OfflineError("Original download was incomplete", code="incomplete_original") from None
         finally:
             temp.unlink(missing_ok=True)
 

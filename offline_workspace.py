@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -23,7 +24,63 @@ MAX_ORIGINAL_BYTES = 10 * 1024 ** 3
 
 
 class OfflineError(RuntimeError):
-    pass
+    def __init__(self, message, *, code="offline_error", required_bytes=None, available_bytes=None, limit_bytes=None):
+        super().__init__(message)
+        self.code = code
+        self.required_bytes, self.available_bytes, self.limit_bytes = required_bytes, available_bytes, limit_bytes
+
+
+def preparation_error(exc, step):
+    """Describe known failures without reflecting paths, bodies or credentials."""
+    label = {"metadata": "checking photo metadata", "original": "downloading an original",
+             "preview": "saving a photo preview", "person_thumbnail": "saving a person thumbnail",
+             "progress": "writing preparation progress", "activation": "activating the saved workspace"}.get(step, "preparing the offline workspace")
+    code = getattr(exc, "code", "") if isinstance(exc, OfflineError) else ""
+    messages = {
+        "insufficient_storage": "Workbench's state storage has insufficient free space or has reached its filesystem quota.",
+        "original_limit": "An original exceeds the allowed download size, independently of free disk space.",
+        "workspace_limit": "The prepared originals exceed the 500 GiB workspace limit.",
+        "incomplete_original": "Immich returned an empty or incomplete original. Resume to retry the download.",
+        "invalid_original_response": "The original request returned an unexpected response. Check Immich and any proxy.",
+        "invalid_preview_response": "Immich returned an invalid or oversized preview.",
+        "connection_changed": "The Workbench connection changed. Reconnect, then resume preparation.",
+        "offline_work_changed": "Offline Pending or Face Review work changed. Resolve it before replacing the snapshot.",
+        "invalid_metadata": "Immich returned photo or person metadata that could not be used safely.",
+    }
+    if code in messages:
+        message = messages[code]
+        if code == "insufficient_storage" and all(type(value) is int and value >= 0 for value in (exc.required_bytes, exc.available_bytes)):
+            message += (f" Available: {exc.available_bytes / 1024 ** 2:,.1f} MiB; required for this write: "
+                        f"{exc.required_bytes / 1024 ** 2:,.1f} MiB, including the 64 MiB reserve.")
+        if code == "original_limit" and type(exc.limit_bytes) is int and exc.limit_bytes >= 0:
+            message += f" Current file limit: {exc.limit_bytes / 1024 ** 2:,.1f} MiB."
+    elif type(getattr(exc, "status", None)) is int and 100 <= exc.status <= 599:
+        code = "upstream_http_" + str(exc.status)
+        if exc.status == 401:
+            message = "Immich rejected authentication (HTTP 401). Reconnect, then resume."
+        elif exc.status == 403:
+            message = "Immich denied access (HTTP 403). Check access to this item"
+            message += " and the API key's asset.download permission." if step == "original" else " and the account's permissions."
+        elif exc.status == 404:
+            message = "Immich could not find the requested item (HTTP 404). Check whether the library changed since preparation was planned."
+        else:
+            message = f"Immich or its proxy returned HTTP {exc.status}. Resume when the service is available."
+    elif isinstance(exc, TimeoutError):
+        code, message = "network_timeout", "The request to Immich timed out. Resume to retry; completed originals are kept."
+    elif isinstance(exc, ConnectionError):
+        code, message = "connection_failed", "The connection to Immich failed. Check its URL, HTTPS certificate and network, then resume."
+    elif isinstance(exc, OSError) and exc.errno in {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}:
+        code, message = "insufficient_storage", messages["insufficient_storage"]
+    elif isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
+        code, message = "storage_not_writable", "Workbench cannot write its state storage. Check directory permissions and read-only filesystems."
+    elif isinstance(exc, OSError) and exc.errno == errno.EIO:
+        code, message = "storage_io_failed", "Workbench's state storage reported an I/O error. Check the filesystem."
+    else:
+        kind = type(exc).__name__
+        kind = kind if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", kind) else "internal error"
+        code = "preparation_failed"
+        message = f"An unexpected preparation error occurred ({kind}; code preparation_failed). Completed originals are kept. Report this step and code."
+    return code, f"Failed while {label}: {message}"
 
 
 class OfflineConflict(OfflineError):
@@ -161,7 +218,8 @@ class OfflineWorkspace:
         self.worker = None
         self.conflicts = []
         self.job = {"phase": "idle", "planId": "", "assetCount": 0, "personCount": 0,
-                    "estimatedBytes": 0, "unknownSizes": 0, "downloadedFiles": 0, "downloadedBytes": 0, "error": ""}
+                    "estimatedBytes": 0, "unknownSizes": 0, "downloadedFiles": 0, "downloadedBytes": 0,
+                    "step": "", "errorCode": "", "error": ""}
         self.plan = None
         try:
             saved = self._read(self.root / "plan.json")
@@ -244,19 +302,25 @@ class OfflineWorkspace:
             if self.worker and self.worker.is_alive():
                 raise OfflineError("Offline preparation is already running")
             self.cancel_event.clear()
-            self.job.update(phase=phase, error="")
+            self.job.update(phase=phase, step="metadata" if phase == "planning" else "original", error="", errorCode="")
             def run():
                 try:
                     action()
                 except Cancelled as exc:
                     with self.lock:
                         self.job.update(phase="cancelled", error=str(exc))
-                except Exception:
-                    # Never reflect upstream bodies, paths or credentials into status.
+                except Exception as exc:
                     with self.lock:
-                        self.job.update(phase="error", error="Offline preparation failed. Check connectivity, original download permission and free disk space, then retry.")
+                        code, message = preparation_error(exc, self.job.get("step"))
+                        self.job.update(phase="error", errorCode=code, error=message)
                 finally:
-                    self._persist_plan()
+                    try:
+                        self._persist_plan()
+                    except Exception as exc:
+                        with self.lock:
+                            if self.job["phase"] not in {"error", "cancelled"}:
+                                code, message = preparation_error(exc, "progress")
+                                self.job.update(phase="error", step="progress", errorCode=code, error=message)
             self.worker = threading.Thread(target=run, daemon=True, name="offline-preparation")
             self.worker.start()
 
@@ -364,6 +428,8 @@ class OfflineWorkspace:
         total_bytes = 0
         for aid, asset in snapshot["assets"].items():
             self._check_cancel()
+            with self.lock:
+                self.job["step"] = "original"
             item = snapshot["media"]["originals"].get(aid)
             path = self.media_path(snapshot, "originals/" + safe_id(aid))
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,17 +437,27 @@ class OfflineWorkspace:
                 total_bytes += item["size"]
             else:
                 remaining = MAX_WORKSPACE_BYTES - total_bytes
-                size, mime, digest = client.download_original(aid, path, self.cancel_event, min(MAX_ORIGINAL_BYTES, remaining), RESERVE_BYTES)
+                try:
+                    size, mime, digest = client.download_original(aid, path, self.cancel_event, min(MAX_ORIGINAL_BYTES, remaining), RESERVE_BYTES)
+                except OfflineError as exc:
+                    if exc.code == "original_limit" and remaining < MAX_ORIGINAL_BYTES:
+                        raise OfflineError("Workspace size limit exceeded", code="workspace_limit") from None
+                    raise
                 total_bytes += size
                 snapshot["media"]["originals"][aid] = {"path": "originals/" + aid, "size": size, "mime": mime, "sha256": digest}
             if total_bytes > MAX_WORKSPACE_BYTES:
-                raise OfflineError("Workspace size limit exceeded")
-            self._cache_preview(client, snapshot, "previews", aid, f"/assets/{aid}/thumbnail?size=preview")
+                raise OfflineError("Workspace size limit exceeded", code="workspace_limit")
             with self.lock:
                 self.job.update(downloadedFiles=len(snapshot["media"]["originals"]), downloadedBytes=total_bytes)
+                self.job["step"] = "preview"
+            self._cache_preview(client, snapshot, "previews", aid, f"/assets/{aid}/thumbnail?size=preview")
+            with self.lock:
+                self.job["step"] = "progress"
             self._persist_plan()
         for pid in snapshot["people"]:
             self._check_cancel()
+            with self.lock:
+                self.job["step"] = "person_thumbnail"
             # Some people legitimately have no thumbnail; asset previews still work.
             try:
                 self._cache_preview(client, snapshot, "people", pid, f"/people/{pid}/thumbnail")
@@ -390,6 +466,8 @@ class OfflineWorkspace:
                 if getattr(exc, "status", None) != 404:
                     raise
         self._check_cancel()
+        with self.lock:
+            self.job["step"] = "activation"
         snapshot.update(assetCount=len(snapshot["assets"]), personCount=len(snapshot["people"]), totalBytes=total_bytes)
         # Commit the new generation only after every original and metadata are durable.
         with self.state.mutation_lock, self.lock:
@@ -402,14 +480,14 @@ class OfflineWorkspace:
             if (self.state.client is not client or client.base != snapshot["owner"]["url"]
                     or identity.get("userId") != snapshot["owner"]["userId"]
                     or json.loads(self.state.store.setting("owner") or "null") != snapshot["owner"]):
-                raise OfflineError("The connection changed during preparation. Reconnect and explicitly resume the download.")
+                raise OfflineError("The connection changed during preparation. Reconnect and explicitly resume the download.", code="connection_changed")
             rows, faces = self.state.store.pending_snapshot()
             if self.state.store.setting("offlineBaseline") and (rows or faces or self.state.store.face_review_drafts()):
-                raise OfflineError("Offline work changed during preparation; resolve Pending before replacing its snapshot")
+                raise OfflineError("Offline work changed during preparation; resolve Pending before replacing its snapshot", code="offline_work_changed")
             atomic_json(self.root / "snapshots" / snapshot["id"] / "snapshot.json", snapshot)
             atomic_json(self.root / "active.json", {"id": snapshot["id"]})
             self.state.store.set_setting("offlineBaseline", "")
-            self.job.update(phase="ready", error="")
+            self.job.update(phase="ready", step="", error="", errorCode="")
 
     @staticmethod
     def _digest(path):
@@ -426,11 +504,13 @@ class OfflineWorkspace:
         self._check_cancel()
         body, mime = client.request("GET", route)
         if not mime.startswith("image/") or len(body) > 20_000_000:
-            raise OfflineError("Unexpected preview response")
+            raise OfflineError("Unexpected preview response", code="invalid_preview_response")
         path = self.media_path(snapshot, kind + "/" + safe_id(item_id))
         path.parent.mkdir(parents=True, exist_ok=True)
-        if shutil.disk_usage(path.parent).free < len(body) + RESERVE_BYTES:
-            raise OfflineError("Insufficient space for offline previews")
+        free = shutil.disk_usage(path.parent).free
+        if free < len(body) + RESERVE_BYTES:
+            raise OfflineError("Insufficient space for offline previews", code="insufficient_storage",
+                               required_bytes=len(body) + RESERVE_BYTES, available_bytes=free)
         temp = path.with_suffix(".part")
         temp.write_bytes(body)
         os.replace(temp, path)
