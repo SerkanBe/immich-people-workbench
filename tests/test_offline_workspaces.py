@@ -531,6 +531,25 @@ class QuietHandler(app.Handler):
 
 
 class OfflineHTTPTests(OfflineFixture, unittest.TestCase):
+    def test_offline_refresh_pages_support_authenticated_deep_links(self):
+        self.prepare()
+        routes = ("/offline/create", "/offline/import", "/offline/exports", "/settings/snapshots", "/help/offline", "/help/snapshots")
+        def run(base):
+            request = urllib.request.Request(base + "/api/offline/open", b"{}", {"Content-Type": "application/json", "Origin": base})
+            with urllib.request.urlopen(request) as response:
+                cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+            for route in routes:
+                with self.subTest(route=route):
+                    with urllib.request.urlopen(base + route) as response:
+                        self.assertTrue(response.geturl().startswith(base + "/login?"))
+                    request = urllib.request.Request(base + route, headers={"Cookie": cookie})
+                    with urllib.request.urlopen(request) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertEqual(response.geturl(), base + route)
+                        self.assertIn(b'nav aria-label="People sections"', response.read())
+            self.assertEqual(self.client.writes, [])
+        self.serve(run)
+
     def serve(self, action, host="127.0.0.1"):
         auth = app.AdminSession(self.state)
         server = ThreadingHTTPServer((host, 0), QuietHandler)

@@ -53,7 +53,10 @@ MAX_BODY = 1_000_000
 WORKFLOW_BUSY_TIMEOUT_MS = 5_000
 MAX_IMAGE = 20_000_000
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{20,50}$")
-PAGE_ROUTES = frozenset({"/unnamed", "/naming/clusters", "/naming/group-photos", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"})
+PAGE_ROUTES = frozenset({
+    "/unnamed", "/naming/clusters", "/naming/group-photos", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored",
+    "/offline/create", "/offline/import", "/offline/exports", "/settings/snapshots", "/help/offline", "/help/snapshots",
+})
 SESSION_SECONDS = 8 * 60 * 60
 ADMIN_CHECK_SECONDS = 60
 SESSION_COOKIE = "people_workbench_session"
