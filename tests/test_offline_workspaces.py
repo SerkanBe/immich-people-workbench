@@ -87,10 +87,14 @@ class SyntheticImmich:
     def request(self, method, path, payload=None):
         return b"preview", "image/jpeg"
 
-    def download_original(self, aid, path, cancel, max_bytes, reserve_bytes):
+    def download_original(self, aid, path, cancel, max_bytes, reserve_bytes, *, budget=None):
         self.download_calls.append(aid)
         body = b"original"
-        path.write_bytes(body)
+        with path.open("wb", buffering=0) as output:
+            if budget is None:
+                output.write(body)
+            else:
+                budget.write(output, body, path)
         if self.cancel_on_download:
             cancel.set()
         return len(body), "image/jpeg", hashlib.sha256(body).hexdigest()
@@ -206,13 +210,17 @@ class OfflineTests(OfflineFixture, unittest.TestCase):
         self.manager.start_download(self.client, self.manager.job["planId"])
         self.assertEqual(self.wait_job(), "cancelled")
         self.assertFalse(self.manager.status()["ready"])
+        saved_calls = {aid: self.client.download_calls.count(aid)
+                       for aid in self.manager.plan["media"]["originals"]}
+        self.assertTrue(saved_calls)
         self.client.cancel_on_download = False
         self.manager = OfflineWorkspace(self.state)
         self.state.offline = self.manager
         self.manager.start_download(self.client, self.manager.job["planId"])
         self.assertEqual(self.wait_job(), "ready")
-        self.assertEqual(self.client.download_calls.count(A1), 1)
-        self.assertEqual(self.client.download_calls.count(A2), 1)
+        for aid, count in saved_calls.items():
+            self.assertEqual(self.client.download_calls.count(aid), count)
+        self.assertEqual(set(self.client.download_calls), {A1, A2})
 
     def test_first_original_failures_explain_cause_without_private_exception_text(self):
         self.manager.start_plan(self.client)
@@ -257,7 +265,7 @@ class OfflineTests(OfflineFixture, unittest.TestCase):
         self.assertEqual(self.manager.job["step"], "preview")
         self.assertEqual(self.manager.job["errorCode"], "upstream_http_500")
         self.assertIn("photo preview", self.manager.job["error"])
-        self.assertEqual(self.manager.job["downloadedFiles"], 1)
+        self.assertEqual(self.manager.job["downloadedFiles"], 2)
         self.assertFalse(self.manager.status()["ready"])
         self.manager = OfflineWorkspace(self.state)
         self.state.offline = self.manager

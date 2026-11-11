@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import datetime as dt
 import errno
 import hashlib
@@ -14,6 +15,7 @@ import re
 import secrets
 import shutil
 import threading
+import time
 import urllib.parse
 
 FORMAT_VERSION = 1
@@ -21,6 +23,33 @@ ID = re.compile(r"^[0-9a-fA-F-]{20,50}$")
 RESERVE_BYTES = 64 * 1024 * 1024
 MAX_WORKSPACE_BYTES = 500 * 1024 ** 3
 MAX_ORIGINAL_BYTES = 10 * 1024 ** 3
+DOWNLOAD_WORKERS = 3
+
+
+class DownloadBudget:
+    """Serialize byte admission and unbuffered writes across media workers."""
+    def __init__(self, completed, check):
+        self.lock = threading.Lock()
+        self.total = completed
+        self.check = check
+
+    def write(self, output, chunk, path, *, original=True):
+        with self.lock:
+            self.check()
+            if original and self.total + len(chunk) > MAX_WORKSPACE_BYTES:
+                raise OfflineError("Workspace size limit exceeded", code="workspace_limit")
+            free = shutil.disk_usage(path.parent).free
+            if free < len(chunk) + RESERVE_BYTES:
+                raise OfflineError("Insufficient space for offline media", code="insufficient_storage",
+                                   required_bytes=len(chunk) + RESERVE_BYTES, available_bytes=free)
+            if output.write(chunk) != len(chunk):
+                raise OSError(errno.EIO, "Incomplete offline media write")
+            if original:
+                self.total += len(chunk)
+
+    def release(self, size):
+        with self.lock:
+            self.total -= size
 
 
 class OfflineError(RuntimeError):
@@ -215,11 +244,12 @@ class OfflineWorkspace:
         self.root = state.store.path.parent / "offline"
         self.lock = threading.RLock()
         self.cancel_event = threading.Event()
+        self.closed = False
         self.worker = None
         self.conflicts = []
         self.job = {"phase": "idle", "planId": "", "assetCount": 0, "personCount": 0,
                     "estimatedBytes": 0, "unknownSizes": 0, "downloadedFiles": 0, "downloadedBytes": 0,
-                    "step": "", "errorCode": "", "error": ""}
+                    "step": "", "stepDone": 0, "stepTotal": 0, "errorCode": "", "error": ""}
         self.plan = None
         try:
             saved = self._read(self.root / "plan.json")
@@ -288,8 +318,18 @@ class OfflineWorkspace:
         return result
 
     def _check_cancel(self):
-        if self.cancel_event.is_set():
+        if self.closed or self.cancel_event.is_set():
             raise Cancelled("Offline preparation cancelled; completed files can be resumed")
+
+    def close(self, deadline=None):
+        """Fence admission/publication immediately; optionally drain to a deadline."""
+        with self.lock:
+            self.closed = True
+            self.cancel()
+            worker = self.worker
+        if worker and deadline is not None:
+            worker.join(max(0, deadline - time.monotonic()))
+        return not worker or not worker.is_alive()
 
     def _persist_plan(self):
         with self.lock:
@@ -299,10 +339,13 @@ class OfflineWorkspace:
 
     def _run(self, phase, action):
         with self.lock:
+            if self.closed:
+                raise OfflineError("Offline preparation is shutting down")
             if self.worker and self.worker.is_alive():
                 raise OfflineError("Offline preparation is already running")
             self.cancel_event.clear()
-            self.job.update(phase=phase, step="metadata" if phase == "planning" else "original", error="", errorCode="")
+            self.job.update(phase=phase, step="metadata" if phase == "planning" else "original",
+                            stepDone=0, stepTotal=0, error="", errorCode="")
             def run():
                 try:
                     action()
@@ -337,6 +380,8 @@ class OfflineWorkspace:
     def start_plan(self, client):
         self.check_download_permission(client)
         with self.lock:
+            if self.closed:
+                raise OfflineError("Offline preparation is shutting down")
             if self.worker and self.worker.is_alive():
                 raise OfflineError("Offline preparation is already running")
             rows, faces = self.state.store.pending_snapshot()
@@ -423,51 +468,160 @@ class OfflineWorkspace:
                 self.job["phase"] = "cancelling"
                 self.cancel_event.set()
 
+    def _check_source(self, client, snapshot):
+        self._check_cancel()
+        if getattr(self.state.client, "offline", False):
+            raise OfflineError("An offline workspace is open. Reconnect before preparing a replacement snapshot.",
+                               code="connection_changed")
+        identity = getattr(client, "connection_metadata", {})
+        if (self.state.client is not client or getattr(client, "offline", False)
+                or client.base != snapshot["owner"]["url"]
+                or identity.get("userId") != snapshot["owner"]["userId"]
+                or json.loads(self.state.store.setting("owner") or "null") != snapshot["owner"]):
+            raise OfflineError("The connection changed during preparation", code="connection_changed")
+
     def _download(self, client):
         snapshot = self.plan
-        total_bytes = 0
-        for aid, asset in snapshot["assets"].items():
-            self._check_cancel()
+        stopped = threading.Event()
+        local = threading.local()
+        failures = []
+        failure_lock = threading.Lock()
+        manager = self
+
+        class Stop:
+            def check(self):
+                manager._check_source(client, snapshot)
+                if stopped.is_set():
+                    raise Cancelled("Offline preparation stopped")
+
+            def is_set(self):
+                self.check()
+                return False
+
+            def set(self):
+                manager.cancel_event.set()
+
+        stop = Stop()
+
+        def fail(step, exc):
+            with failure_lock:
+                if not failures:
+                    failures.append((step, exc))
+                stopped.set()
+
+        def transport():
+            if not hasattr(local, "client"):
+                factory = getattr(client, "download_transport", None)
+                local.client = factory() if factory else client
+            return local.client
+
+        def stage(step, ids, kind, operation):
+            # Futures hold metadata only. The pending set is the entire queue.
             with self.lock:
-                self.job["step"] = "original"
-            item = snapshot["media"]["originals"].get(aid)
+                self.job.update(step=step, stepDone=0, stepTotal=len(ids))
+            remaining = iter(ids)
+            def task(aid):
+                try:
+                    stop.check()
+                    return aid, operation(transport(), aid)
+                except Exception as exc:
+                    fail(step, exc)
+                    raise
+            with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS, thread_name_prefix="offline-media") as pool:
+                pending = set()
+                def submit():
+                    while not stopped.is_set() and len(pending) < DOWNLOAD_WORKERS:
+                        try:
+                            stop.check()
+                            aid = next(remaining)
+                        except StopIteration:
+                            break
+                        except Exception as exc:
+                            fail(step, exc)
+                            break
+                        pending.add(pool.submit(task, aid))
+                submit()
+                while pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        try:
+                            aid, item = future.result()
+                        except Exception:
+                            continue  # task recorded the first cause before stopping peers
+                        with self.lock:
+                            snapshot["media"][kind][aid] = item
+                            self.job["stepDone"] += 1
+                            if kind == "originals":
+                                originals = snapshot["media"]["originals"]
+                                self.job.update(downloadedFiles=len(originals),
+                                                downloadedBytes=sum(row["size"] for row in originals.values()))
+                        try:
+                            self._persist_plan()
+                        except Exception as exc:
+                            fail("progress", exc)
+                    if stopped.is_set():
+                        for future in pending:
+                            future.cancel()
+                    submit()
+            # Executor context has drained/joined every worker before terminal state.
+            if failures:
+                step, exc = failures[0]
+                with self.lock:
+                    self.job["step"] = step
+                raise exc
+            stop.check()
+
+        self._check_source(client, snapshot)
+        valid = {}
+        for aid, item in snapshot["media"]["originals"].items():
+            self._check_source(client, snapshot)
+            path = self.media_path(snapshot, "originals/" + safe_id(aid))
+            if (aid in snapshot["assets"] and path.is_file() and path.stat().st_size == item["size"]
+                    and self._digest(path, stop.check) == item["sha256"]):
+                valid[aid] = item
+        total_bytes = sum(item["size"] for item in valid.values())
+        if total_bytes > MAX_WORKSPACE_BYTES:
+            raise OfflineError("Workspace size limit exceeded", code="workspace_limit")
+        with self.lock:
+            snapshot["media"]["originals"] = valid
+            self.job.update(downloadedFiles=len(valid), downloadedBytes=total_bytes)
+        budget = DownloadBudget(total_bytes, stop.check)
+
+        def original(worker, aid):
             path = self.media_path(snapshot, "originals/" + safe_id(aid))
             path.parent.mkdir(parents=True, exist_ok=True)
-            if item and path.is_file() and path.stat().st_size == item["size"] and self._digest(path) == item["sha256"]:
-                total_bytes += item["size"]
-            else:
-                remaining = MAX_WORKSPACE_BYTES - total_bytes
-                try:
-                    size, mime, digest = client.download_original(aid, path, self.cancel_event, min(MAX_ORIGINAL_BYTES, remaining), RESERVE_BYTES)
-                except OfflineError as exc:
-                    if exc.code == "original_limit" and remaining < MAX_ORIGINAL_BYTES:
-                        raise OfflineError("Workspace size limit exceeded", code="workspace_limit") from None
-                    raise
-                total_bytes += size
-                snapshot["media"]["originals"][aid] = {"path": "originals/" + aid, "size": size, "mime": mime, "sha256": digest}
-            if total_bytes > MAX_WORKSPACE_BYTES:
-                raise OfflineError("Workspace size limit exceeded", code="workspace_limit")
-            with self.lock:
-                self.job.update(downloadedFiles=len(snapshot["media"]["originals"]), downloadedBytes=total_bytes)
-                self.job["step"] = "preview"
-            self._cache_preview(client, snapshot, "previews", aid, f"/assets/{aid}/thumbnail?size=preview")
-            with self.lock:
-                self.job["step"] = "progress"
-            self._persist_plan()
+            size, mime, digest = worker.download_original(aid, path, stop, MAX_ORIGINAL_BYTES,
+                                                         RESERVE_BYTES, budget=budget)
+            return {"path": "originals/" + aid, "size": size, "mime": mime, "sha256": digest}
+
+        stage("original", [aid for aid in snapshot["assets"] if aid not in valid], "originals", original)
+        stage("preview", list(snapshot["assets"]), "previews",
+              lambda worker, aid: self._cache_preview(worker, snapshot, "previews", aid,
+                                                     f"/assets/{aid}/thumbnail?size=preview", budget, stop))
+        with self.lock:
+            self.job.update(step="person_thumbnail", stepDone=0, stepTotal=len(snapshot["people"]))
         for pid in snapshot["people"]:
-            self._check_cancel()
-            with self.lock:
-                self.job["step"] = "person_thumbnail"
-            # Some people legitimately have no thumbnail; asset previews still work.
+            stop.check()
             try:
-                self._cache_preview(client, snapshot, "people", pid, f"/people/{pid}/thumbnail")
+                item = self._cache_preview(client, snapshot, "people", pid, f"/people/{pid}/thumbnail", budget, stop)
+                with self.lock:
+                    snapshot["media"]["people"][pid] = item
             except Exception as exc:
-                self._check_cancel()
+                stop.check()
                 if getattr(exc, "status", None) != 404:
                     raise
+            with self.lock:
+                self.job["stepDone"] += 1
+            try:
+                self._persist_plan()
+            except Exception:
+                with self.lock:
+                    self.job["step"] = "progress"
+                raise
+        total_bytes = sum(item["size"] for item in snapshot["media"]["originals"].values())
         self._check_cancel()
         with self.lock:
-            self.job["step"] = "activation"
+            self.job.update(step="activation", stepDone=0, stepTotal=0)
         snapshot.update(assetCount=len(snapshot["assets"]), personCount=len(snapshot["people"]), totalBytes=total_bytes)
         # Commit the new generation only after every original and metadata are durable.
         with self.state.mutation_lock, self.lock:
@@ -487,35 +641,38 @@ class OfflineWorkspace:
             atomic_json(self.root / "snapshots" / snapshot["id"] / "snapshot.json", snapshot)
             atomic_json(self.root / "active.json", {"id": snapshot["id"]})
             self.state.store.set_setting("offlineBaseline", "")
-            self.job.update(phase="ready", step="", error="", errorCode="")
+            self.job.update(phase="ready", step="", stepDone=0, stepTotal=0, error="", errorCode="")
 
     @staticmethod
-    def _digest(path):
+    def _digest(path, check=None):
         digest = hashlib.sha256()
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                if check:
+                    check()
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def _cache_preview(self, client, snapshot, kind, item_id, route):
+    def _cache_preview(self, client, snapshot, kind, item_id, route, budget, stop):
         item = snapshot["media"][kind].get(item_id)
         if item and self.media_path(snapshot, item["path"]).is_file():
-            return
-        self._check_cancel()
+            return item
+        stop.check()
         body, mime = client.request("GET", route)
         if not mime.startswith("image/") or len(body) > 20_000_000:
             raise OfflineError("Unexpected preview response", code="invalid_preview_response")
         path = self.media_path(snapshot, kind + "/" + safe_id(item_id))
         path.parent.mkdir(parents=True, exist_ok=True)
-        free = shutil.disk_usage(path.parent).free
-        if free < len(body) + RESERVE_BYTES:
-            raise OfflineError("Insufficient space for offline previews", code="insufficient_storage",
-                               required_bytes=len(body) + RESERVE_BYTES, available_bytes=free)
         temp = path.with_suffix(".part")
-        temp.write_bytes(body)
-        os.replace(temp, path)
-        snapshot["media"][kind][item_id] = {"path": kind + "/" + item_id, "mime": mime, "size": len(body),
-                                             "sha256": hashlib.sha256(body).hexdigest()}
+        try:
+            with temp.open("wb", buffering=0) as output:
+                budget.write(output, body, path, original=False)
+                os.fsync(output.fileno())
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+        return {"path": kind + "/" + item_id, "mime": mime, "size": len(body),
+                "sha256": hashlib.sha256(body).hexdigest()}
 
     def open_client(self):
         snapshot = self.active(verify=True)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import errno
 import hashlib
 import html
 import http.client
@@ -318,7 +319,7 @@ class Immich:
             raise ToolError("Immich returned invalid JSON") from None
 
     def download_original(self, asset_id: str, path: Path, cancel: threading.Event,
-                          max_bytes: int, reserve_bytes: int) -> tuple[int, str, str]:
+                          max_bytes: int, reserve_bytes: int, *, budget=None) -> tuple[int, str, str]:
         """Stream a separately authorized original; normal request() stays bounded."""
         if not UUID_RE.fullmatch(asset_id):
             raise ToolError("Invalid original asset ID")
@@ -327,6 +328,8 @@ class Immich:
             headers["x-immich-user-token" if self.session else "x-api-key"] = self.credential
         request = urllib.request.Request(self.base + f"/assets/{asset_id}/original", headers=headers)
         temp = path.with_suffix(".part")
+        charged = 0
+        complete = False
         try:
             with self.opener.open(request, timeout=60) as response:
                 length = response.headers.get("Content-Length")
@@ -346,7 +349,7 @@ class Immich:
                 if mime in {"application/json", "text/html"}:
                     raise OfflineError("Unexpected original response", code="invalid_original_response")
                 size, digest = 0, hashlib.sha256()
-                with temp.open("wb") as output:
+                with temp.open("wb", buffering=0) as output:
                     while True:
                         if cancel.is_set():
                             raise Cancelled("Offline preparation cancelled; completed files can be resumed")
@@ -356,17 +359,25 @@ class Immich:
                         size += len(chunk)
                         if size > max_bytes:
                             raise OfflineError("Original exceeds download bounds", code="original_limit", limit_bytes=max_bytes)
-                        free = shutil.disk_usage(path.parent).free
-                        if free < len(chunk) + reserve_bytes:
-                            raise OfflineError("Insufficient space for original", code="insufficient_storage",
-                                               required_bytes=len(chunk) + reserve_bytes, available_bytes=free)
-                        output.write(chunk)
+                        if budget is not None:
+                            budget.write(output, chunk, path)
+                            charged += len(chunk)
+                        else:
+                            free = shutil.disk_usage(path.parent).free
+                            if free < len(chunk) + reserve_bytes:
+                                raise OfflineError("Insufficient space for original", code="insufficient_storage",
+                                                   required_bytes=len(chunk) + reserve_bytes, available_bytes=free)
+                            if output.write(chunk) != len(chunk):
+                                raise OSError(errno.EIO, "Incomplete original write")
                         digest.update(chunk)
+                        if expected is not None and size == expected:
+                            break
                     output.flush()
                     os.fsync(output.fileno())
                 if not size or expected is not None and size != expected:
                     raise OfflineError("Original download was incomplete", code="incomplete_original")
                 os.replace(temp, path)
+                complete = True
                 return size, mime, digest.hexdigest()
         except urllib.error.HTTPError as exc:
             exc.close()
@@ -379,6 +390,12 @@ class Immich:
             raise OfflineError("Original download was incomplete", code="incomplete_original") from None
         finally:
             temp.unlink(missing_ok=True)
+            if budget is not None and not complete:
+                budget.release(charged)
+
+    def download_transport(self):
+        """A worker owns its opener; credentials and TLS policy remain in memory."""
+        return Immich(self.base, self.credential, self.context is not None, session=self.session)
 
     def version(self) -> str:
         data = self.json("GET", "/server/version")
@@ -3572,6 +3589,7 @@ def main() -> int:
             deadline = time.monotonic() + args.shutdown_timeout
             server.stop_admission()
             threading.Thread(target=enforce_deadline, daemon=True).start()
+            STATE.offline.close()
             STATE.transfers.close()
             if STATE._packages is not None:
                 threading.Thread(target=STATE._packages.close, daemon=True).start()
@@ -3591,6 +3609,8 @@ def main() -> int:
     finally:
         server.stop_admission()
         server.server_close()
+        if not STATE.offline.close(deadline if deadline is not None else time.monotonic() + args.shutdown_timeout):
+            force_exit()
         STATE.transfers.close()
         if STATE._packages is not None:
             STATE._packages.close()
