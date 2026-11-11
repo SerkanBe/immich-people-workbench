@@ -703,6 +703,54 @@ class ImportManager:
         self.commit_lock = threading.Lock()
         self.previews = {}
         self.closed = False
+        # One process per state directory: no previous process can still own
+        # these private, generated regular-file spools after startup.
+        self._reclaim_orphans()
+
+    def _discard_file(self, path):
+        if path.parent != self.root or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:result|index)", path.name):
+            return
+        try:
+            if not stat.S_ISDIR(self.root.lstat().st_mode):
+                return
+            if stat.S_ISREG(path.lstat().st_mode):
+                path.unlink()
+        except OSError:
+            # Keep inaccessible files; never broaden cleanup or follow links.
+            pass
+
+    def _reclaim_orphans(self):
+        try:
+            if not stat.S_ISDIR(self.root.lstat().st_mode):
+                return
+            for path in self.root.iterdir():
+                self._discard_file(path)
+        except OSError:
+            pass
+
+    def _drop_handles(self):
+        for item in self.previews.values():
+            for path in (item["wire"], item["index"]):
+                self._discard_file(path)
+        self.previews.clear()
+
+    def _ensure_spool(self):
+        try:
+            if self.root.is_symlink():
+                raise OSError()
+            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if not stat.S_ISDIR(self.root.lstat().st_mode):
+                raise OSError()
+        except OSError:
+            raise ws.WorkspaceError("Private preview storage is unavailable.", "preview_capacity") from None
+
+    def _spool_bytes(self):
+        total = 0
+        for path in self.root.iterdir():
+            details = path.lstat()
+            if stat.S_ISREG(details.st_mode):
+                total += details.st_size
+        return total
 
     @contextmanager
     def slot(self):
@@ -713,11 +761,21 @@ class ImportManager:
                 raise ws.WorkspaceError("Offline transfer is stopping.", "cancelled")
             yield
         finally:
+            if self.closed:
+                self._drop_handles()
             self.lock.release()
 
     def close(self):
         with self.commit_lock:
             self.closed = True
+        # Do not remove files while a parser/apply is using them. Its slot
+        # finalizer will reclaim them once it exits, and commit_boundary keeps
+        # a late validation result from mutating source state.
+        if self.lock.acquire(blocking=False):
+            try:
+                self._drop_handles()
+            finally:
+                self.lock.release()
 
     @contextmanager
     def commit_boundary(self):
@@ -747,7 +805,7 @@ class ImportManager:
         for token, item in list(self.previews.items()):
             if time.monotonic() >= item["until"]:
                 for file in (item["wire"], item["index"]):
-                    file.unlink(missing_ok=True)
+                    self._discard_file(file)
                 del self.previews[token]
 
     def _get(self, token, context):
@@ -846,16 +904,18 @@ class ImportManager:
         result = parse_results(wire)
         with self.mutation():
             export, _, _, rows, _, _, receipt = self._classify(result, context, 120)
+            if self.closed:
+                raise ws.WorkspaceError("Preview was cancelled before publication.", "cancelled")
             digest = ws.digest(result)
             # Explicit new preview closes old unused handles for this same file.
             for token, old in list(self.previews.items()):
                 if old["digest"] == digest and old["context"] == context:
-                    old["wire"].unlink(missing_ok=True)
-                    old["index"].unlink(missing_ok=True)
+                    self._discard_file(old["wire"])
+                    self._discard_file(old["index"])
                     del self.previews[token]
-            self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self._ensure_spool()
             index = ws.canonical(rows)
-            if len(index) > 16 * 1024 ** 2 or sum(file.stat().st_size for file in self.root.iterdir() if file.is_file()) + len(wire) + len(index) > 128 * 1024 ** 2:
+            if len(index) > 16 * 1024 ** 2 or self._spool_bytes() + len(wire) + len(index) > 128 * 1024 ** 2:
                 raise ws.WorkspaceError("Preview storage capacity is full.", "preview_capacity")
             token = secrets.token_urlsafe(32)
             stem = str(uuid.uuid4())
@@ -865,6 +925,8 @@ class ImportManager:
                     with path.open("xb") as stream:
                         path.chmod(0o600)
                         stream.write(data)
+                if self.closed:
+                    raise ws.WorkspaceError("Preview was cancelled before publication.", "cancelled")
                 expires = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=10)
                 self.previews[token] = {"context": context, "until": time.monotonic() + 600, "wire": paths[0], "index": paths[1], "digest": digest}
                 answer = {"token": token, "workspaceName": export["name"], "changes": rows[:200],
@@ -876,7 +938,7 @@ class ImportManager:
                 return answer
             except BaseException:
                 for path in paths:
-                    path.unlink(missing_ok=True)
+                    self._discard_file(path)
                 raise
 
     @staticmethod
@@ -941,8 +1003,8 @@ class ImportManager:
                         ws.record_import(db, result["exportId"], selected, snapshot["id"], event_ids=event_ids,
                                          skipped=skipped, result_sha256=item["digest"], observed_counts={key: sum(row["status"] == key for row in rows) for key in ("ready", "conflict", "applied")})
                 del self.previews[token]
-                item["wire"].unlink(missing_ok=True)
-                item["index"].unlink(missing_ok=True)
+                self._discard_file(item["wire"])
+                self._discard_file(item["index"])
                 self.state.invalidate_group_scan()
                 with self.state.lock:
                     self.state.sample_cache = {}
@@ -951,8 +1013,8 @@ class ImportManager:
                 self.state.mutation_lock.release()
                 leftover = self.previews.pop(token, None)
                 if leftover:
-                    leftover["wire"].unlink(missing_ok=True)
-                    leftover["index"].unlink(missing_ok=True)
+                    self._discard_file(leftover["wire"])
+                    self._discard_file(leftover["index"])
 
     @staticmethod
     def _guards(guard):

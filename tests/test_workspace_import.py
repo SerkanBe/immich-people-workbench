@@ -2,6 +2,7 @@
 import copy
 import json
 from pathlib import Path
+import threading
 import unittest
 from unittest import mock
 
@@ -261,6 +262,45 @@ class ReturnImportTests(OfflineFixture, unittest.TestCase):
         self.assertEqual(calls, [(P3, P1)])
         self.assertEqual(self.client.writes, [])
         self.assertEqual(self.state.store.pending()[0]["merge_step"], "complete")
+
+    def test_close_during_apply_preserves_active_reads_then_cancels_commit(self):
+        self.name()
+        preview = self.preview()
+        manager = self.state.transfers
+        files = list(manager.root.iterdir())
+        entered, release = threading.Event(), threading.Event()
+        read_person = self.client.person
+        def delayed_person(person):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError("Synthetic test release timed out")
+            return read_person(person)
+        outcome = []
+        def apply():
+            try:
+                self.apply(preview)
+            except BaseException as exc:
+                outcome.append(exc)
+        with mock.patch.object(self.client, "person", side_effect=delayed_person):
+            thread = threading.Thread(target=apply)
+            thread.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                manager.close()
+                self.assertTrue(all(path.exists() for path in files))
+            finally:
+                release.set()
+                thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(outcome), 1)
+        self.assertIsInstance(outcome[0], ws.WorkspaceError)
+        self.assertEqual(outcome[0].code, "cancelled")
+        self.assertTrue(all(not path.exists() for path in files))
+        self.assertEqual(manager.previews, {})
+        self.assertEqual(self.state.store.pending(), [])
+        with self.state.store.connect() as db:
+            self.assertEqual(ws.list_snapshots(db), [])
+        self.assertEqual(self.client.writes, [])
 
 
 if __name__ == "__main__":
