@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -51,7 +52,7 @@ class WorkspaceStateTests(unittest.TestCase):
 
     def test_migration_and_reopen_preserve_work_and_identity(self):
         legacy = self.root / "old.sqlite3"
-        with sqlite3.connect(legacy) as db:
+        with closing(sqlite3.connect(legacy)) as db, db:
             db.execute("CREATE TABLE progress(person_id TEXT PRIMARY KEY,skip_count INTEGER NOT NULL,updated_at TEXT NOT NULL)")
             db.execute("INSERT INTO progress VALUES(?,4,'fixture')", (P,))
         old = app.Store(legacy)
@@ -362,7 +363,7 @@ class WorkspaceStateTests(unittest.TestCase):
             self.assertEqual(ws.list_snapshots(db), [saved])
 
     def test_workflow_sqlite_busy_returns_retryable_error_without_changes(self):
-        with sqlite3.connect(self.source.path) as other:
+        with closing(sqlite3.connect(self.source.path)) as other, other:
             other.execute("BEGIN IMMEDIATE")
             with patch.object(app, "WORKFLOW_BUSY_TIMEOUT_MS", 5), self.assertRaises(app.SyncInProgress):
                 self.source.skip(P)
