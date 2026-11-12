@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 const source = readFileSync(new URL("../web/offline.js", import.meta.url), "utf8").replace(/^export /gm, "");
 const defer = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return {promise,resolve}; };
-function setup({storage = new Map()} = {}) {
+function setup({storage = new Map(), summary = {connected:true,offline:false}, importRefresh = async () => {}} = {}) {
   const elements = new Map(), calls = [], timers = new Map(), redirects = [], toasts = [], imported = [], events = {};
   let status = {available:false,ready:false,offline:false,job:{phase:"idle"}}, reply = null, tick = 0;
   const makeNode = tag => ({tagName:tag,children:[],hidden:false,disabled:false,open:false,textContent:"",value:"",files:[],listeners:{},attributes:{},dataset:{},
@@ -23,7 +23,7 @@ function setup({storage = new Map()} = {}) {
   const back = node("help-back");
   const document = { querySelectorAll: selector => selector === "[data-offline-help]" ? helpButtons : selector === "[data-offline-help-back]" ? [back] : [], querySelector: selector => node(selector.slice(1)), createElement:makeNode,
     addEventListener(event,handler) { events[event] = handler; }, dispatchEvent(event) { events[event.type]?.(); } };
-  const state = {view:"offline-create",summary:{connected:true,offline:false}};
+  const state = {view:"offline-create",summary};
   const api = async (path, options={}) => {
     calls.push({path,body:options.body});
     if (reply) return reply(path,options);
@@ -32,7 +32,7 @@ function setup({storage = new Map()} = {}) {
     return {};
   };
   const context = vm.createContext({document,state,api,TextEncoder,Uint8Array,btoa,Date,
-    window:{sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},location:{assign:path=>redirects.push(path)}},showToast:text=>toasts.push(text),onImported:async (...args)=>imported.push(args),onNavigate:view=>redirects.push(view),
+    window:{sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},location:{assign:path=>redirects.push(path)}},showToast:text=>toasts.push(text),onImported:async (...args)=>{imported.push(args);await importRefresh(state,...args);},onNavigate:view=>redirects.push(view),
     setTimeout(fn,delay) { const id=++tick; timers.set(id,{fn,delay}); return id; }, clearTimeout(id) { timers.delete(id); }});
   vm.runInContext(`${source}\nglobalThis.workspace = createOfflineWorkspace({api,state,document,window,showToast,onImported,onNavigate}); globalThis.bytes = formatBytes;`,context);
   return {storage,document,state,calls,node,timers,toasts,redirects,imported,workspace:context.workspace,bytes:context.bytes,
@@ -143,13 +143,18 @@ test("selected import runs once, records snapshot and offers Pending only for qu
 });
 
 test("lost import response clears eligibility and only explicit re-preview reconciles ledger",async()=>{
-  const run=setup();let previews=0;response(run,{"/api/offline/import/preview":async()=>{previews++;return previews===1?groups():{...groups(),counts:{ready:0,conflict:0,applied:4},readyIds:[],changes:[],nextCursor:null,lastImport:{imported:2,skipped:0,snapshot:{id:"snapshot"}}};},
+  const run=setup({importRefresh:state=>{state.summary.counts={pending:2};}});let previews=0;response(run,{"/api/offline/import/preview":async()=>{previews++;return previews===1?groups():{...groups(),counts:{ready:0,conflict:0,applied:4},readyIds:[],changes:[],nextCursor:null,lastImport:{imported:2,skipped:0,snapshot:{id:"snapshot"}}};},
     "/api/offline/import/apply":async()=>{throw TypeError("Lost response");}});
   await choose(run);await run.click("offline-import-apply");await run.click("offline-import-apply");
   assert.equal(run.calls.filter(x=>x.path==="/api/offline/import/apply").length,1);
   assert.equal(previews,1);assert.equal(run.node("offline-import-apply").disabled,true);
   assert.match(run.node("offline-import-error").textContent,/not confirmed/);
+  assert.equal(run.imported.length,0);
   await run.click("offline-import-retry");assert.equal(previews,2);
+  assert.equal(run.imported.length,1);assert.equal(run.imported[0][1].navigate,false);
+  assert.equal(run.node("offline-import-pending").hidden,false);
+  assert.deepEqual(run.redirects,[]);
+  assert.equal(run.calls.filter(call=>call.path==="/api/offline/import/apply").length,1);
   assert.match(run.node("offline-import-message").textContent,/Previous import confirmed: 2/);
   assert.equal(run.node("offline-import-apply").disabled,true);
 });
@@ -324,4 +329,57 @@ test("single-page preview hides paging controls while additional pages expose th
   const run=setup();response(run,{"/api/offline/import/preview":async()=>({...groups(),changes:[groups().changes[0]],counts:{ready:1,conflict:0,applied:0},readyIds:["one"],nextCursor:null})});
   await choose(run);assert.equal(run.node("offline-import-pagination").hidden,true);
   response(run);await choose(run,file("second return"));assert.equal(run.node("offline-import-pagination").hidden,false);
+});
+
+for (const portable of [true,false]) {
+  test(`restored source export ID cannot poll packages in ${portable ? "portable" : "legacy offline"} mode`,async()=>{
+    const storage=new Map([["immichPeopleWorkbench.offlineTransfer.v1",JSON.stringify({planId:"source-plan",packageId:"source-export"})]]);
+    const run=setup({storage,summary:{connected:true,offline:true,portable}});
+    run.status({ready:true,portable,job:{phase:"idle"}});
+    await run.workspace.refresh();await run.workspace.refresh();
+    assert.equal(run.timers.size,0);
+    assert.equal(run.calls.filter(call=>call.path==="/api/offline/packages").length,0);
+    assert.equal(run.calls.some(call=>call.body),false);
+  });
+}
+
+test("source IDs survive unknown startup mode and reconcile when source mode is established",async()=>{
+  const storage=new Map([["immichPeopleWorkbench.offlineTransfer.v1",JSON.stringify({planId:"synthetic-plan",packageId:"source-export"})]]);
+  const run=setup({storage,summary:null});
+  run.status({ready:false,job:{phase:"idle"}});await run.workspace.refresh();
+  assert.equal(run.timers.size,0);assert.equal(run.calls.length,1);
+  run.state.summary={connected:true,offline:false};run.workspace.updateSummary();
+  response(run,{"/api/offline/packages":async()=>({workspaces:[{id:"source-export",status:"ready",downloadReady:true}],snapshots:[]})});
+  await run.workspace.refresh();
+  assert.equal(run.node("offline-package-download").href,"/api/offline/packages/source-export/download");
+  assert.equal(run.node("offline-package-download").hidden,false);
+  assert.equal(run.calls.some(call=>call.body),false);
+});
+
+test("receipt reconciliation refreshes local progress without offering empty Pending or replaying apply",async()=>{
+  const run=setup({importRefresh:state=>{state.summary.counts={pending:0};}});
+  response(run,{"/api/offline/import/preview":async()=>({...groups(),changes:[],counts:{ready:0,conflict:0,applied:2},readyIds:[],nextCursor:null,lastImport:{imported:2,skipped:0,snapshot:{id:"before-import"}}})});
+  await choose(run);
+  assert.equal(run.imported.length,1);assert.equal(run.imported[0][1].navigate,false);
+  assert.equal(run.node("offline-import-pending").hidden,true);
+  assert.equal(run.calls.some(call=>call.path==="/api/offline/import/apply"||call.path==="/api/sync"),false);
+  assert.deepEqual(run.redirects,[]);
+});
+
+test("an invalid receipt cannot confirm import or trigger Pending refresh",async()=>{
+  const run=setup();response(run,{"/api/offline/import/preview":async()=>({...groups(),lastImport:{imported:2,skipped:0}})});
+  await choose(run);
+  assert.equal(run.imported.length,0);
+  assert.equal(run.node("offline-import-pending").hidden,true);
+  assert.doesNotMatch(run.node("offline-import-message").textContent,/Previous import confirmed/);
+});
+
+test("a late receipt refresh cannot restore Pending eligibility for a newer chosen file",async()=>{
+  const refresh=defer(),run=setup({importRefresh:async state=>{await refresh.promise;state.summary.counts={pending:2};}});
+  response(run,{"/api/offline/import/preview":async()=>({...groups(),lastImport:{imported:2,skipped:0,snapshot:{id:"before-import"}}})});
+  const previous=choose(run);await new Promise(resolve=>setImmediate(resolve));
+  response(run,{"/api/offline/import/preview":async()=>({...groups(),workspaceName:"Newer return"})});
+  await choose(run,file("newer file"));refresh.resolve();await previous;
+  assert.equal(run.node("offline-import-message").textContent,"Newer return");
+  assert.equal(run.node("offline-import-pending").hidden,true);
 });

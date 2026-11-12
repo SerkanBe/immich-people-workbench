@@ -76,7 +76,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
     return job.planId ? job.phase === "ready" && snapshot.id === job.planId : job.phase === "idle";
   }
   function artifact() { return packages.find(item => item.id === packageId); }
-  function packageActive() { return packageStarting || !!(packageId && !artifact()) || packages.some(item => item.status === "preparing"); }
+  function packageActive() { return sourceMode() && (packageStarting || !!(packageId && !artifact()) || packages.some(item => item.status === "preparing")); }
   function readyArtifact() { const item = artifact(); return item?.status === "ready" && item.downloadReady === true ? item : null; }
   function paint() {
     const job = status?.job || {}, phase = job.phase || "idle", active = activePhases.has(phase);
@@ -166,7 +166,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
   }
   function schedule() {
     clearTimeout(timer);
-    if (activePhases.has(status?.job?.phase) || transfer || packageActive()) timer = setTimeout(refresh, statusError || packagesError ? 3000 : 1000);
+    if (sourceMode() && (activePhases.has(status?.job?.phase) || transfer || packageActive())) timer = setTimeout(refresh, statusError || packagesError ? 3000 : 1000);
   }
   async function refresh(explicit = false) {
     const request = ++generation, current = mode(), source = sourceMode();
@@ -296,7 +296,14 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
       validatePage(next, readyIds);
       preview = {...next,counts,readyIds,selected:new Set(readyIds),expires,pageIndex:0,cursors:[null],firstPage:{changes:next.changes,nextCursor:next.nextCursor}};
       importMessage = next.workspaceName || "Returned workspace";
-      if (next.lastImport && count(next.lastImport.imported) && next.lastImport.imported > 0) importMessage = `Previous import confirmed: ${groupsLabel(next.lastImport.imported)} imported${next.lastImport.snapshot ? "; state snapshot saved" : ""}. ${importMessage}`;
+      const receipt = next.lastImport;
+      if (receipt && count(receipt.imported) && receipt.imported > 0 && count(receipt.skipped) && typeof receipt.snapshot?.id === "string" && receipt.snapshot.id) {
+        importMessage = `Previous import confirmed: ${groupsLabel(receipt.imported)} imported; state snapshot saved. ${importMessage}`;
+        importDone = true;
+        try { await onImported(receipt, {navigate:false}); }
+        catch { showToast("Imported changes. Pending could not refresh."); }
+        if (request !== previewGeneration || current !== context()) return;
+      }
       renderPreviewRows();
       expiryTimer = setTimeout(() => { if (preview?.token === next.token) { clearPreview("Preview expired. Review the selected file again."); paint(); } }, Math.min(expires - Date.now(), 600000));
     } catch (error) {
