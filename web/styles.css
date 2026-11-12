@@ -579,4 +579,6 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; bac
   .import-stats dd { font-size: 1.5rem; }
   .offline-import-row { grid-template-columns: minmax(0, 1fr); }
   .import-result { padding: 16px; }
+  .import-result-heading { display: grid; grid-template-columns: 40px minmax(0, 1fr); }
+  .import-result-heading .import-local-badge { grid-column: 2; justify-self: start; }
 }
