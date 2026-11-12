@@ -21,6 +21,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
   let packageUncertain = false, packageId = null, packageStarting = false, transfer = null, transferEpoch = 0;
   let preview = null, previewGeneration = 0, expiryTimer = null, selectedFile = null, encodedFile = "";
   let previewBusy = false, pageBusy = false, applying = false, importDone = false, importMessage = "", importError = "";
+  let importResult = null;
   let currentView = state.view || "offline-create", previousView = "offline-create", helpTrigger = null;
   let lastContext, lastMode, revision = 0;
   const portable = () => state.summary?.portable === true || status?.portable === true;
@@ -52,13 +53,21 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
   function paintImport() {
     const valid = hasPreview();
     el("offline-import-message").textContent = importMessage;
+    el("offline-import-message").hidden = importDone && !!importResult;
+    el("offline-import-result").hidden = !importDone || !importResult;
+    if (importDone && importResult) {
+      el("offline-import-result-heading").textContent = importResult.recovered ? "Previous import confirmed" : "Changes imported";
+      el("offline-import-result-name").textContent = importResult.workspaceName;
+      el("offline-import-result-count").textContent = String(importResult.imported);
+      el("offline-import-result-skipped").textContent = String(importResult.skipped);
+    }
     el("offline-import-error").textContent = importError; el("offline-import-error").hidden = !importError;
     el("offline-import-review").hidden = !preview;
     el("offline-import-file").disabled = applying || !sourceMode() || !statusValid || saveBusy();
     el("offline-import-pending").hidden = !importDone || !(state.summary?.counts?.pending > 0);
     el("offline-import-retry").hidden = !selectedFile || !!preview;
     el("offline-import-retry").disabled = applying || previewBusy || pageBusy || saveBusy();
-    el("offline-import-counts").textContent = preview ? `${preview.counts.ready} ready · ${preview.counts.applied} already imported · ${preview.counts.conflict} conflicting` : "";
+    for (const name of ["ready", "conflict", "applied"]) el(`offline-import-${name}-count`).textContent = String(preview?.counts[name] ?? 0);
     el("offline-import-selection").textContent = preview ? `${preview.selected.size} selected` : "";
     el("offline-import-apply").textContent = applying ? "Importing…" : "Import selected changes";
     el("offline-import-apply").disabled = !valid || !sourceMode() || captureBusy() || !preview.selected.size;
@@ -81,6 +90,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
   function paint() {
     const job = status?.job || {}, phase = job.phase || "idle", active = activePhases.has(phase);
     const isSource = sourceMode(), isPortable = portable(), offline = state.summary?.offline === true || isPortable;
+    el("offline-tools").hidden = !isSource;
     el("offline-navigation").hidden = !isSource;
     el("offline-exports-link").hidden = !isSource || !packages.length;
     el("offline-snapshots-link").hidden = !isSource;
@@ -258,7 +268,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
   function renderPreviewRows() {
     const rows = el("offline-import-rows"); rows.replaceChildren(); if (!preview) return;
     for (const group of preview.changes) {
-      const row = text("div", "", "offline-import-row");
+      const row = text("div", "", "offline-import-row"); row.dataset.importStatus = group.status;
       if (group.status === "ready") {
         const label = text("label", "", "offline-import-choice"), checkbox = document.createElement("input");
         checkbox.type = "checkbox"; checkbox.checked = preview.selected.has(group.id);
@@ -268,7 +278,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
         });
         label.append(checkbox, text("span", group.label)); row.append(label);
       } else row.append(text("strong", group.label));
-      row.append(text("span", ({ready:"Ready",conflict:"Conflict",applied:"Already imported"})[group.status], "muted"));
+      row.append(text("span", ({ready:"Ready",conflict:"Conflict",applied:"Already imported"})[group.status], `import-status-badge import-status-${group.status}`));
       if (group.reason) row.append(text("p", group.reason, group.status === "conflict" ? "error-text" : "muted"));
       rows.append(row);
     }
@@ -300,6 +310,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
       if (receipt && count(receipt.imported) && receipt.imported > 0 && count(receipt.skipped) && typeof receipt.snapshot?.id === "string" && receipt.snapshot.id) {
         importMessage = `Previous import confirmed: ${groupsLabel(receipt.imported)} imported; state snapshot saved. ${importMessage}`;
         importDone = true;
+        importResult = {...receipt, workspaceName:next.workspaceName || "Returned workspace", recovered:true};
         try { await onImported(receipt, {navigate:false}); }
         catch { showToast("Imported changes. Pending could not refresh."); }
         if (request !== previewGeneration || current !== context()) return;
@@ -335,6 +346,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
   }
   async function applySelection() {
     if (!sourceMode() || !hasPreview() || captureBusy() || !preview.selected.size) return;
+    const workspaceName = preview.workspaceName || "Returned workspace";
     const body = {token:preview.token,ids:[...preview.selected],confirmation:"IMPORT_LOCAL"};
     if (new TextEncoder().encode(JSON.stringify(body)).length > APPLY_LIMIT) { importError = "Too many selected IDs. Exclude some groups before importing."; paint(); return; }
     applying = true; publishImporting(true); importError = ""; paint();
@@ -342,8 +354,9 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
     try {
       result = await api("/api/offline/import/apply", {method:"POST",body});
       if (!count(result.imported) || result.imported === 0 || !count(result.skipped) || !result.snapshot || typeof result.snapshot.id !== "string") throw Error("The import response could not be verified.");
-      clearPreview(`Imported ${result.imported} changes`);
+      clearPreview(`Imported ${groupsLabel(result.imported)}`);
       importDone = true;
+      importResult = {...result, workspaceName, recovered:false};
       publishImporting(false);
       try { await onImported(result, {navigate:false}); }
       catch { showToast("Imported changes. Pending could not refresh."); }
@@ -353,7 +366,10 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
       importError = stale ? "The preview is no longer current. Review the selected file again before importing."
         : `${errorText(error)} Import was not confirmed. Review this file again to check what was saved before another import.`;
       // A lost response can follow a commit. Only an explicit fresh preview reconciles it.
-    } finally { applying = false; if (state.offlineImporting) publishImporting(false); paint(); }
+    } finally {
+      applying = false; if (state.offlineImporting) publishImporting(false); paint();
+      if (importDone && currentView === "offline-import") el("offline-import-result-heading").focus();
+    }
   }
   function updateContext() {
     const next = context(), nextMode = mode();

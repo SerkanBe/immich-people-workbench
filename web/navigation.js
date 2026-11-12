@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Serkan Bekdemir
 // SPDX-License-Identifier: AGPL-3.0-only
 
-const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = 'a[href], summary, button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export const OFFLINE_ROUTES = Object.freeze({
   "offline-create": "/offline/create", "offline-import": "/offline/import", "offline-exports": "/offline/exports",
@@ -25,6 +25,10 @@ export function viewFromPath(path, mergeEnabled = false) {
 }
 
 export function updateNavigationState(document, view) {
+  const offline = document.querySelector?.("#offline-navigation");
+  const withinOffline = ["offline-create", "offline-import", "offline-exports", "offline-help"].includes(view);
+  if (offline && withinOffline) offline.open = true;
+  document.querySelector?.("#nav-offline-label")?.classList.toggle("current-section", withinOffline);
   document.querySelectorAll(".nav-button").forEach(button => {
     const active = button.dataset.view === view;
     button.classList.toggle("active", active);
@@ -149,7 +153,7 @@ export function createNavigationDrawer({ document, window, onNavigate, breakpoin
   });
   document.addEventListener("focusin", () => { focusRevision++; });
   document.addEventListener("toggle", event => {
-    if (event.target?.matches?.("dialog[open]") || event.target?.open) {
+    if (event.target?.matches?.("dialog[open]")) {
       focusRevision++;
       close();
     }

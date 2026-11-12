@@ -31,17 +31,20 @@
         <div class="nav-divider" role="presentation"></div>
         <a class="nav-button" data-view="named" href="/named">Named <span id="named-count">0</span></a>
         <a class="nav-button" data-view="ignored" href="/ignored">Ignored <span id="ignored-count">0</span></a>
-        <div id="offline-navigation" class="nav-group" role="group" aria-labelledby="nav-offline-label" hidden>
-          <div id="nav-offline-label" class="nav-group-label">Offline</div>
-          <div class="nav-group-items">
-            <a class="nav-button" data-view="offline-create" href="/offline/create">Create offline copy</a>
-            <a class="nav-button" data-view="offline-import" href="/offline/import">Import offline changes</a>
-            <a id="offline-exports-link" class="nav-button" data-view="offline-exports" href="/offline/exports" hidden>Exports</a>
-          </div>
-        </div>
       </nav>
       <div class="sidebar-footer">
-        <a id="offline-snapshots-link" class="nav-button" data-view="snapshots" href="/settings/snapshots" hidden>State snapshots</a>
+        <nav id="offline-tools" class="sidebar-tools" aria-label="Local tools" hidden>
+          <div class="nav-tools-label">Local tools</div>
+          <details id="offline-navigation" class="nav-disclosure" hidden>
+            <summary id="nav-offline-label">Offline</summary>
+            <div class="nav-group-items">
+              <a class="nav-button" data-view="offline-create" href="/offline/create">Create offline copy</a>
+              <a class="nav-button" data-view="offline-import" href="/offline/import">Import offline changes</a>
+              <a id="offline-exports-link" class="nav-button" data-view="offline-exports" href="/offline/exports" hidden>Exports</a>
+            </div>
+          </details>
+          <a id="offline-snapshots-link" class="nav-button" data-view="snapshots" href="/settings/snapshots" hidden>State snapshots</a>
+        </nav>
         <p id="connection-status">Not connected</p>
         <button id="logout-button" class="quiet-button">Log out</button>
       </div>
@@ -351,9 +354,13 @@
         <p id="offline-import-message" role="status" aria-live="polite"></p>
         <p id="offline-import-error" class="error-text" role="alert" hidden></p>
         <button id="offline-import-retry" class="quiet-button" type="button" hidden>Review file again</button>
-        <a id="offline-import-pending" class="primary-button" data-view="pending" href="/pending" hidden>Review Pending</a>
+        <section id="offline-import-result" class="import-result" aria-labelledby="offline-import-result-heading" hidden>
+          <div class="import-result-heading"><span class="import-result-icon" aria-hidden="true">✓</span><div><h3 id="offline-import-result-heading" tabindex="-1">Changes imported</h3><p id="offline-import-result-name"></p></div><span class="import-local-badge">Saved locally</span></div>
+          <dl class="import-stats"><div><dt>Imported groups</dt><dd id="offline-import-result-count">0</dd></div><div><dt>Left unchanged</dt><dd id="offline-import-result-skipped">0</dd></div></dl>
+          <div class="import-result-footer"><span class="import-snapshot-status">✓ State snapshot saved</span><a id="offline-import-pending" class="primary-button" data-view="pending" href="/pending" hidden>Review Pending</a></div>
+        </section>
         <div id="offline-import-review" hidden>
-          <p id="offline-import-counts"></p>
+          <dl id="offline-import-counts" class="import-stats"><div data-import-status="ready"><dt>Ready to import</dt><dd id="offline-import-ready-count">0</dd></div><div data-import-status="conflict"><dt>Conflicts</dt><dd id="offline-import-conflict-count">0</dd></div><div data-import-status="applied"><dt>Already imported</dt><dd id="offline-import-applied-count">0</dd></div></dl>
           <div class="offline-actions"><button id="offline-import-all" class="quiet-button" type="button">Select all ready</button><button id="offline-import-none" class="quiet-button" type="button">Exclude all</button></div>
           <p id="offline-import-selection" class="muted" role="status"></p>
           <div id="offline-import-rows" class="offline-import-rows"></div>

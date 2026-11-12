@@ -102,6 +102,7 @@ test("preparing artifacts have explicit cancel, no premature link, and failure r
 test("portable mode exposes results only, preserves legacy reconnect, and blocks captures during saves",async()=>{
   const run=setup(); run.state.summary={connected:true,offline:true,portable:true};
   run.status({...readyStatus,portable:true}); await run.workspace.refresh();
+  assert.equal(run.node("offline-tools").hidden,true);
   assert.equal(run.node("offline-navigation").hidden,true); assert.equal(run.node("offline-reconnect").hidden,true);
   assert.equal(run.node("offline-results-download").hidden,false); assert.equal(run.node("offline-results-download").href,"/api/offline/results");
   await run.click("offline-plan"); await run.click("offline-snapshot-create"); assert.equal(run.calls.some(call=>call.body),false);
@@ -117,7 +118,9 @@ test("portable mode exposes results only, preserves legacy reconnect, and blocks
 test("preview selects all ready groups across pages while conflicts and applied groups have no checkbox",async()=>{
   const run=setup();response(run,{"/api/offline/import/preview/page":async options=>{assert.equal(options.body.cursor,"page-two");return {changes:[{id:"two",kind:"review",label:"Second group",status:"ready"}],nextCursor:null};}});
   await choose(run);
-  assert.match(run.node("offline-import-counts").textContent,/2 ready.*1 already imported.*1 conflicting/);
+  assert.equal(run.node("offline-import-ready-count").textContent,"2");
+  assert.equal(run.node("offline-import-conflict-count").textContent,"1");
+  assert.equal(run.node("offline-import-applied-count").textContent,"1");
   assert.equal(run.node("offline-import-rows").querySelectorAll("input").length,1);
   assert.ok(allNodes(run.node("offline-import-rows")).some(n=>n.textContent==="<Name person>"));
   const first=run.node("offline-import-rows").querySelectorAll("input")[0]; first.checked=false;first.listeners.change();
@@ -137,7 +140,12 @@ test("selected import runs once, records snapshot and offers Pending only for qu
   assert.equal(requests.length,1);assert.deepEqual(Array.from(requests[0].body.ids),["two"]);assert.equal(requests[0].body.confirmation,"IMPORT_LOCAL");
   applying.resolve({imported:1,skipped:0,snapshot:{id:"before-import"}});await applyingRequest;
   assert.equal(run.imported.length,1);assert.equal(run.imported[0][1].navigate,false);
-  assert.equal(run.node("offline-import-message").textContent,"Imported 1 changes");
+  assert.equal(run.node("offline-import-message").textContent,"Imported 1 group");
+  assert.equal(run.node("offline-import-result").hidden,false);
+  assert.equal(run.node("offline-import-result-heading").textContent,"Changes imported");
+  assert.equal(run.node("offline-import-result-name").textContent,"<returned-workspace>");
+  assert.equal(run.node("offline-import-result-count").textContent,"1");
+  assert.equal(run.node("offline-import-result-skipped").textContent,"0");
   assert.equal(run.node("offline-import-pending").hidden,true);
   assert.equal(run.calls.some(x=>x.path==="/api/sync"),false);
 });
@@ -149,10 +157,14 @@ test("lost import response clears eligibility and only explicit re-preview recon
   assert.equal(run.calls.filter(x=>x.path==="/api/offline/import/apply").length,1);
   assert.equal(previews,1);assert.equal(run.node("offline-import-apply").disabled,true);
   assert.match(run.node("offline-import-error").textContent,/not confirmed/);
+  assert.equal(run.node("offline-import-result").hidden,true);
   assert.equal(run.imported.length,0);
   await run.click("offline-import-retry");assert.equal(previews,2);
   assert.equal(run.imported.length,1);assert.equal(run.imported[0][1].navigate,false);
   assert.equal(run.node("offline-import-pending").hidden,false);
+  assert.equal(run.node("offline-import-result").hidden,false);
+  assert.equal(run.node("offline-import-result-heading").textContent,"Previous import confirmed");
+  assert.equal(run.node("offline-import-result-count").textContent,"2");
   assert.deepEqual(run.redirects,[]);
   assert.equal(run.calls.filter(call=>call.path==="/api/offline/import/apply").length,1);
   assert.match(run.node("offline-import-message").textContent,/Previous import confirmed: 2/);
@@ -382,4 +394,5 @@ test("a late receipt refresh cannot restore Pending eligibility for a newer chos
   await choose(run,file("newer file"));refresh.resolve();await previous;
   assert.equal(run.node("offline-import-message").textContent,"Newer return");
   assert.equal(run.node("offline-import-pending").hidden,true);
+  assert.equal(run.node("offline-import-result").hidden,true);
 });

@@ -6,7 +6,8 @@ contains private photos, names and review data, without Immich credentials.
 
 ## Create and download a copy
 
-1. Connect to the Immich server and account you want to review. Under **Offline**,
+1. Connect to the Immich server and account you want to review. At the bottom of
+   the sidebar, expand **Local tools → Offline**,
    open **Create offline copy** and choose **Find photos**.
 2. Review the photo count and size. **Size unknown** means metadata did not give
    a usable estimate; a partial estimate identifies photos with unknown sizes.
@@ -65,14 +66,15 @@ The **?** link opens Help while preserving your current workflow.
 ## Import offline changes
 
 1. Open the exact Workbench that created the copy, using its original Immich
-   account. Under **Offline**, choose **Import offline changes**.
+   account. Under **Local tools → Offline**, choose **Import offline changes**.
 2. Choose the returned changes file. Review **Ready**, **Conflict** and
    **Already imported** groups, including any additional pages. Ready groups
    start selected; exclude any you do not want to import.
 3. Choose **Import selected changes**. Workbench saves accepted changes locally
    and takes a state snapshot first. It never Syncs automatically.
-4. If proposed Immich changes are queued, choose **Review Pending**. Check them
-   alongside existing work, then explicitly **Sync checked changes to Immich**.
+4. The result card shows imported groups, groups left unchanged and the saved
+   state snapshot. If proposed Immich changes are queued, choose **Review Pending**.
+   Check them alongside existing work, then explicitly **Sync checked changes to Immich**.
    Only checked actions are applied to Immich. Accepted local reviews, progress
    and eligible preferences can be saved without creating a Pending action.
 
@@ -89,7 +91,7 @@ unsupported overlapping continuation changes until its work is reconciled.
 
 ## State snapshots
 
-Open **State snapshots** from the local-data link below the main navigation.
+Open **Local tools → State snapshots** at the bottom of the sidebar.
 Save, list and download snapshots there. Workbench also takes one before each
 actual nonempty import. Snapshots contain saved Workbench progress and media
 references, not duplicated photos or credentials. The page's **?** explains their

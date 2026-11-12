@@ -182,11 +182,36 @@ test("an open dialog prevents drawer stacking and closes a drawer opened earlier
   dialogOpen = false;
   ui.menu.dispatch("click");
   assert.equal(ui.drawer.isOpen(), true);
-  ui.doc.dispatch("toggle", { target: { open: true } });
+  ui.doc.dispatch("toggle", { target: { open: true, matches: selector => selector === "dialog[open]" } });
   assert.equal(ui.drawer.isOpen(), false);
   assert.equal(ui.main.inert, false);
   assert.equal(ui.sidebar.inert, true);
   assert.equal(ui.body.style.overflow, "clip");
+});
+
+test("expanding an Offline disclosure keeps the mobile navigation open", () => {
+  const ui = setup();
+  ui.menu.dispatch("click");
+  ui.doc.dispatch("toggle", { target: { open: true, matches: () => false } });
+  assert.equal(ui.drawer.isOpen(), true);
+  assert.equal(ui.sidebar.inert, false);
+  assert.equal(ui.main.inert, true);
+});
+
+test("offline destinations reveal their active link without expanding Offline for snapshots or main views", () => {
+  const details = {open:false}, label = {classList:new Classes()};
+  const doc = {querySelectorAll:()=>[],querySelector:selector=>selector === "#offline-navigation" ? details : label};
+  updateNavigationState(doc,"unnamed"); assert.equal(details.open,false);
+  updateNavigationState(doc,"snapshots"); assert.equal(details.open,false);
+  for (const view of ["offline-create","offline-import","offline-exports","offline-help"]) {
+    details.open = false;
+    updateNavigationState(doc,view);
+    assert.equal(details.open,true);
+    assert.equal(label.classList.contains("current-section"),true);
+  }
+  updateNavigationState(doc,"pending");
+  assert.equal(label.classList.contains("current-section"),false);
+  assert.equal(details.open,true); // Keep the user's open section until explicitly collapsed.
 });
 
 test("a delayed navigation cannot steal focus after another focus or route change", async () => {
