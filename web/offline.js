@@ -22,6 +22,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
   let preview = null, previewGeneration = 0, expiryTimer = null, selectedFile = null, encodedFile = "";
   let previewBusy = false, pageBusy = false, applying = false, importDone = false, importMessage = "", importError = "";
   let importResult = null;
+  let importUncertain = "";
   let currentView = state.view || "offline-create", previousView = "offline-create", helpTrigger = null;
   let lastContext, lastMode, revision = 0;
   const portable = () => state.summary?.portable === true || status?.portable === true;
@@ -61,7 +62,10 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
       el("offline-import-result-count").textContent = String(importResult.imported);
       el("offline-import-result-skipped").textContent = String(importResult.skipped);
     }
-    el("offline-import-error").textContent = importError; el("offline-import-error").hidden = !importError;
+    el("offline-import-error").textContent = importError; el("offline-import-error").hidden = !importError || !!importUncertain;
+    el("offline-import-uncertain").hidden = !importUncertain;
+    el("offline-import-error-detail").textContent = importError || importUncertain;
+    if (!importUncertain) el("offline-import-error-details").open = false;
     el("offline-import-review").hidden = !preview;
     el("offline-import-file").disabled = applying || !sourceMode() || !statusValid || saveBusy();
     el("offline-import-pending").hidden = !importDone || !(state.summary?.counts?.pending > 0);
@@ -304,6 +308,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
       if (typeof next.token !== "string" || !next.token || next.token.length > 4096 || !counts || ![counts.ready,counts.conflict,counts.applied].every(count) || counts.ready + counts.conflict + counts.applied > GROUP_LIMIT || !Array.isArray(next.readyIds) || next.readyIds.length !== counts.ready || !next.readyIds.every(id => typeof id === "string" && id.length > 0 && id.length <= 256) || !Number.isFinite(expires) || expires <= Date.now()) throw Error("Invalid or expired preview. Review the file again.");
       const readyIds = new Set(next.readyIds); if (readyIds.size !== next.readyIds.length) throw Error("Invalid preview IDs. Review the file again.");
       validatePage(next, readyIds);
+      importUncertain = "";
       preview = {...next,counts,readyIds,selected:new Set(readyIds),expires,pageIndex:0,cursors:[null],firstPage:{changes:next.changes,nextCursor:next.nextCursor}};
       importMessage = next.workspaceName || "Returned workspace";
       const receipt = next.lastImport;
@@ -349,7 +354,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
     const workspaceName = preview.workspaceName || "Returned workspace";
     const body = {token:preview.token,ids:[...preview.selected],confirmation:"IMPORT_LOCAL"};
     if (new TextEncoder().encode(JSON.stringify(body)).length > APPLY_LIMIT) { importError = "Too many selected IDs. Exclude some groups before importing."; paint(); return; }
-    applying = true; publishImporting(true); importError = ""; paint();
+    applying = true; publishImporting(true); importError = ""; importDone = false; importUncertain = ""; paint();
     let result;
     try {
       result = await api("/api/offline/import/apply", {method:"POST",body});
@@ -363,12 +368,13 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
     } catch (error) {
       clearPreview();
       const stale = ["preview_stale", "preview_expired"].includes(error?.code);
-      importError = stale ? "The preview is no longer current. Review the selected file again before importing."
-        : `${errorText(error)} Import was not confirmed. Review this file again to check what was saved before another import.`;
+      importError = stale ? "The preview is no longer current. Review the selected file again before importing." : "";
+      importUncertain = stale ? "" : errorText(error);
       // A lost response can follow a commit. Only an explicit fresh preview reconciles it.
     } finally {
       applying = false; if (state.offlineImporting) publishImporting(false); paint();
       if (importDone && currentView === "offline-import") el("offline-import-result-heading").focus();
+      else if (importUncertain && currentView === "offline-import") el("offline-import-uncertain-heading").focus();
     }
   }
   function updateContext() {
@@ -402,7 +408,7 @@ export function createOfflineWorkspace({ api, state, document, window, showToast
   el("offline-results-download").addEventListener("click", event => { if (!portable() || captureBusy()) { event.preventDefault(); showToast("Wait for local saves to finish."); } });
   el("offline-import-file").addEventListener("change", () => {
     if (applying) return;
-    selectedFile = el("offline-import-file").files?.[0] || null; encodedFile = ""; clearPreview(); importError = ""; importDone = false; paint();
+    selectedFile = el("offline-import-file").files?.[0] || null; encodedFile = ""; clearPreview(); importError = ""; importUncertain = ""; importDone = false; paint();
     if (selectedFile) return reviewFile();
   });
   el("offline-import-retry").addEventListener("click", reviewFile);

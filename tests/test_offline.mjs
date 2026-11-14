@@ -151,15 +151,24 @@ test("selected import runs once, records snapshot and offers Pending only for qu
 });
 
 test("lost import response clears eligibility and only explicit re-preview reconciles ledger",async()=>{
-  const run=setup({importRefresh:state=>{state.summary.counts={pending:2};}});let previews=0;response(run,{"/api/offline/import/preview":async()=>{previews++;return previews===1?groups():{...groups(),counts:{ready:0,conflict:0,applied:4},readyIds:[],changes:[],nextCursor:null,lastImport:{imported:2,skipped:0,snapshot:{id:"snapshot"}}};},
+  const run=setup({importRefresh:state=>{state.summary.counts={pending:2};}});let previews=0;response(run,{"/api/offline/import/preview":async()=>{previews++;if(previews===2)throw TypeError("Re-review unavailable");return previews===1?groups():{...groups(),counts:{ready:0,conflict:0,applied:4},readyIds:[],changes:[],nextCursor:null,lastImport:{imported:2,skipped:0,snapshot:{id:"snapshot"}}};},
     "/api/offline/import/apply":async()=>{throw TypeError("Lost response");}});
   await choose(run);await run.click("offline-import-apply");await run.click("offline-import-apply");
   assert.equal(run.calls.filter(x=>x.path==="/api/offline/import/apply").length,1);
   assert.equal(previews,1);assert.equal(run.node("offline-import-apply").disabled,true);
-  assert.match(run.node("offline-import-error").textContent,/not confirmed/);
+  assert.equal(run.node("offline-import-uncertain").hidden,false);
+  assert.equal(run.node("offline-import-error").hidden,true);
+  assert.equal(run.node("offline-import-error-detail").textContent,"Lost response");
+  assert.equal(run.node("offline-import-error-details").open,false);
   assert.equal(run.node("offline-import-result").hidden,true);
   assert.equal(run.imported.length,0);
   await run.click("offline-import-retry");assert.equal(previews,2);
+  assert.equal(run.node("offline-import-uncertain").hidden,false);
+  assert.equal(run.node("offline-import-error-detail").textContent,"Re-review unavailable");
+  assert.equal(run.imported.length,0);
+  assert.equal(run.calls.filter(call=>call.path==="/api/offline/import/apply").length,1);
+  await run.click("offline-import-retry");assert.equal(previews,3);
+  assert.equal(run.node("offline-import-uncertain").hidden,true);
   assert.equal(run.imported.length,1);assert.equal(run.imported[0][1].navigate,false);
   assert.equal(run.node("offline-import-pending").hidden,false);
   assert.equal(run.node("offline-import-result").hidden,false);
@@ -182,6 +191,20 @@ test("file cap is checked before reading and new file wins over late old read or
   current.resolve({...groups(),workspaceName:"New file"});await newer;
   assert.match(run.node("offline-import-message").textContent,/New file/);
   assert.equal(run.calls.filter(x=>x.path==="/api/offline/import/preview").length,1);
+});
+
+test("an uncertain follow-up import cannot retain a previous successful receipt card",async()=>{
+  const run=setup();response(run,{
+    "/api/offline/import/preview":async()=>({...groups(),lastImport:{imported:2,skipped:0,snapshot:{id:"previous-import"}}}),
+    "/api/offline/import/apply":async()=>{throw TypeError("Lost follow-up response");},
+  });
+  await choose(run);
+  assert.equal(run.node("offline-import-result").hidden,false);
+  await run.click("offline-import-apply");
+  assert.equal(run.node("offline-import-result").hidden,true);
+  assert.equal(run.node("offline-import-uncertain").hidden,false);
+  assert.equal(run.node("offline-import-pending").hidden,true);
+  assert.equal(run.calls.filter(call=>call.path==="/api/offline/import/apply").length,1);
 });
 
 test("local mutation or mode change invalidates preview and late replies cannot restore it",async()=>{

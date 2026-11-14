@@ -11,6 +11,9 @@ to the next cluster. Choose an existing person from autocomplete to queue a
 merge. If you type an existing full name without selecting its suggestion,
 Workbench asks whether you mean to create a separate person with the same name.
 
+Choose **Shortcuts ?** beside the page controls for the keyboard reference.
+The same reference is available in Named and Investigate.
+
 - `Tab` accepts the visible completion; `Up` / `Down` move through
   suggestions.
 - `Page Up` / `Page Down` change the representative face.
@@ -75,5 +78,5 @@ Named, and Ignored. Use **Menu** on a narrow screen. Each section has its own
 URL; browser Back and Forward move between sections.
 
 Press `?` or choose **Shortcuts** in Face review for its key reference. Group
-photos and the main naming fields show their primary shortcuts beside the
-controls.
+photos shows its primary shortcuts beside the controls. In Clusters, Named and
+Investigate, choose **Shortcuts ?** for Naming shortcuts.

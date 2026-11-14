@@ -145,7 +145,7 @@ input, select { min-height: 42px; padding: 9px 11px; border: 1px solid var(--bor
 .suggestion strong { min-width: 0; overflow-wrap: anywhere; }
 .suggestion small { grid-column: 2; color: var(--muted); }
 .card-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 25px; margin-top: 5px; }
-.hotkey-hint { color: var(--muted); font-size: .72rem; }
+.person-card .card-actions { justify-content: flex-end; }
 .investigate-button { min-height: 28px; padding: 3px 8px; font-size: .75rem; }
 
 .merge-workbench { display: grid; grid-template-columns: minmax(0, 1fr) 330px; align-items: start; gap: 20px; }
@@ -333,6 +333,7 @@ body.merge-zen .merge-tray { position: static; height: 100vh; overflow-y: auto; 
 .face-review-actions kbd { margin-left: 3px; }
 #face-review-help-dialog { width: min(760px, calc(100% - 28px)); max-height: calc(100dvh - 28px); overflow-y: auto; }
 #face-review-help-dialog .detail-heading > div { min-width: 0; }
+#naming-help-dialog { max-height: calc(100dvh - 28px); overflow-y: auto; }
 .face-review-help-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .face-review-help-columns h3 { margin: 0 0 9px; font-size: 1rem; }
 .face-review-help-columns .shortcut-list > div { grid-template-columns: minmax(105px, 1fr); gap: 4px; }
@@ -572,6 +573,12 @@ kbd { padding: 2px 5px; border: 1px solid var(--border); border-radius: 4px; bac
 .import-result .import-stats > div { background: transparent; }
 .import-result-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
 .import-snapshot-status { color: var(--muted); font-size: .84rem; }
+.import-uncertain { margin-block: 20px 12px; padding: 18px; border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--warning) 5%, var(--surface)); }
+.import-uncertain h3 { margin: 0; color: var(--warning); font-size: 1.1rem; }
+.import-uncertain > p { margin: 8px 0 0; }
+.import-uncertain details { margin-top: 16px; color: var(--muted); font-size: .84rem; }
+.import-uncertain summary { cursor: pointer; }
+.import-uncertain details p { margin: 8px 0 0; overflow-wrap: anywhere; }
 @media (max-width: 620px) {
   .import-stats { gap: 6px; }
   .import-stats > div { padding: 10px; }

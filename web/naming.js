@@ -224,10 +224,6 @@ export function createNaming({ api, assetThumb, cleanName, loadNames, personThum
 
   function attachNameBehavior(model) {
     const { input } = model;
-    const hint = document.createElement("p");
-    hint.className = "name-keyboard-hint";
-    hint.textContent = "Tab complete or next · ↑/↓ choose · Enter submit";
-    input.closest(".name-wrap").append(hint);
     input.addEventListener("focus", () => updateSuggestions(model));
     input.addEventListener("input", () => updateSuggestions(model));
     input.addEventListener("blur", () => setTimeout(() => model.list.classList.remove("open"), 120));
@@ -306,6 +302,14 @@ export function createNaming({ api, assetThumb, cleanName, loadNames, personThum
   }
 
   function bindNamingControls() {
+    const help = document.querySelector("#naming-help-dialog");
+    let helpTrigger = null;
+    document.querySelectorAll("[data-naming-help]").forEach(button => button.addEventListener("click", () => {
+      helpTrigger = button;
+      help.showModal();
+      document.querySelector("#naming-help-title").focus();
+    }));
+    help.addEventListener("close", () => helpTrigger?.focus());
     let namedSearchTimer = null;
     document.querySelector("#named-search").addEventListener("input", () => {
       clearTimeout(namedSearchTimer); state.pages.named = 1;

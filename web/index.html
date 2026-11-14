@@ -78,16 +78,19 @@
       <main id="workspace-main" tabindex="-1">
     <section id="unnamed-view" class="view active" aria-labelledby="unnamed-heading">
       <div class="view-heading">
-        <div><h2 id="unnamed-heading" tabindex="-1">Clusters</h2><p>Name clusters quickly. Nothing changes in Immich until review and sync.</p></div>
-        <label>Order
-          <select id="sort-select" data-people-sort>
-            <option value="most">Most photos first</option>
-            <option value="fewest">Fewest photos first</option>
-            <option value="updated-newest">Recently updated</option>
-            <option value="updated-oldest">Least recently updated</option>
-            <option value="random">Random</option>
-          </select>
-        </label>
+        <div><h2 id="unnamed-heading" tabindex="-1">Clusters</h2></div>
+        <div class="view-heading-controls">
+          <label>Order
+            <select id="sort-select" data-people-sort>
+              <option value="most">Most photos first</option>
+              <option value="fewest">Fewest photos first</option>
+              <option value="updated-newest">Recently updated</option>
+              <option value="updated-oldest">Least recently updated</option>
+              <option value="random">Random</option>
+            </select>
+          </label>
+          <button class="quiet-button" type="button" data-naming-help aria-haspopup="dialog" aria-controls="naming-help-dialog">Shortcuts ?</button>
+        </div>
       </div>
       <div id="round-banner" class="round-banner" hidden></div>
       <div id="unnamed-grid" class="people-grid"></div>
@@ -195,6 +198,7 @@
             </select>
           </label>
           <button id="investigate-return-all" class="quiet-button" disabled>Return all to Unnamed</button>
+          <button class="quiet-button" type="button" data-naming-help aria-haspopup="dialog" aria-controls="naming-help-dialog">Shortcuts ?</button>
         </div>
       </div>
       <div id="investigate-grid" class="investigate-grid"></div>
@@ -299,6 +303,7 @@
         <div><h2 id="named-heading">Named people</h2><p>Search, rename, or merge existing Immich people.</p></div>
         <div class="view-heading-controls">
           <label>Search <input id="named-search" type="search" autocomplete="off" placeholder="Name"></label>
+          <button class="quiet-button" type="button" data-naming-help aria-haspopup="dialog" aria-controls="naming-help-dialog">Shortcuts ?</button>
           <label>Order
             <select id="named-sort-select" data-people-sort>
               <option value="most">Most photos first</option>
@@ -353,6 +358,11 @@
         <label class="offline-file-label">Choose changes file<input id="offline-import-file" type="file" accept=".zip,application/zip"></label>
         <p id="offline-import-message" role="status" aria-live="polite"></p>
         <p id="offline-import-error" class="error-text" role="alert" hidden></p>
+        <section id="offline-import-uncertain" class="import-uncertain" role="alert" aria-labelledby="offline-import-uncertain-heading" hidden>
+          <h3 id="offline-import-uncertain-heading" tabindex="-1">Import outcome unknown</h3>
+          <p>Changes may already be saved.</p>
+          <details id="offline-import-error-details"><summary>Error details</summary><p id="offline-import-error-detail"></p></details>
+        </section>
         <button id="offline-import-retry" class="quiet-button" type="button" hidden>Review file again</button>
         <section id="offline-import-result" class="import-result" aria-labelledby="offline-import-result-heading" hidden>
           <div class="import-result-heading"><span class="import-result-icon" aria-hidden="true">✓</span><div><h3 id="offline-import-result-heading" tabindex="-1">Changes imported</h3><p id="offline-import-result-name"></p></div><span class="import-local-badge">Saved locally</span></div>
@@ -410,6 +420,24 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
+  <dialog id="naming-help-dialog" aria-labelledby="naming-help-title">
+    <div class="dialog-form">
+      <div class="detail-heading"><h2 id="naming-help-title" tabindex="-1">Naming shortcuts</h2><button class="icon-button" type="button" data-close aria-label="Close naming shortcuts">×</button></div>
+      <p>Names and merges enter Pending. Only explicit Sync applies them to Immich.</p>
+      <dl class="shortcut-list">
+        <div><dt><kbd>Tab</kbd></dt><dd>Accept a visible completion, or move to the next field</dd></div>
+        <div><dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Choose a name suggestion</dd></div>
+        <div><dt><kbd>Enter</kbd></dt><dd>Queue the name or selected merge, then move on</dd></div>
+        <div><dt><kbd>Page Up</kbd> / <kbd>Page Down</kbd></dt><dd>Change the representative face</dd></div>
+      </dl>
+      <h3>Clusters only</h3>
+      <dl class="shortcut-list">
+        <div><dt><kbd>Alt+S</kbd></dt><dd>Skip to a later round</dd></div>
+        <div><dt><kbd>Alt+I</kbd></dt><dd>Queue hiding the cluster in Pending</dd></div>
+        <div><dt><kbd>Alt+D</kbd></dt><dd>Move the cluster to Investigate</dd></div>
+      </dl>
+    </div>
+  </dialog>
   <dialog id="face-review-help-dialog" aria-labelledby="face-review-help-title">
     <div class="dialog-form">
       <div class="detail-heading"><div><h2 id="face-review-help-title">Face review shortcuts</h2><p>Decisions stay local until Submit review. Immich changes only after Pending Sync.</p></div><button class="icon-button" type="button" data-close aria-label="Close shortcuts">×</button></div>
@@ -547,7 +575,7 @@
         <input class="name-input" autocomplete="off" spellcheck="false" aria-label="Person name">
         <div class="suggestions" role="listbox"></div>
       </div>
-      <div class="card-actions"><span class="hotkey-hint">Alt+S skip · Alt+I ignore · Alt+D investigate</span><button class="investigate-button quiet-button" type="button" tabindex="-1" title="Move to Investigate">Investigate</button></div>
+      <div class="card-actions"><button class="investigate-button quiet-button" type="button" tabindex="-1" title="Move to Investigate">Investigate</button></div>
     </article>
   </template>
 

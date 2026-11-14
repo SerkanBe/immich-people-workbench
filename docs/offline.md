@@ -80,8 +80,9 @@ The **?** link opens Help while preserving your current workflow.
 
 Help visits preserve the selected file, preview and exclusions until expiry or a
 context change. After an expired or stale preview, review the file again. If an
-import response is lost, explicitly review the same file to reconcile its saved
-outcome before another import.
+import response is lost, **Import outcome unknown** means changes may already
+be saved. Choose **Review file again** to reconcile the saved outcome before
+another import. Network details are collapsed under **Error details**.
 
 Another Workbench cannot import the result, even when connected to the same
 Immich account. Already imported changes are not applied twice. Conflict reasons
