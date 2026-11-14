@@ -151,10 +151,11 @@ class WorkspaceStateTests(unittest.TestCase):
                 return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_READ and table == "workspace_exports" and column == "baseline_json" else sqlite3.SQLITE_OK
             db.set_authorizer(deny_baseline)
             listed = ws.list_exports(db, OWNER)
-            db.set_authorizer(None)
             self.assertEqual(listed[0]["media"], MEDIA)
             self.assertEqual(listed[0]["archiveBytes"], 456)
             self.assertNotIn("baseline", listed[0])
+        # Clearing an authorizer with None requires Python 3.11; use a fresh connection.
+        with self.source.connect() as db:
             with self.assertRaises(ws.WorkspaceError):
                 ws.read_known_export(db, record["id"], {**OWNER, "userId": Q})
             db.execute("UPDATE workspace_exports SET baseline_json='{}' WHERE id=?", (record["id"],))

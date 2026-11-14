@@ -52,6 +52,8 @@ DEFAULT_STATE_DIR = ROOT / ".people-workbench"
 DEFAULT_IMMICH_URL = "http://localhost:2283"
 MAX_BODY = 1_000_000
 WORKFLOW_BUSY_TIMEOUT_MS = 5_000
+# SQLite's fixed primary result codes; Python 3.10 lacks these named constants.
+SQLITE_RETRYABLE_CODES = frozenset({getattr(sqlite3, "SQLITE_BUSY", 5), getattr(sqlite3, "SQLITE_LOCKED", 6)})
 MAX_IMAGE = 20_000_000
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{20,50}$")
 PAGE_ROUTES = frozenset({
@@ -719,7 +721,7 @@ class Store:
             except sqlite3.OperationalError as exc:
                 db.rollback()
                 code = getattr(exc, "sqlite_errorcode", 0) & 0xff
-                if code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or str(exc).startswith(("database is locked", "database table is locked", "database schema is locked")):
+                if code in SQLITE_RETRYABLE_CODES or str(exc).startswith(("database is locked", "database table is locked", "database schema is locked")):
                     raise SyncInProgress("Local changes are busy. Wait for the current save to finish, then retry.") from None
                 raise
             except BaseException:
