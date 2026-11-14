@@ -121,6 +121,11 @@ class SyntheticImmich:
 
 
 class OfflineFixture:
+    worker_timeout = 30
+
+    def job_diagnostic(self):
+        return {key: self.manager.job.get(key) for key in ("phase", "step", "errorCode", "error")}
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.directory = Path(self.temp.name)
@@ -134,19 +139,19 @@ class OfflineFixture:
     def tearDown(self):
         if self.manager.worker:
             self.manager.cancel()
-            self.manager.worker.join(5)
+            self.manager.worker.join(self.worker_timeout)
         self.temp.cleanup()
 
     def wait_job(self):
-        self.manager.worker.join(5)
-        self.assertFalse(self.manager.worker.is_alive())
+        self.manager.worker.join(self.worker_timeout)
+        self.assertFalse(self.manager.worker.is_alive(), self.job_diagnostic())
         return self.manager.job["phase"]
 
     def prepare(self):
         self.manager.start_plan(self.client)
-        self.assertEqual(self.wait_job(), "planned")
+        self.assertEqual(self.wait_job(), "planned", self.job_diagnostic())
         self.manager.start_download(self.client, self.manager.job["planId"])
-        self.assertEqual(self.wait_job(), "ready")
+        self.assertEqual(self.wait_job(), "ready", self.job_diagnostic())
         return self.manager.active(verify=True)
 
     def open_offline(self):

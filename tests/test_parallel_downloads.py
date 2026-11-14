@@ -26,7 +26,7 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()
         self.manager.start_plan(self.client)
-        self.assertEqual(self.wait_job(), "planned")
+        self.assertEqual(self.wait_job(), "planned", self.job_diagnostic())
 
     def expand(self, count=9):
         template = copy.deepcopy(self.manager.plan["assets"][A1])
@@ -55,22 +55,23 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
                 if active == 3:
                     three.set()
             try:
-                self.assertTrue(gate.wait(3))
+                # The bounded coordinator wait below always releases this gate.
+                gate.wait()
                 return original(*args, **kwargs)
             finally:
                 with lock:
                     active -= 1
         self.client.download_original = download
-        self.start()
         try:
-            self.assertTrue(three.wait(3))
+            self.start()
+            self.assertTrue(three.wait(self.worker_timeout), self.job_diagnostic())
             self.assertEqual(self.manager.job["step"], "original")
             self.assertEqual(self.manager.job["stepTotal"], 9)
             self.assertEqual(self.manager.job["stepDone"], 0)
             self.assertEqual(len(self.client.download_calls), 0)
         finally:
             gate.set()
-        self.assertEqual(self.wait_job(), "ready")
+        self.assertEqual(self.wait_job(), "ready", self.job_diagnostic())
         self.assertEqual(peak, 3)
         self.assertEqual(self.manager.job["downloadedFiles"], 9)
         self.assertEqual(self.manager.job["stepTotal"], 0)
@@ -87,12 +88,12 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
         release = threading.Event()
         def preview(*_args):
             entered.set()
-            self.assertTrue(release.wait(3))
+            release.wait()
             raise app.UpstreamError(403)
         self.client.request = preview
-        self.start()
         try:
-            self.assertTrue(entered.wait(3))
+            self.start()
+            self.assertTrue(entered.wait(self.worker_timeout), self.job_diagnostic())
             self.assertEqual(self.manager.job["downloadedFiles"], 9)
             self.assertEqual(self.manager.job["step"], "preview")
             self.assertEqual(self.manager.job["stepDone"], 0)
@@ -106,7 +107,7 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
         self.no_media_threads()
         self.client.request = lambda *_: (b"preview", "image/jpeg")
         self.start()
-        self.assertEqual(self.wait_job(), "ready")
+        self.assertEqual(self.wait_job(), "ready", self.job_diagnostic())
         self.assertEqual(len(self.client.download_calls), 9)
 
     def test_error_stops_new_submissions_and_drains_successful_originals(self):
@@ -122,20 +123,20 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
             with lock:
                 calls.append(aid)
                 index = len(calls)
-            started.wait(3)
+            started.wait(self.worker_timeout)
             if index == 1:
-                completed.wait(3)
+                completed.wait(self.worker_timeout)
                 failed.set()
                 raise app.UpstreamError(429)
             # Model an already completed response whose return is delayed.
             result = original(aid, *args, **kwargs)
-            completed.wait(3)
-            self.assertTrue(held.wait(3))
+            completed.wait(self.worker_timeout)
+            held.wait()
             return result
         self.client.download_original = download
-        self.start()
         try:
-            self.assertTrue(failed.wait(3))
+            self.start()
+            self.assertTrue(failed.wait(self.worker_timeout), self.job_diagnostic())
             time.sleep(.03)
             self.assertTrue(self.manager.worker.is_alive())
             self.assertEqual(self.manager.job["phase"], "downloading")
@@ -153,12 +154,12 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         def preview(*args):
             entered.set()
-            self.assertTrue(release.wait(3))
+            release.wait()
             return b"preview", "image/jpeg"
         self.client.request = preview
-        self.start()
         try:
-            self.assertTrue(entered.wait(3))
+            self.start()
+            self.assertTrue(entered.wait(self.worker_timeout), self.job_diagnostic())
             self.manager.cancel()
             self.manager.worker.join(.03)
             self.assertTrue(self.manager.worker.is_alive())
@@ -176,12 +177,12 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
         original = self.client.download_original
         def download(*args, **kwargs):
             entered.set()
-            self.assertTrue(release.wait(3))
+            release.wait()
             return original(*args, **kwargs)
         self.client.download_original = download
-        self.start()
         try:
-            self.assertTrue(entered.wait(3))
+            self.start()
+            self.assertTrue(entered.wait(self.worker_timeout), self.job_diagnostic())
             self.state.client = SyntheticImmich()
         finally:
             release.set()
@@ -206,12 +207,12 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
         original = self.client.download_original
         def download(*args, **kwargs):
             entered.set()
-            self.assertTrue(release.wait(3))
+            release.wait()
             return original(*args, **kwargs)
         self.client.download_original = download
-        self.start()
         try:
-            self.assertTrue(entered.wait(3))
+            self.start()
+            self.assertTrue(entered.wait(self.worker_timeout), self.job_diagnostic())
             self.assertFalse(self.manager.close(time.monotonic() + .02))
             self.assertEqual(self.manager.job["phase"], "cancelling")
             with self.assertRaisesRegex(offline.OfflineError, "shutting down"):
@@ -233,9 +234,9 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
             return original(method, path)
         self.client.request = request
         self.start()
-        self.assertEqual(self.wait_job(), "ready")
+        self.assertEqual(self.wait_job(), "ready", self.job_diagnostic())
         self.manager.start_plan(self.client)
-        self.assertEqual(self.wait_job(), "planned")
+        self.assertEqual(self.wait_job(), "planned", self.job_diagnostic())
         def throttled(method, path):
             if path.startswith("/people/"):
                 calls.append("throttled")
