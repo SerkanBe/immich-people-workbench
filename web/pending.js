@@ -1,7 +1,8 @@
 // Copyright (C) 2026 Serkan Bekdemir
 // SPDX-License-Identifier: AGPL-3.0-only
 
-export function createPending({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui, waitUntilReady }) {
+export function createPending({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui, waitUntilReady, refreshOffline = async () => {} }) {
+  let offlineConflicts = [];
   let syncing = false;
   let saves = 0;
   let selectionUnverified = false;
@@ -14,9 +15,25 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
   let detailLoading = false;
 
   function updateControls() {
-    const busy = syncing || saves > 0 || syncConfirmation !== null;
-    document.querySelector("#sync-button").disabled = busy || selectionUnverified || !reviewToken || state.faceReviewSaving || !(state.summary?.counts?.included > 0);
-    document.querySelector("#reset-button").disabled = busy || !(state.summary?.counts?.pending > 0);
+    const busy = syncing || saves > 0 || syncConfirmation !== null || state.offlineImporting === true;
+    const portable = state.summary?.portable === true;
+    const offline = state.summary?.offline === true || portable;
+    const saveStateChanged = state.pendingBusy !== busy || state.pendingUnverified !== selectionUnverified;
+    state.pendingBusy = busy; state.pendingUnverified = selectionUnverified;
+    if (saveStateChanged && typeof document.dispatchEvent === "function" && typeof Event === "function") {
+      document.dispatchEvent(new Event("workbench-save-state"));
+    }
+    const notice = document.querySelector("#offline-sync-notice");
+    if (notice) { notice.hidden = !offline; notice.textContent = portable
+      ? "Working offline"
+      : "Working offline: changes stay in Pending. Reconnect to the same Immich account to review conflicts and Sync."; }
+    const reconnect = document.querySelector("#pending-reconnect");
+    if (reconnect) reconnect.hidden = portable || !offline;
+    const conflicts = document.querySelector("#offline-conflicts");
+    if (conflicts) { conflicts.hidden = !offlineConflicts.length; conflicts.textContent = offlineConflicts.length ? `${offlineConflicts.length} conflict(s) need review before Sync: ${[...new Set(offlineConflicts.map(item => item.reason || "Saved data changed in Immich"))].join("; ")}. Return affected people to Naming or remove affected face corrections before retrying. Prepare a fresh workspace before queueing those changes again.` : ""; }
+    document.querySelector("#sync-button").hidden = portable;
+    document.querySelector("#sync-button").disabled = offline || offlineConflicts.length > 0 || busy || selectionUnverified || !reviewToken || state.faceReviewSaving || !(state.summary?.counts?.included > 0);
+    document.querySelector("#reset-button").disabled = offline || busy || !(state.summary?.counts?.pending > 0);
     const lockedMerge = detailModel?.mergeStep && detailModel.mergeStep !== "ready";
     document.querySelector("#detail-name").disabled = busy || detailLoading || !!lockedMerge;
     document.querySelector("#detail-save").disabled = busy || detailLoading || !detailModel || !!lockedMerge;
@@ -25,7 +42,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
   }
 
   async function mutate(action) {
-    if (syncing || saves || syncConfirmation) { showToast("Finish or cancel the current action, then retry."); return false; }
+    if (syncing || saves || syncConfirmation || state.offlineImporting) { showToast("Finish or cancel the current action, then retry."); return false; }
     saves += 1; updateControls();
     try { await action(); return true; }
     catch (error) { showToast(error.message); return false; }
@@ -55,6 +72,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
     const generation = ++renderGeneration;
     const data = await api(`/api/pending?page=${state.pages.pending}&size=${state.pageSize}`);
     if (generation !== renderGeneration) return;
+    offlineConflicts = Array.isArray(data.offlineConflicts) ? data.offlineConflicts : [];
     reviewToken = typeof data.reviewToken === "string" ? data.reviewToken : "";
     selectionUnverified = !reviewToken;
     const pending = data.pending;
@@ -68,22 +86,22 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
       const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.checked = item.included; checkbox.setAttribute("aria-label", "Include in next sync");
       checkbox.addEventListener("change", async () => {
         const desired = checkbox.checked;
-        if (syncing || saves || syncConfirmation) { checkbox.checked = item.included; showToast("Finish or cancel the current action, then retry."); return; }
+        if (syncing || saves || syncConfirmation || state.offlineImporting) { checkbox.checked = item.included; showToast("Finish or cancel the current action, then retry."); return; }
         await mutate(async () => {
-          renderGeneration += 1; selectionUnverified = true;
+          renderGeneration += 1; selectionUnverified = true; updateControls();
           const path = item.kind === "face" ? "/api/face-detach/include" : "/api/pending/include";
           const body = item.kind === "face" ? { faceId: item.faceId, included: desired } : { personId: item.personId, included: desired };
           try { await api(path, { method: "POST", body }); }
           catch (error) {
             renderGeneration += 1;
             checkbox.checked = item.included;
-            selectionUnverified = true;
+            selectionUnverified = true; updateControls();
             // A lost reply may follow a successful save. Read the authoritative
             // selection before enabling Sync; if that fails, keep Sync blocked.
             try { await refreshSummary(); await renderPending(); } catch { /* Retry by reloading Pending. */ }
             throw error;
           }
-          renderGeneration += 1; selectionUnverified = true;
+          renderGeneration += 1; selectionUnverified = true; updateControls();
           await refreshSummary(); await renderPending();
         });
       });
@@ -93,7 +111,21 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
       strong.textContent = item.kind === "face" ? `${item.currentName || "Unnamed person"}: move face to a new unnamed cluster` : item.operation === "merge" ? `${item.currentName || "Unnamed"} → ${item.targetName || "unnamed merged person"}` : item.operation === "hide" ? "Ignore this person" : item.operation === "unhide" ? `Restore ${item.currentName || "person"}` : item.name;
       const operation = document.createElement("span"); operation.className = "operation"; operation.textContent = item.operation;
       title.append(strong, operation);
+      const itemConflicts = offlineConflicts.filter(conflict => conflict.type === "person"
+        ? [item.personId, item.targetPersonId].includes(conflict.id)
+        : [item.assetId, item.featureAssetId].includes(conflict.id) || (conflict.personIds || []).some(id => [item.personId, item.targetPersonId].includes(id)));
+      if (itemConflicts.length) {
+        row.classList.add("offline-conflict");
+        const warning = document.createElement("p"); warning.className = "error-text";
+        warning.textContent = `Conflict: ${[...new Set(itemConflicts.map(conflict => conflict.reason))].join("; ")}`;
+        title.append(warning);
+      }
       if (item.kind === "face" && item.fileName) { const file = document.createElement("code"); file.textContent = item.fileName; file.title = item.fileName; title.append(file); }
+      if (item.guardStatus === "baseline_unverified") {
+        const warning = document.createElement("p"); warning.className = "error-text";
+        warning.textContent = item.guardReason || "Reload from the toolbar, then review Pending before Sync.";
+        title.append(warning);
+      }
       if (item.lastError) { const error = document.createElement("div"); error.className = "error-text"; error.textContent = item.lastError; title.append(error); }
       const samples = document.createElement("div"); samples.className = "pending-samples";
       const actions = document.createElement("div"); actions.className = "pending-actions";
@@ -173,7 +205,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
       syncConfirmation = null;
       syncDialog.close();
       updateControls();
-      if (!syncing) syncButton.focus();
+      if (!syncing && !state.summary?.portable) syncButton.focus();
     }
     document.querySelector("#sync-confirm-cancel").addEventListener("click", cancelSyncConfirmation);
     syncDialog.addEventListener("cancel", event => { event.preventDefault(); cancelSyncConfirmation(); });
@@ -188,6 +220,11 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
       if (!syncDialog.open) { syncConfirmation = null; updateControls(); }
     });
     document.addEventListener("face-review-save-state", updateControls);
+    document.addEventListener("offline-import-state", () => {
+      // An import may change the queue even if its response is lost. A new
+      // Pending read must issue the token used for the next explicit Sync.
+      renderGeneration += 1; reviewToken = ""; updateControls();
+    });
     ui.detail.addEventListener("close", () => {
       // Native close events can arrive after a different inspection reopened
       // this dialog. An old close must not cancel the new dialog's model.
@@ -195,7 +232,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
     });
     ui.detail.addEventListener("cancel", closeDetails);
     syncButton.addEventListener("click", () => {
-      if (syncing || syncConfirmation) return;
+      if (state.summary?.offline || state.summary?.portable || state.offlineImporting || offlineConflicts.length || syncing || syncConfirmation) return;
       if (saves || selectionUnverified || !reviewToken) { showToast("Wait for Pending selections to finish saving. Reload Pending if the selection could not be verified."); return; }
       if (state.faceReviewSaving) { showToast("Wait for Face Review decisions to finish saving before Sync."); return; }
       if (!(state.summary?.counts?.included > 0)) return;
@@ -206,7 +243,7 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
     });
     syncApply.addEventListener("click", async () => {
       const confirmation = syncConfirmation;
-      if (!confirmation || !syncDialog.open || syncing) return;
+      if (!confirmation || !syncDialog.open || syncing || state.summary?.offline || state.summary?.portable || state.offlineImporting || offlineConflicts.length) return;
       if (saves || selectionUnverified || state.faceReviewSaving) {
         cancelSyncConfirmation();
         showToast("Wait for local saves to finish, then review Pending and Sync again.");
@@ -222,11 +259,14 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
         const result = await api("/api/sync", { method: "POST", body: { confirmation: "SYNC", reviewToken: confirmation.reviewToken } });
         state.faceReviewNeedsRefresh = true;
         showToast(`Sync finished: ${result.results.length - result.failed} succeeded, ${result.failed} failed`);
-        await loadNames(); await refreshSummary(); await renderPending();
+        await loadNames(); await refreshSummary(); await renderPending(); await refreshOffline();
       } catch (error) {
-        showToast(error.message);
-        if (/Pending changed/i.test(error.message)) {
-          renderGeneration += 1; selectionUnverified = true;
+        if (error.code === "baseline_unverified") {
+          renderGeneration += 1; selectionUnverified = true; updateControls();
+          showToast("Reload from the toolbar, then review Pending before Sync.");
+        } else showToast(error.message);
+        if (error.code !== "baseline_unverified" && /Pending changed|conflict/i.test(error.message)) {
+          renderGeneration += 1; selectionUnverified = true; updateControls();
           try { await refreshSummary(); await renderPending(); }
           catch { /* Keep Sync disabled until a fresh review can load. */ }
         }
@@ -238,6 +278,8 @@ export function createPending({ api, assetThumb, cleanName, drawFace, loadNames,
       }
     });
     document.querySelector("#reset-button").addEventListener("click", async () => {
+      if (state.summary?.portable) { showToast("Return offline changes to the source Workbench for final review."); return; }
+      if (state.summary?.offline) { showToast("Reconnect to Immich before discarding and reloading local changes."); return; }
       if (syncing || saves) { showToast("Wait for the current save or Sync to finish, then retry."); return; }
       const count = state.summary?.counts?.pending || 0;
       if (!count || !confirm(`Discard all ${count} unsynced local changes and reload the current names from Immich?\n\nAlready synced Immich changes are not affected.`)) return;

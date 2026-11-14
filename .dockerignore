@@ -2,6 +2,10 @@
 **
 !Dockerfile
 !people_workbench.py
+!offline_workspace.py
+!workspace_state.py
+!workspace_packages.py
+!workspace_import.py
 !LICENSE
 !web/
 !web/index.html
@@ -19,3 +23,4 @@
 !web/merge.js
 !web/naming.js
 !web/pending.js
+!web/offline.js

@@ -1,0 +1,862 @@
+# Copyright (C) 2026 Serkan Bekdemir
+# SPDX-License-Identifier: AGPL-3.0-only
+"""Portable, versioned offline snapshots. Credentials never enter this module's files."""
+from __future__ import annotations
+
+import copy
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+import datetime as dt
+import errno
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import threading
+import time
+import urllib.parse
+
+FORMAT_VERSION = 1
+ID = re.compile(r"^[0-9a-fA-F-]{20,50}$")
+RESERVE_BYTES = 64 * 1024 * 1024
+MAX_WORKSPACE_BYTES = 500 * 1024 ** 3
+MAX_ORIGINAL_BYTES = 10 * 1024 ** 3
+DOWNLOAD_WORKERS = 3
+
+
+class DownloadBudget:
+    """Serialize byte admission and unbuffered writes across media workers."""
+    def __init__(self, completed, check):
+        self.lock = threading.Lock()
+        self.total = completed
+        self.check = check
+
+    def write(self, output, chunk, path, *, original=True):
+        with self.lock:
+            self.check()
+            if original and self.total + len(chunk) > MAX_WORKSPACE_BYTES:
+                raise OfflineError("Workspace size limit exceeded", code="workspace_limit")
+            free = shutil.disk_usage(path.parent).free
+            if free < len(chunk) + RESERVE_BYTES:
+                raise OfflineError("Insufficient space for offline media", code="insufficient_storage",
+                                   required_bytes=len(chunk) + RESERVE_BYTES, available_bytes=free)
+            if output.write(chunk) != len(chunk):
+                raise OSError(errno.EIO, "Incomplete offline media write")
+            if original:
+                self.total += len(chunk)
+
+    def release(self, size):
+        with self.lock:
+            self.total -= size
+
+
+class OfflineError(RuntimeError):
+    def __init__(self, message, *, code="offline_error", required_bytes=None, available_bytes=None, limit_bytes=None):
+        super().__init__(message)
+        self.code = code
+        self.required_bytes, self.available_bytes, self.limit_bytes = required_bytes, available_bytes, limit_bytes
+
+
+def preparation_error(exc, step):
+    """Describe known failures without reflecting paths, bodies or credentials."""
+    label = {"metadata": "checking photo metadata", "original": "downloading an original",
+             "preview": "saving a photo preview", "person_thumbnail": "saving a person thumbnail",
+             "progress": "writing preparation progress", "activation": "activating the saved workspace"}.get(step, "preparing the offline workspace")
+    code = getattr(exc, "code", "") if isinstance(exc, OfflineError) else ""
+    messages = {
+        "insufficient_storage": "Workbench's state storage has insufficient free space or has reached its filesystem quota.",
+        "original_limit": "An original exceeds the allowed download size, independently of free disk space.",
+        "workspace_limit": "The prepared originals exceed the 500 GiB workspace limit.",
+        "incomplete_original": "Immich returned an empty or incomplete original. Resume to retry the download.",
+        "invalid_original_response": "The original request returned an unexpected response. Check Immich and any proxy.",
+        "invalid_preview_response": "Immich returned an invalid or oversized preview.",
+        "connection_changed": "The Workbench connection changed. Reconnect, then resume preparation.",
+        "offline_work_changed": "Offline Pending or Face Review work changed. Resolve it before replacing the snapshot.",
+        "invalid_metadata": "Immich returned photo or person metadata that could not be used safely.",
+    }
+    if code in messages:
+        message = messages[code]
+        if code == "insufficient_storage" and all(type(value) is int and value >= 0 for value in (exc.required_bytes, exc.available_bytes)):
+            message += (f" Available: {exc.available_bytes / 1024 ** 2:,.1f} MiB; required for this write: "
+                        f"{exc.required_bytes / 1024 ** 2:,.1f} MiB, including the 64 MiB reserve.")
+        if code == "original_limit" and type(exc.limit_bytes) is int and exc.limit_bytes >= 0:
+            message += f" Current file limit: {exc.limit_bytes / 1024 ** 2:,.1f} MiB."
+    elif type(getattr(exc, "status", None)) is int and 100 <= exc.status <= 599:
+        code = "upstream_http_" + str(exc.status)
+        if exc.status == 401:
+            message = "Immich rejected authentication (HTTP 401). Reconnect, then resume."
+        elif exc.status == 403:
+            message = "Immich denied access (HTTP 403). Check access to this item"
+            message += " and the API key's asset.download permission." if step == "original" else " and the account's permissions."
+        elif exc.status == 404:
+            message = "Immich could not find the requested item (HTTP 404). Check whether the library changed since preparation was planned."
+        else:
+            message = f"Immich or its proxy returned HTTP {exc.status}. Resume when the service is available."
+    elif isinstance(exc, TimeoutError):
+        code, message = "network_timeout", "The request to Immich timed out. Resume to retry; completed originals are kept."
+    elif isinstance(exc, ConnectionError):
+        code, message = "connection_failed", "The connection to Immich failed. Check its URL, HTTPS certificate and network, then resume."
+    elif isinstance(exc, OSError) and exc.errno in {errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)}:
+        code, message = "insufficient_storage", messages["insufficient_storage"]
+    elif isinstance(exc, OSError) and exc.errno in {errno.EACCES, errno.EPERM, errno.EROFS}:
+        code, message = "storage_not_writable", "Workbench cannot write its state storage. Check directory permissions and read-only filesystems."
+    elif isinstance(exc, OSError) and exc.errno == errno.EIO:
+        code, message = "storage_io_failed", "Workbench's state storage reported an I/O error. Check the filesystem."
+    else:
+        kind = type(exc).__name__
+        kind = kind if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", kind) else "internal error"
+        code = "preparation_failed"
+        message = f"An unexpected preparation error occurred ({kind}; code preparation_failed). Completed originals are kept. Report this step and code."
+    return code, f"Failed while {label}: {message}"
+
+
+class OfflineConflict(OfflineError):
+    def __init__(self, conflicts):
+        self.conflicts = conflicts
+        super().__init__("Upstream changes conflict with the offline snapshot. Review the listed people/photos in Immich, then return affected Pending items and prepare a fresh workspace.")
+
+
+class Cancelled(OfflineError):
+    pass
+
+
+def safe_id(value):
+    if not isinstance(value, str) or not ID.fullmatch(value):
+        raise OfflineError("Invalid offline item ID")
+    return value
+
+
+def atomic_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    os.replace(temp, path)
+
+
+def face_person(face):
+    return (face.get("person") or {}).get("id") or face.get("personId")
+
+
+def person_baseline(person):
+    return {key: person.get(key) for key in ("name", "isHidden", "updatedAt", "featureFaceAssetId", "faceAssetId")}
+
+
+def face_baseline(faces):
+    return sorted((str(f.get("id")), str(face_person(f)), *(str(f.get(k)) for k in (
+        "boundingBoxX1", "boundingBoxX2", "boundingBoxY1", "boundingBoxY2", "imageWidth", "imageHeight"))) for f in faces)
+
+
+class OfflineClient:
+    """Read adapter with no network fallback and no upstream mutation methods."""
+    offline = True
+
+    def __init__(self, manager, snapshot):
+        self.manager, self.snapshot = manager, snapshot
+        self.base = snapshot["owner"]["url"]
+        self.server_version = snapshot.get("serverVersion", "offline")
+        self.connection_metadata = {"authMode": "offline", "displayName": "Offline workspace", "requiredPermissions": [], "grantedPermissions": []}
+        self.people = snapshot["people"]
+        self.assets = snapshot["assets"]
+        self.by_person = {pid: [] for pid in self.people}
+        for aid, asset in self.assets.items():
+            for pid in {face_person(f) for f in snapshot["faces"].get(aid, [])}:
+                if pid in self.by_person:
+                    self.by_person[pid].append(asset)
+
+    def version(self):
+        return self.server_version
+
+    def all_people(self):
+        return copy.deepcopy(list(self.people.values()))
+
+    def person(self, person_id):
+        if person_id not in self.people:
+            raise OfflineError("Person is not in this offline workspace")
+        return copy.deepcopy(self.people[person_id])
+
+    def statistics(self, person_id):
+        return self.person(person_id).get("assetCount")
+
+    def coverage(self, person_id):
+        available = len(self.by_person.get(person_id, []))
+        total = self.people.get(person_id, {}).get("assetCount")
+        return {"availableAssets": available, "totalAssets": total,
+                "complete": isinstance(total, int) and available == total}
+
+    def person_assets_page(self, person_id, page=1, size=50, *, group_photos=False):
+        assets = self.by_person.get(person_id, [])
+        page, size = max(1, page), max(1, min(size, 100))
+        return copy.deepcopy(assets[(page - 1) * size:page * size]), page * size < len(assets), len(assets)
+
+    def person_assets(self, person_id, limit=12):
+        return self.person_assets_page(person_id, 1, limit)[0]
+
+    def asset(self, asset_id):
+        if asset_id not in self.assets:
+            raise OfflineError("Photo is not in this offline workspace")
+        return copy.deepcopy(self.assets[asset_id])
+
+    def faces(self, asset_id):
+        self.asset(asset_id)
+        return copy.deepcopy(self.snapshot["faces"][asset_id])
+
+    def closest_people(self, person_id, limit=20):
+        # Similarity rankings are not part of the snapshot; do not invent them.
+        return []
+
+    def samples(self, person_id, limit=12):
+        result = []
+        for asset in self.person_assets(person_id, limit):
+            for face in self.faces(asset["id"]):
+                if face_person(face) == person_id:
+                    result.append({"assetId": asset["id"], "faceId": face.get("id"), "box": {
+                        "x1": face.get("boundingBoxX1"), "x2": face.get("boundingBoxX2"),
+                        "y1": face.get("boundingBoxY1"), "y2": face.get("boundingBoxY2"),
+                        "width": face.get("imageWidth"), "height": face.get("imageHeight")}})
+        return result[:limit]
+
+    def request(self, method, path, payload=None):
+        if method != "GET":
+            raise OfflineError("Offline work stays local. Reconnect and review Pending before explicit Sync.")
+        parsed = urllib.parse.urlsplit(path)
+        parts = parsed.path.strip("/").split("/")
+        if len(parts) == 3 and parts[2] == "thumbnail" and parts[0] in {"people", "assets"}:
+            kind = "people" if parts[0] == "people" else "previews"
+            item = self.snapshot.get("media", {}).get(kind, {}).get(safe_id(parts[1]))
+            if item:
+                file = self.manager.media_path(self.snapshot, item["path"])
+                if file.stat().st_size > 20_000_000:
+                    raise OfflineError("Cached preview exceeds the safety limit")
+                return file.read_bytes(), item["mime"]
+        raise OfflineError("This preview is not available offline")
+
+    def __getattr__(self, name):
+        if name in {"update_person", "create_person", "reassign_face", "merge", "json"}:
+            raise OfflineError("Offline work cannot write to Immich. Reconnect, review Pending and explicitly Sync.")
+        raise AttributeError(name)
+
+
+class OfflineWorkspace:
+    def __init__(self, state):
+        self.state = state
+        self.root = state.store.path.parent / "offline"
+        self.lock = threading.RLock()
+        self.cancel_event = threading.Event()
+        self.closed = False
+        self.worker = None
+        self.conflicts = []
+        self.job = {"phase": "idle", "planId": "", "assetCount": 0, "personCount": 0,
+                    "estimatedBytes": 0, "unknownSizes": 0, "downloadedFiles": 0, "downloadedBytes": 0,
+                    "step": "", "stepDone": 0, "stepTotal": 0, "errorCode": "", "error": ""}
+        self.plan = None
+        try:
+            saved = self._read(self.root / "plan.json")
+            self.plan = saved
+            self.job.update(saved.get("job", {}))
+            if self.job["phase"] in {"planning", "downloading", "cancelling"}:
+                self.job["phase"] = "cancelled"
+        except (OSError, ValueError, KeyError):
+            pass
+
+    @staticmethod
+    def _read(path):
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def media_path(self, snapshot, relative):
+        base = (self.root / "snapshots" / safe_id(snapshot["id"])).resolve()
+        path = (base / relative).resolve()
+        if not path.is_relative_to(base) or path == base:
+            raise OfflineError("Invalid offline media path")
+        return path
+
+    def active(self, verify=False, allow_stale=False):
+        try:
+            active = self._read(self.root / "active.json")
+            if active.get("stale") and not allow_stale:
+                return None
+            sid = safe_id(active["id"])
+            snapshot = self._read(self.root / "snapshots" / sid / "snapshot.json")
+            if snapshot.get("formatVersion") != FORMAT_VERSION or snapshot.get("id") != sid:
+                return None
+            if snapshot["owner"] != json.loads(self.state.store.setting("owner") or "null"):
+                return None
+            if verify:
+                for item in snapshot["media"]["originals"].values():
+                    path = self.media_path(snapshot, item["path"])
+                    if not path.is_file() or path.stat().st_size != item["size"]:
+                        return None
+                if len(snapshot["media"]["originals"]) != len(snapshot["assets"]):
+                    return None
+            return snapshot
+        except (OSError, ValueError, KeyError, TypeError, OfflineError):
+            return None
+
+    def status(self, private=False):
+        snapshot = self.active(verify=True, allow_stale=True)
+        try:
+            stale = bool(self._read(self.root / "active.json").get("stale"))
+        except (OSError, ValueError):
+            stale = False
+        result = {"available": snapshot is not None, "ready": snapshot is not None and not stale,
+                  "offline": bool(private and getattr(self.state.client, "offline", False)), "stale": stale}
+        policy = self.state.portable_policy()
+        if policy["portable"]:
+            result["portable"] = True
+        if policy["portable"] and not policy["valid"]:
+            result.update({"available": False, "ready": False, "code": "portable_invalid"})
+        if stale:
+            result["staleReason"] = "Changes were synced to Immich. Prepare a fresh workspace before opening offline again. Stored files have been retained."
+        if private:
+            result["storagePath"] = str(self.root.resolve())
+            with self.lock:
+                result["job"] = dict(self.job)
+                result["conflicts"] = list(self.conflicts)
+            result["snapshot"] = ({key: snapshot[key] for key in (
+                "id", "createdAt", "assetCount", "personCount", "totalBytes")} if snapshot else None)
+        return result
+
+    def _check_cancel(self):
+        if self.closed or self.cancel_event.is_set():
+            raise Cancelled("Offline preparation cancelled; completed files can be resumed")
+
+    def close(self, deadline=None):
+        """Fence admission/publication immediately; optionally drain to a deadline."""
+        with self.lock:
+            self.closed = True
+            self.cancel()
+            worker = self.worker
+        if worker and deadline is not None:
+            worker.join(max(0, deadline - time.monotonic()))
+        return not worker or not worker.is_alive()
+
+    def _persist_plan(self):
+        with self.lock:
+            if self.plan:
+                self.plan["job"] = dict(self.job)
+                atomic_json(self.root / "plan.json", self.plan)
+
+    def _run(self, phase, action):
+        with self.lock:
+            if self.closed:
+                raise OfflineError("Offline preparation is shutting down")
+            if self.worker and self.worker.is_alive():
+                raise OfflineError("Offline preparation is already running")
+            self.cancel_event.clear()
+            self.job.update(phase=phase, step="metadata" if phase == "planning" else "original",
+                            stepDone=0, stepTotal=0, error="", errorCode="")
+            def run():
+                try:
+                    action()
+                except Cancelled as exc:
+                    with self.lock:
+                        self.job.update(phase="cancelled", error=str(exc))
+                except Exception as exc:
+                    with self.lock:
+                        code, message = preparation_error(exc, self.job.get("step"))
+                        self.job.update(phase="error", errorCode=code, error=message)
+                finally:
+                    try:
+                        self._persist_plan()
+                    except Exception as exc:
+                        with self.lock:
+                            if self.job["phase"] not in {"error", "cancelled"}:
+                                code, message = preparation_error(exc, "progress")
+                                self.job.update(phase="error", step="progress", errorCode=code, error=message)
+            self.worker = threading.Thread(target=run, daemon=True, name="offline-preparation")
+            self.worker.start()
+
+    @staticmethod
+    def check_download_permission(client):
+        if getattr(client, "offline", False):
+            raise OfflineError("Reconnect to Immich before preparing a workspace")
+        if not client.session:
+            metadata = client.json("GET", "/api-keys/me")
+            permissions = metadata.get("permissions", []) if isinstance(metadata, dict) else []
+            if "all" not in permissions and "asset.download" not in permissions:
+                raise OfflineError("Preparing originals requires the additional asset.download permission. Add it to the key and reconnect.")
+
+    def start_plan(self, client):
+        self.check_download_permission(client)
+        with self.lock:
+            if self.closed:
+                raise OfflineError("Offline preparation is shutting down")
+            if self.worker and self.worker.is_alive():
+                raise OfflineError("Offline preparation is already running")
+            rows, faces = self.state.store.pending_snapshot()
+            if self.state.store.setting("offlineBaseline") and (rows or faces or self.state.store.face_review_drafts()):
+                raise OfflineError("Resolve offline Pending and Face Review drafts before replacing the prepared workspace")
+            self.plan = None
+            self.job.update(planId="", assetCount=0, personCount=0, estimatedBytes=0, unknownSizes=0,
+                            downloadedFiles=0, downloadedBytes=0, error="")
+            self.root.mkdir(parents=True, exist_ok=True)
+            (self.root / "plan.json").unlink(missing_ok=True)
+        self._run("planning", lambda: self._discover(client))
+
+    def _discover(self, client):
+        owner = json.loads(self.state.store.setting("owner") or "null")
+        if not owner:
+            raise OfflineError("A verified account is required")
+        people = {}
+        for person in client.all_people():
+            self._check_cancel()
+            pid = safe_id(person["id"])
+            person = dict(person)
+            # The detailed person contains representative selection and update baseline.
+            detail = client.person(pid)
+            if detail.get("id") != pid:
+                raise OfflineError("Unexpected person metadata")
+            person.update(detail)
+            person["assetCount"] = client.statistics(pid)
+            people[pid] = person
+            with self.lock:
+                self.job["personCount"] = len(people)
+        assets, faces = {}, {}
+        unnamed = {pid for pid, p in people.items() if not str(p.get("name") or "").strip() and not p.get("isHidden")}
+        for pid in unnamed:
+            for page in range(1, 100001):
+                self._check_cancel()
+                rows, more, _ = client.person_assets_page(pid, page, 100, group_photos=True)
+                for row in rows:
+                    aid = safe_id(row["id"])
+                    if aid in assets:
+                        continue
+                    asset = client.asset(aid)
+                    if asset.get("id") != aid:
+                        raise OfflineError("Unexpected photo metadata")
+                    if (str(asset.get("type", "IMAGE")).upper() != "IMAGE"
+                            or asset.get("isTrashed") or asset.get("deletedAt") or asset.get("isDeleted")
+                            or asset.get("isHidden") or asset.get("isLocked")
+                            or str(asset.get("status") or "").lower() in {"trashed", "deleted"}
+                            or str(asset.get("visibility", "timeline")).lower() not in {"timeline", "archive", "archived"}):
+                        continue
+                    current_faces = client.faces(aid)
+                    for face in current_faces:
+                        safe_id(face.get("id"))
+                    if not any(face_person(face) in unnamed for face in current_faces):
+                        continue
+                    assets[aid], faces[aid] = asset, current_faces
+                    with self.lock:
+                        self.job["assetCount"] = len(assets)
+                if not more:
+                    break
+                if not rows or page == 100000:
+                    raise OfflineError("Asset pagination did not terminate")
+        sizes = [(a.get("exifInfo") or {}).get("fileSizeInByte") or a.get("originalSize") or a.get("size") for a in assets.values()]
+        known = [size for size in sizes if isinstance(size, int) and size > 0]
+        plan_id = secrets.token_hex(16)
+        with self.lock:
+            self.job.update(phase="planned", planId=plan_id, assetCount=len(assets), personCount=len(people),
+                            estimatedBytes=sum(known), unknownSizes=len(sizes) - len(known), downloadedFiles=0, downloadedBytes=0)
+            self.plan = {"formatVersion": FORMAT_VERSION, "id": plan_id, "owner": owner,
+                         "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(), "serverVersion": client.server_version,
+                         "people": people, "assets": assets, "faces": faces, "media": {"originals": {}, "previews": {}, "people": {}}}
+
+    def start_download(self, client, plan_id):
+        self.check_download_permission(client)
+        with self.lock:
+            if not self.plan or plan_id != self.plan["id"] or self.job["phase"] not in {"planned", "cancelled", "error"}:
+                raise OfflineError("Plan changed or is unavailable. Prepare and review the estimate again.")
+            if self.plan["owner"] != json.loads(self.state.store.setting("owner") or "null"):
+                raise OfflineError("Offline plan account changed")
+        self._run("downloading", lambda: self._download(client))
+
+    def cancel(self):
+        with self.lock:
+            if self.worker and self.worker.is_alive() and self.job["phase"] in {"planning", "downloading", "cancelling"}:
+                self.job["phase"] = "cancelling"
+                self.cancel_event.set()
+
+    def _check_source(self, client, snapshot):
+        self._check_cancel()
+        if getattr(self.state.client, "offline", False):
+            raise OfflineError("An offline workspace is open. Reconnect before preparing a replacement snapshot.",
+                               code="connection_changed")
+        identity = getattr(client, "connection_metadata", {})
+        if (self.state.client is not client or getattr(client, "offline", False)
+                or client.base != snapshot["owner"]["url"]
+                or identity.get("userId") != snapshot["owner"]["userId"]
+                or json.loads(self.state.store.setting("owner") or "null") != snapshot["owner"]):
+            raise OfflineError("The connection changed during preparation", code="connection_changed")
+
+    def _download(self, client):
+        snapshot = self.plan
+        stopped = threading.Event()
+        local = threading.local()
+        failures = []
+        failure_lock = threading.Lock()
+        manager = self
+
+        class Stop:
+            def check(self):
+                manager._check_source(client, snapshot)
+                if stopped.is_set():
+                    raise Cancelled("Offline preparation stopped")
+
+            def is_set(self):
+                self.check()
+                return False
+
+            def set(self):
+                manager.cancel_event.set()
+
+        stop = Stop()
+
+        def fail(step, exc):
+            with failure_lock:
+                if not failures:
+                    failures.append((step, exc))
+                stopped.set()
+
+        def transport():
+            if not hasattr(local, "client"):
+                factory = getattr(client, "download_transport", None)
+                local.client = factory() if factory else client
+            return local.client
+
+        def stage(step, ids, kind, operation):
+            # Futures hold metadata only. The pending set is the entire queue.
+            with self.lock:
+                self.job.update(step=step, stepDone=0, stepTotal=len(ids))
+            remaining = iter(ids)
+            def task(aid):
+                try:
+                    stop.check()
+                    return aid, operation(transport(), aid)
+                except Exception as exc:
+                    fail(step, exc)
+                    raise
+            with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS, thread_name_prefix="offline-media") as pool:
+                pending = set()
+                def submit():
+                    while not stopped.is_set() and len(pending) < DOWNLOAD_WORKERS:
+                        try:
+                            stop.check()
+                            aid = next(remaining)
+                        except StopIteration:
+                            break
+                        except Exception as exc:
+                            fail(step, exc)
+                            break
+                        pending.add(pool.submit(task, aid))
+                submit()
+                while pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        try:
+                            aid, item = future.result()
+                        except Exception:
+                            continue  # task recorded the first cause before stopping peers
+                        with self.lock:
+                            snapshot["media"][kind][aid] = item
+                            self.job["stepDone"] += 1
+                            if kind == "originals":
+                                originals = snapshot["media"]["originals"]
+                                self.job.update(downloadedFiles=len(originals),
+                                                downloadedBytes=sum(row["size"] for row in originals.values()))
+                        try:
+                            self._persist_plan()
+                        except Exception as exc:
+                            fail("progress", exc)
+                    if stopped.is_set():
+                        for future in pending:
+                            future.cancel()
+                    submit()
+            # Executor context has drained/joined every worker before terminal state.
+            if failures:
+                step, exc = failures[0]
+                with self.lock:
+                    self.job["step"] = step
+                raise exc
+            stop.check()
+
+        self._check_source(client, snapshot)
+        valid = {}
+        for aid, item in snapshot["media"]["originals"].items():
+            self._check_source(client, snapshot)
+            path = self.media_path(snapshot, "originals/" + safe_id(aid))
+            if (aid in snapshot["assets"] and path.is_file() and path.stat().st_size == item["size"]
+                    and self._digest(path, stop.check) == item["sha256"]):
+                valid[aid] = item
+        total_bytes = sum(item["size"] for item in valid.values())
+        if total_bytes > MAX_WORKSPACE_BYTES:
+            raise OfflineError("Workspace size limit exceeded", code="workspace_limit")
+        with self.lock:
+            snapshot["media"]["originals"] = valid
+            self.job.update(downloadedFiles=len(valid), downloadedBytes=total_bytes)
+        budget = DownloadBudget(total_bytes, stop.check)
+
+        def original(worker, aid):
+            path = self.media_path(snapshot, "originals/" + safe_id(aid))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            size, mime, digest = worker.download_original(aid, path, stop, MAX_ORIGINAL_BYTES,
+                                                         RESERVE_BYTES, budget=budget)
+            return {"path": "originals/" + aid, "size": size, "mime": mime, "sha256": digest}
+
+        stage("original", [aid for aid in snapshot["assets"] if aid not in valid], "originals", original)
+        stage("preview", list(snapshot["assets"]), "previews",
+              lambda worker, aid: self._cache_preview(worker, snapshot, "previews", aid,
+                                                     f"/assets/{aid}/thumbnail?size=preview", budget, stop))
+        with self.lock:
+            self.job.update(step="person_thumbnail", stepDone=0, stepTotal=len(snapshot["people"]))
+        for pid in snapshot["people"]:
+            stop.check()
+            try:
+                item = self._cache_preview(client, snapshot, "people", pid, f"/people/{pid}/thumbnail", budget, stop)
+                with self.lock:
+                    snapshot["media"]["people"][pid] = item
+            except Exception as exc:
+                stop.check()
+                if getattr(exc, "status", None) != 404:
+                    raise
+            with self.lock:
+                self.job["stepDone"] += 1
+            try:
+                self._persist_plan()
+            except Exception:
+                with self.lock:
+                    self.job["step"] = "progress"
+                raise
+        total_bytes = sum(item["size"] for item in snapshot["media"]["originals"].values())
+        self._check_cancel()
+        with self.lock:
+            self.job.update(step="activation", stepDone=0, stepTotal=0)
+        snapshot.update(assetCount=len(snapshot["assets"]), personCount=len(snapshot["people"]), totalBytes=total_bytes)
+        # Commit the new generation only after every original and metadata are durable.
+        with self.state.mutation_lock, self.lock:
+            # The cancellation decision and pointer publication are one critical
+            # section. A cancel received while waiting for local mutations wins.
+            self._check_cancel()
+            if getattr(self.state.client, "offline", False):
+                raise OfflineError("An offline workspace is open. Reconnect before activating a replacement snapshot.")
+            identity = getattr(client, "connection_metadata", {})
+            if (self.state.client is not client or client.base != snapshot["owner"]["url"]
+                    or identity.get("userId") != snapshot["owner"]["userId"]
+                    or json.loads(self.state.store.setting("owner") or "null") != snapshot["owner"]):
+                raise OfflineError("The connection changed during preparation. Reconnect and explicitly resume the download.", code="connection_changed")
+            rows, faces = self.state.store.pending_snapshot()
+            if self.state.store.setting("offlineBaseline") and (rows or faces or self.state.store.face_review_drafts()):
+                raise OfflineError("Offline work changed during preparation; resolve Pending before replacing its snapshot", code="offline_work_changed")
+            atomic_json(self.root / "snapshots" / snapshot["id"] / "snapshot.json", snapshot)
+            atomic_json(self.root / "active.json", {"id": snapshot["id"]})
+            self.state.store.set_setting("offlineBaseline", "")
+            self.job.update(phase="ready", step="", stepDone=0, stepTotal=0, error="", errorCode="")
+
+    @staticmethod
+    def _digest(path, check=None):
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                if check:
+                    check()
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _cache_preview(self, client, snapshot, kind, item_id, route, budget, stop):
+        item = snapshot["media"][kind].get(item_id)
+        if item and self.media_path(snapshot, item["path"]).is_file():
+            return item
+        stop.check()
+        body, mime = client.request("GET", route)
+        if not mime.startswith("image/") or len(body) > 20_000_000:
+            raise OfflineError("Unexpected preview response", code="invalid_preview_response")
+        path = self.media_path(snapshot, kind + "/" + safe_id(item_id))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".part")
+        try:
+            with temp.open("wb", buffering=0) as output:
+                budget.write(output, body, path, original=False)
+                os.fsync(output.fileno())
+            os.replace(temp, path)
+        finally:
+            temp.unlink(missing_ok=True)
+        return {"path": kind + "/" + item_id, "mime": mime, "size": len(body),
+                "sha256": hashlib.sha256(body).hexdigest()}
+
+    def open_client(self):
+        snapshot = self.active(verify=True)
+        if snapshot is None:
+            raise OfflineError("No complete offline workspace is available. Prepare it while connected to Immich.")
+        self.state.store.set_setting("offlineBaseline", snapshot["id"])
+        baseline = self.root / "snapshots" / snapshot["id"] / "baseline.json"
+        if not baseline.is_file():
+            atomic_json(baseline, {"people": snapshot["people"], "faces": snapshot["faces"]})
+        else:
+            known = self._read(baseline)
+            snapshot["people"], snapshot["faces"] = known["people"], known["faces"]
+        return OfflineClient(self, snapshot)
+
+    def prune_conflicts(self):
+        rows, faces = self.state.store.pending_snapshot()
+        rows = [r for r in rows if r["included"]]
+        faces = [r for r in faces if r["included"]]
+        pids = {row["person_id"] for row in rows}
+        pids.update(row.get("target_person_id") for row in rows)
+        pids.update(row["source_person_id"] for row in faces)
+        aids = {row["asset_id"] for row in faces}
+        aids.update(row.get("feature_asset_id") for row in rows)
+        with self.lock:
+            self.conflicts = [c for c in self.conflicts if c["id"] in pids or c["id"] in aids
+                              or bool(set(c.get("personIds", [])) & pids)]
+            return list(self.conflicts)
+
+    def validate(self, client, rows=None, face_rows=None):
+        if getattr(client, "offline", False):
+            raise OfflineError("Reconnect to Immich, review Pending and explicitly Sync.")
+        sid = self.state.store.setting("offlineBaseline")
+        if not sid:
+            return []
+        try:
+            directory = self.root / "snapshots" / safe_id(sid)
+            snapshot = self._read(directory / "baseline.json")
+        except (OSError, ValueError):
+            raise OfflineError("Offline baseline is unavailable. Restore the complete state folder before syncing.") from None
+        if rows is None or face_rows is None:
+            rows, face_rows = self.state.store.pending_snapshot()
+        rows = [r for r in rows if r["included"]]
+        face_rows = [r for r in face_rows if r["included"]]
+        pids = {row["person_id"] for row in rows}
+        pids.update(row["target_person_id"] for row in rows if row.get("target_person_id"))
+        pids.update(row["source_person_id"] for row in face_rows)
+        aids = {row["asset_id"] for row in face_rows}
+        aids.update(row["feature_asset_id"] for row in rows if row.get("feature_asset_id"))
+        # Merges and representative selection depend on existing face assignments.
+        for aid, faces in snapshot["faces"].items():
+            if any(face_person(f) in pids for f in faces):
+                aids.add(aid)
+        conflicts = []
+        for pid in sorted(pids):
+            baseline = snapshot["people"].get(pid)
+            try:
+                current = client.person(pid)
+                if baseline is None or person_baseline(current) != person_baseline(baseline):
+                    conflicts.append({"type": "person", "id": pid, "reason": "Person name, visibility, representative face or version changed since preparation"})
+                elif client.statistics(pid) != baseline.get("assetCount"):
+                    conflicts.append({"type": "person", "id": pid, "reason": "Person photo membership changed since preparation"})
+            except Exception:
+                conflicts.append({"type": "person", "id": pid, "reason": "Person no longer exists or cannot be verified"})
+        for aid in sorted(aids):
+            try:
+                baseline = snapshot["faces"].get(aid)
+                asset = client.asset(aid)
+                if baseline is None or asset.get("isTrashed") or asset.get("deletedAt") or face_baseline(client.faces(aid)) != face_baseline(baseline):
+                    conflicts.append({"type": "asset", "id": aid, "personIds": sorted({face_person(f) for f in baseline or [] if face_person(f)}), "reason": "Photo availability or face assignments changed since preparation"})
+            except Exception:
+                conflicts.append({"type": "asset", "id": aid, "personIds": sorted({face_person(f) for f in snapshot["faces"].get(aid, []) if face_person(f)}), "reason": "Photo no longer exists or cannot be verified"})
+        with self.lock:
+            self.conflicts = conflicts
+        return conflicts
+
+    def refresh_after_sync(self, client, rows, face_rows, results):
+        """Advance only expected own deltas; never bless arbitrary fresh upstream data."""
+        successes = [r for r in results if r.get("result") == "synced"]
+        if not successes:
+            return
+        # A snapshot is an offline preparation, not a continuously mirrored library.
+        # Keep its files for recovery, but require fresh preparation after writes.
+        try:
+            active = self._read(self.root / "active.json")
+            atomic_json(self.root / "active.json", {"id": safe_id(active["id"]), "stale": True})
+        except FileNotFoundError:
+            pass
+        with self.lock:
+            if self.job["phase"] == "ready":
+                self.job.update(phase="idle", planId="")
+        sid = self.state.store.setting("offlineBaseline")
+        if not sid:
+            return
+        path = self.root / "snapshots" / safe_id(sid) / "baseline.json"
+        snapshot = self._read(path)
+        expected = copy.deepcopy(snapshot)
+        touched, affected_assets, uncertain = set(), set(), set()
+        person_rows = {row["person_id"]: row for row in rows}
+        detach_rows = {row["face_id"]: row for row in face_rows}
+        for result in successes:
+            pid = result["personId"]
+            touched.add(pid)
+            if result.get("faceId"):
+                row = detach_rows[result["faceId"]]
+                target = result["targetPersonId"]
+                touched.add(target)
+                expected["people"].setdefault(target, {"id": target, "name": "", "isHidden": False, "assetCount": 0})
+                aid = row["asset_id"]
+                affected_assets.add(aid)
+                for face in expected["faces"].get(aid, []):
+                    if face.get("id") == result["faceId"]:
+                        face["person"] = {"id": target}
+                        if "personId" in face:
+                            face["personId"] = target
+            else:
+                row = person_rows[pid]
+                person = expected["people"].get(pid)
+                if not person:
+                    uncertain.add(pid)
+                    continue
+                operation = row["operation"]
+                if operation == "rename":
+                    person["name"] = row["name"]
+                elif operation in {"hide", "unhide"}:
+                    person["isHidden"] = operation == "hide"
+                elif operation == "merge":
+                    target = row["target_person_id"]
+                    touched.add(target)
+                    covered = sum(any(face_person(f) == pid for f in faces) for faces in snapshot["faces"].values())
+                    if person.get("assetCount") != covered:
+                        # Videos/uncached assets make the full target count uncertain.
+                        uncertain.add(target)
+                    for aid, faces in expected["faces"].items():
+                        for face in faces:
+                            if face_person(face) == pid:
+                                affected_assets.add(aid)
+                                face["person"] = {"id": target}
+                                if "personId" in face:
+                                    face["personId"] = target
+                    expected["people"].pop(pid, None)
+                if row.get("feature_asset_id"):
+                    # Server versions represent selected faces differently. A fresh
+                    # preparation is required rather than guessing the response field.
+                    uncertain.add(row.get("target_person_id") if operation == "merge" else pid)
+        # Photo counts change once per photo, even when several faces were moved.
+        deltas = {}
+        for aid in affected_assets:
+            before = {face_person(f) for f in snapshot["faces"].get(aid, [])}
+            after = {face_person(f) for f in expected["faces"].get(aid, [])}
+            for pid in before - after:
+                deltas[pid] = deltas.get(pid, 0) - 1
+            for pid in after - before:
+                deltas[pid] = deltas.get(pid, 0) + 1
+        for pid, delta in deltas.items():
+            person = expected["people"].get(pid)
+            if person and isinstance(person.get("assetCount"), int):
+                person["assetCount"] += delta
+            elif person:
+                uncertain.add(pid)
+        conflicts = []
+        for pid in touched:
+            wanted = expected["people"].get(pid)
+            if wanted is None:
+                snapshot["people"].pop(pid, None)
+                continue
+            try:
+                current = client.person(pid)
+                current["assetCount"] = client.statistics(pid)
+                expected_fields, current_fields = person_baseline(wanted), person_baseline(current)
+                expected_fields.pop("updatedAt", None)
+                current_fields.pop("updatedAt", None)
+                if pid in uncertain or current_fields != expected_fields or current["assetCount"] != wanted.get("assetCount"):
+                    raise OfflineError("Unexpected upstream change during Sync")
+                snapshot["people"][pid] = current
+            except Exception:
+                conflicts.append({"type": "person", "id": pid, "reason": "Person changed during Sync or its exact resulting membership could not be established. Review it before retrying."})
+        for aid in affected_assets:
+            try:
+                current = client.faces(aid)
+                if face_baseline(current) != face_baseline(expected["faces"][aid]):
+                    raise OfflineError("Unexpected face change during Sync")
+                snapshot["faces"][aid] = current
+            except Exception:
+                conflicts.append({"type": "asset", "id": aid, "personIds": sorted(touched), "reason": "Photo faces changed during Sync. Review assignments before retrying."})
+        with self.lock:
+            self.conflicts = conflicts
+        atomic_json(path, snapshot)

@@ -7,6 +7,9 @@ export function showFaceInReview(face, showChecked, hidden, draft) {
 }
 
 export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui }) {
+  function publishSaving() {
+    if (typeof document.dispatchEvent === "function" && typeof Event === "function") document.dispatchEvent(new Event("workbench-save-state"));
+  }
   const pageSize = 60;
   let gap = 8;
   let faces = [];
@@ -251,7 +254,9 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     const pending = person.pendingOperation ? ` · Pending ${person.pendingOperation}${person.pendingName ? ` → ${person.pendingName}` : ""}` : "";
     const reopened = person.reviewReopened ? " · Review reopened" : "";
     const remaining = person.inventoryComplete ? `${result.untouchedCount} untouched` : `${result.untouchedCount} untouched in loaded photos · load all photos for total`;
-    element("face-review-meta").textContent = `${result.correctCount || 0} accepted · ${result.wrongDraftCount || 0} dismissed to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${remaining}${reopened}${pending}`;
+    const coverage = result.offlineCoverage || state.faceReviewResult?.offlineCoverage;
+    const coverageText = coverage ? ` · Saved photos: ${coverage.availableAssets}/${coverage.totalAssets ?? "unknown"}${coverage.complete ? " · complete for this person" : " · partial coverage"}` : "";
+    element("face-review-meta").textContent = `${result.correctCount || 0} accepted · ${result.wrongDraftCount || 0} dismissed to submit · ${result.queuedFaceCount || 0} awaiting Sync · ${remaining}${reopened}${pending}${coverageText}`;
     element("face-review-content").classList.toggle("person-reviewed", person.reviewed);
     renderFacePersonList();
   }
@@ -744,6 +749,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
     }
     actionQueue.push({ ...action, requestGeneration: generation });
     state.faceReviewSaving = true;
+    publishSaving();
     drainActions().catch(error => showToast(error.message));
     if (action.type === "decision") updateMountedStates();
   }
@@ -764,6 +770,7 @@ export function createFaceReview({ api, assetThumb, changePeopleSort, drawFace, 
       }
     } finally {
       draftSaving = false; state.faceReviewSaving = false;
+      publishSaving();
       const waiters = draftSaveWaiters;
       draftSaveWaiters = [];
       for (const resolve of waiters) resolve(savesSucceeded);

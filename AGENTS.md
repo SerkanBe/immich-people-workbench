@@ -27,6 +27,10 @@
 - For major interaction changes, show the proposed flow or wireframe for user
   approval before implementation. Preserve established keyboard shortcuts and
   local state unless the approved flow changes them.
+- Keep routine screens focused on labels, values, and current status, progress,
+  errors, or decisions. Put explanations and instructions in accessible field
+  help or a dedicated help page. Field help must work with keyboard and touch,
+  and should not rely on hover alone.
 - Preserve compatibility with legacy `immichPeopleConsole.*` browser storage
   keys when changing saved settings or Merge canvas state.
 - Keep Merge canvas groups and buckets local organizational state. Only a

@@ -63,7 +63,8 @@ appears in **Pending** and has not changed Immich. Review the checked items and
 choose **Sync** only when you are ready to apply them.
 
 For other tasks, see the [User guide](user-guide.md) or the [illustrated
-tour](visual-tour.md).
+tour](visual-tour.md). To prepare selected photos for a disconnected notebook,
+see [Offline workspace](offline.md).
 
 ## Keep progress and connect again
 

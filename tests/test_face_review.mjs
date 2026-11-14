@@ -817,7 +817,11 @@ test("Next person waits for local draft persistence and stays on the person afte
     const h = await submitHarness({ people, pages: [page], submit: () => { throw new Error("Must not submit"); },
       draft: () => new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }) });
     try {
+      const saveEvents = [];
+      h.documentListeners.set("workbench-save-state", () => saveEvents.push(h.state.faceReviewSaving));
       h.elements.get("face-review-mark").listeners.get("click")();
+      assert.equal(h.state.faceReviewSaving, true);
+      assert.deepEqual(saveEvents, [true]);
       const next = nextClick(h);
       assert.equal(h.state.faceReviewPersonId, people[0].id);
       assert.equal(h.elements.get("face-review-next").disabled, true);
@@ -826,6 +830,8 @@ test("Next person waits for local draft persistence and stays on the person afte
       if (fails) rejectSave(new Error("Synthetic save failure"));
       else resolveSave({ ...page, correctCount: 1, draftCount: 1, untouchedCount: 1 });
       await next;
+      assert.equal(h.state.faceReviewSaving, false);
+      assert.equal(saveEvents.at(-1), false, "both successful and failed saves release the capture gate");
       assert.equal(h.state.faceReviewPersonId, people[fails ? 0 : 1].id);
       if (fails) assert.match(h.toasts.at(-1), /could not finish/);
       assert.equal(h.elements.get("face-review-next").disabled, false);
@@ -839,6 +845,8 @@ test("Next person waits for every queued decision and ignores another N while wa
   const saves = [], page = skipPage(), people = skipPeople.map(item => ({ ...item }));
   const h = await submitHarness({ people, pages: [page], draft: () => new Promise(resolve => saves.push(resolve)) });
   try {
+    const saveEvents = [];
+    h.documentListeners.set("workbench-save-state", () => saveEvents.push(h.state.faceReviewSaving));
     h.elements.get("face-review-mark").listeners.get("click")();
     h.elements.get("face-review-queue").listeners.get("click")();
     const next = nextClick(h);
@@ -846,9 +854,12 @@ test("Next person waits for every queued decision and ignores another N while wa
     saves[0]({ ...page, draftCount: 1, correctCount: 1 });
     await flushSkip();
     assert.equal(saves.length, 2);
+    assert.equal(h.state.faceReviewSaving, true);
+    assert.equal(saveEvents.some(value => !value), false);
     assert.equal(h.state.faceReviewPersonId, people[0].id);
     saves[1]({ ...page, draftCount: 1, wrongDraftCount: 1 });
     await next;
+    assert.equal(h.state.faceReviewSaving, false);
     assert.equal(h.state.faceReviewPersonId, people[1].id);
     assert.equal(h.calls.filter(([path]) => path.startsWith("/api/people?")).length, 2);
     assert.equal(h.calls.filter(([path]) => path === "/api/face-review/draft").length, 2);
@@ -888,4 +899,15 @@ test("N ignores text fields, dialogs, and modified key chords", async () => {
     assert.equal(h.calls.length, before);
     assert.equal(h.state.faceReviewPersonId, skipPeople[0].id);
   } finally { h.dispose(); }
+});
+
+
+test("Offline Face review labels the saved subset before any decisions", async () => {
+  const run = await submitHarness({ people:[{id:"synthetic-person",name:"Synthetic person",assetCount:8}],
+    pages:[{faces:[],page:1,hasMore:false,inventoryComplete:true,untouchedCount:0,
+      offlineCoverage:{availableAssets:2,totalAssets:8,complete:false}}], submit:async()=>({}) });
+  try {
+    assert.match(run.elements.get("face-review-meta").textContent, /Saved photos: 2\/8 · partial coverage/);
+    assert.equal(run.calls.some(([path])=>path === "/api/sync"),false);
+  } finally { run.dispose(); }
 });

@@ -39,7 +39,7 @@ test("rejects missing dimensions or unusable coordinates", () => {
 
 test("preview shows a mismatched box and resets its rotation for the next photo", () => {
   const previous = { document: globalThis.document, window: globalThis.window, requestAnimationFrame: globalThis.requestAnimationFrame };
-  const selectors = ["dialog", "viewport", "stage", "image", "face-box", "caption", "toggle-box", "toggle-label", "rotate-box", "rotate-label", "zoom-level", "review", "title"];
+  const selectors = ["dialog", "viewport", "stage", "image", "face-box", "caption", "toggle-box", "toggle-label", "rotate-box", "rotate-label", "zoom-level", "review", "title", "original"];
   const nodes = new Map(selectors.map(name => {
     const listeners = new Map(), classes = new Set();
     return [`#asset-preview-${name}`, {
@@ -62,7 +62,8 @@ test("preview shows a mismatched box and resets its rotation for the next photo"
   globalThis.window = { innerHeight: 900, addEventListener() {} };
   globalThis.requestAnimationFrame = callback => { callback(); return 1; };
   try {
-    const open = createAssetPreview({ assetThumb: id => `/synthetic/${id}` });
+    let offline = false;
+    const open = createAssetPreview({ assetThumb: id => `/synthetic/${id}`, isOffline: () => offline });
     const marker = nodes.get("#asset-preview-face-box");
     const rotate = nodes.get("#asset-preview-rotate-box");
     open("first", "Synthetic photo", box);
@@ -74,7 +75,14 @@ test("preview shows a mismatched box and resets its rotation for the next photo"
     assert.equal(nodes.get("#asset-preview-rotate-label").textContent, "90°");
     nodes.get("#asset-preview-dialog").listeners.get("keydown")({ key: "r", altKey: false, ctrlKey: false, metaKey: false, preventDefault() {} });
     assert.equal(nodes.get("#asset-preview-rotate-label").textContent, "180°");
+    offline = true;
     open("second", "Another synthetic photo", box);
+    assert.equal(image.src, "/media/original/second");
+    assert.equal(nodes.get("#asset-preview-original").hidden, false);
+    assert.match(nodes.get("#asset-preview-caption").textContent, /Stored original/);
+    image.listeners.get("error")();
+    assert.equal(image.src, "/synthetic/second");
+    assert.match(nodes.get("#asset-preview-caption").textContent, /Saved preview.*200 × 100/);
     assert.equal(marker.style.left, "40px");
     assert.equal(nodes.get("#asset-preview-rotate-label").textContent, "0°");
   } finally {

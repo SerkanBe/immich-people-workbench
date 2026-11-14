@@ -33,6 +33,18 @@
         <a class="nav-button" data-view="ignored" href="/ignored">Ignored <span id="ignored-count">0</span></a>
       </nav>
       <div class="sidebar-footer">
+        <nav id="offline-tools" class="sidebar-tools" aria-label="Local tools" hidden>
+          <div class="nav-tools-label">Local tools</div>
+          <details id="offline-navigation" class="nav-disclosure" hidden>
+            <summary id="nav-offline-label">Offline</summary>
+            <div class="nav-group-items">
+              <a class="nav-button" data-view="offline-create" href="/offline/create">Create offline copy</a>
+              <a class="nav-button" data-view="offline-import" href="/offline/import">Import offline changes</a>
+              <a id="offline-exports-link" class="nav-button" data-view="offline-exports" href="/offline/exports" hidden>Exports</a>
+            </div>
+          </details>
+          <a id="offline-snapshots-link" class="nav-button" data-view="snapshots" href="/settings/snapshots" hidden>State snapshots</a>
+        </nav>
         <p id="connection-status">Not connected</p>
         <button id="logout-button" class="quiet-button">Log out</button>
       </div>
@@ -50,9 +62,14 @@
               <option value="60">60</option>
             </select>
           </label>
+          <span id="offline-status" class="offline-status" role="status" hidden></span>
+          <a id="offline-results-download" class="primary-button" hidden>Download changes</a>
+          <a id="offline-reconnect" href="/login?next=/pending" hidden>Reconnect</a>
+          <a id="offline-portable-help" class="page-help" data-view="offline-help" href="/help/offline" aria-label="Help with offline review" hidden>?</a>
           <button id="reload-button" class="quiet-button" hidden>Reload</button>
         </div>
       </header>
+      <p id="offline-save-notice" class="offline-save-notice" role="status" hidden></p>
       <div id="progress-panel" class="progress-panel" hidden>
     <div><strong id="progress-message">Loading</strong><span id="progress-numbers"></span></div>
     <progress id="progress-bar"></progress>
@@ -61,16 +78,19 @@
       <main id="workspace-main" tabindex="-1">
     <section id="unnamed-view" class="view active" aria-labelledby="unnamed-heading">
       <div class="view-heading">
-        <div><h2 id="unnamed-heading" tabindex="-1">Clusters</h2><p>Name clusters quickly. Nothing changes in Immich until review and sync.</p></div>
-        <label>Order
-          <select id="sort-select" data-people-sort>
-            <option value="most">Most photos first</option>
-            <option value="fewest">Fewest photos first</option>
-            <option value="updated-newest">Recently updated</option>
-            <option value="updated-oldest">Least recently updated</option>
-            <option value="random">Random</option>
-          </select>
-        </label>
+        <div><h2 id="unnamed-heading" tabindex="-1">Clusters</h2></div>
+        <div class="view-heading-controls">
+          <label>Order
+            <select id="sort-select" data-people-sort>
+              <option value="most">Most photos first</option>
+              <option value="fewest">Fewest photos first</option>
+              <option value="updated-newest">Recently updated</option>
+              <option value="updated-oldest">Least recently updated</option>
+              <option value="random">Random</option>
+            </select>
+          </label>
+          <button class="quiet-button" type="button" data-naming-help aria-haspopup="dialog" aria-controls="naming-help-dialog">Shortcuts ?</button>
+        </div>
       </div>
       <div id="round-banner" class="round-banner" hidden></div>
       <div id="unnamed-grid" class="people-grid"></div>
@@ -178,6 +198,7 @@
             </select>
           </label>
           <button id="investigate-return-all" class="quiet-button" disabled>Return all to Unnamed</button>
+          <button class="quiet-button" type="button" data-naming-help aria-haspopup="dialog" aria-controls="naming-help-dialog">Shortcuts ?</button>
         </div>
       </div>
       <div id="investigate-grid" class="investigate-grid"></div>
@@ -266,9 +287,12 @@
         <div><h2 id="pending-heading">Pending changes</h2><p>Excluded items remain here for later. Sync only applies checked items.</p></div>
         <div class="pending-heading-actions">
           <button id="reset-button" class="danger-button">Discard all local changes and reload</button>
-          <button id="sync-button" class="primary-button">Sync checked changes to Immich</button>
+          <button id="sync-button" class="primary-button" hidden>Sync checked changes to Immich</button>
         </div>
       </div>
+      <p id="offline-sync-notice" class="muted" hidden></p>
+      <p id="offline-conflicts" class="error-text" role="alert" hidden></p>
+      <a id="pending-reconnect" href="/login?next=/pending" hidden>Reconnect to Immich</a>
       <div id="pending-list" class="pending-list"></div>
       <div id="pending-pagination" class="pagination" hidden></div>
       <div id="pending-empty" class="empty-state" hidden><h2>No pending changes</h2><p>Accepted names, merges and ignored clusters will appear here.</p></div>
@@ -279,6 +303,7 @@
         <div><h2 id="named-heading">Named people</h2><p>Search, rename, or merge existing Immich people.</p></div>
         <div class="view-heading-controls">
           <label>Search <input id="named-search" type="search" autocomplete="off" placeholder="Name"></label>
+          <button class="quiet-button" type="button" data-naming-help aria-haspopup="dialog" aria-controls="naming-help-dialog">Shortcuts ?</button>
           <label>Order
             <select id="named-sort-select" data-people-sort>
               <option value="most">Most photos first</option>
@@ -310,12 +335,109 @@
       <div id="ignored-grid" class="people-grid"></div>
       <div id="ignored-pagination" class="pagination" hidden></div>
     </section>
-      </main>
+
+    <section id="offline-create-view" class="view offline-page" aria-labelledby="offline-create-heading">
+      <div class="view-heading"><h2 id="offline-create-heading">Create offline copy</h2><a class="page-help" data-view="offline-help" href="/help/offline" aria-label="Help with creating an offline copy">?</a></div>
+      <p id="offline-create-unavailable" class="error-text" hidden>Connect to the source Workbench to create a copy.</p>
+      <div id="offline-create-content">
+        <div class="offline-actions"><button id="offline-plan" class="primary-button" type="button">Find photos</button><button id="offline-scope-help" class="field-help" type="button" data-offline-help="scope" aria-label="Which photos are included?">?</button></div>
+        <p id="offline-workspace-description" class="offline-value" role="status" aria-live="polite"></p>
+        <div id="offline-copy-name" class="offline-field" hidden><label for="offline-package-name">Copy name</label><button class="field-help" type="button" data-offline-help="name" aria-label="Help with copy name">?</button><input id="offline-package-name" type="text" maxlength="256" autocomplete="off" placeholder="Offline copy"></div>
+        <p id="offline-package-message" role="status" aria-live="polite"></p>
+        <progress id="offline-workspace-progress" aria-label="Finding and saving photos" hidden></progress>
+        <progress id="offline-package-progress" aria-label="Preparing offline copy" hidden></progress>
+        <p id="offline-workspace-error" class="error-text" role="alert" hidden></p>
+        <div class="offline-actions"><button id="offline-download" class="primary-button" type="button" hidden>Create offline copy</button><a id="offline-package-download" class="primary-button" hidden>Download offline copy</a><button id="offline-cancel" class="quiet-button" type="button" hidden>Cancel</button><button id="offline-refresh" class="quiet-button" type="button">Refresh status</button></div>
+        <details id="offline-storage" class="storage-details"><summary>Storage details</summary><code id="offline-storage-path"></code></details>
+      </div>
+    </section>
+    <section id="offline-import-view" class="view offline-page" aria-labelledby="offline-import-heading">
+      <div class="view-heading"><h2 id="offline-import-heading">Import offline changes</h2><a class="page-help" data-view="offline-help" href="/help/offline" aria-label="Help with importing changes">?</a></div>
+      <p id="offline-import-unavailable" class="error-text" hidden>Connect to the source Workbench to import changes.</p>
+      <div id="offline-import-content">
+        <label class="offline-file-label">Choose changes file<input id="offline-import-file" type="file" accept=".zip,application/zip"></label>
+        <p id="offline-import-message" role="status" aria-live="polite"></p>
+        <p id="offline-import-error" class="error-text" role="alert" hidden></p>
+        <section id="offline-import-uncertain" class="import-uncertain" role="alert" aria-labelledby="offline-import-uncertain-heading" hidden>
+          <h3 id="offline-import-uncertain-heading" tabindex="-1">Import outcome unknown</h3>
+          <p>Changes may already be saved.</p>
+          <details id="offline-import-error-details"><summary>Error details</summary><p id="offline-import-error-detail"></p></details>
+        </section>
+        <button id="offline-import-retry" class="quiet-button" type="button" hidden>Review file again</button>
+        <section id="offline-import-result" class="import-result" aria-labelledby="offline-import-result-heading" hidden>
+          <div class="import-result-heading"><span class="import-result-icon" aria-hidden="true">✓</span><div><h3 id="offline-import-result-heading" tabindex="-1">Changes imported</h3><p id="offline-import-result-name"></p></div><span class="import-local-badge">Saved locally</span></div>
+          <dl class="import-stats"><div><dt>Imported groups</dt><dd id="offline-import-result-count">0</dd></div><div><dt>Left unchanged</dt><dd id="offline-import-result-skipped">0</dd></div></dl>
+          <div class="import-result-footer"><span class="import-snapshot-status">✓ State snapshot saved</span><a id="offline-import-pending" class="primary-button" data-view="pending" href="/pending" hidden>Review Pending</a></div>
+        </section>
+        <div id="offline-import-review" hidden>
+          <dl id="offline-import-counts" class="import-stats"><div data-import-status="ready"><dt>Ready to import</dt><dd id="offline-import-ready-count">0</dd></div><div data-import-status="conflict"><dt>Conflicts</dt><dd id="offline-import-conflict-count">0</dd></div><div data-import-status="applied"><dt>Already imported</dt><dd id="offline-import-applied-count">0</dd></div></dl>
+          <div class="offline-actions"><button id="offline-import-all" class="quiet-button" type="button">Select all ready</button><button id="offline-import-none" class="quiet-button" type="button">Exclude all</button></div>
+          <p id="offline-import-selection" class="muted" role="status"></p>
+          <div id="offline-import-rows" class="offline-import-rows"></div>
+          <div id="offline-import-pagination" class="offline-actions"><button id="offline-import-previous" class="quiet-button" type="button">Previous page</button><span id="offline-import-page" role="status"></span><button id="offline-import-next" class="quiet-button" type="button">Next page</button></div>
+          <button id="offline-import-apply" class="primary-button" type="button" disabled>Import selected changes</button>
+        </div>
+      </div>
+    </section>
+    <section id="offline-exports-view" class="view offline-page" aria-labelledby="offline-exports-heading">
+      <div class="view-heading"><h2 id="offline-exports-heading">Exports</h2><a class="page-help" data-view="offline-help" href="/help/offline" aria-label="Help with exports">?</a></div>
+      <p id="offline-exports-unavailable" class="error-text" hidden>Connect to the source Workbench to view exports.</p>
+      <div id="offline-exports-content"><p id="offline-packages-error" class="error-text" role="alert" hidden></p><div id="offline-package-list" class="offline-history"></div><button id="offline-exports-refresh" class="quiet-button" type="button">Refresh exports</button></div>
+    </section>
+    <section id="snapshots-view" class="view offline-page" aria-labelledby="snapshots-heading">
+      <div class="view-heading"><h2 id="snapshots-heading">State snapshots</h2><a class="page-help" data-view="snapshots-help" href="/help/snapshots" aria-label="Help with state snapshots">?</a></div>
+      <p id="offline-snapshots-unavailable" class="error-text" hidden>Connect to the source Workbench to manage snapshots.</p>
+      <div id="offline-snapshots-content"><label class="offline-file-label">Snapshot name<input id="offline-snapshot-name" type="text" maxlength="256" placeholder="State snapshot" autocomplete="off"></label><button id="offline-snapshot-create" class="primary-button" type="button">Save state snapshot</button><p id="offline-snapshot-message" role="status"></p><p id="offline-snapshot-error" class="error-text" role="alert" hidden></p><div id="offline-snapshot-list" class="offline-history"></div></div>
+    </section>
+    <section id="offline-help-view" class="view help-page" aria-labelledby="offline-help-heading">
+      <div class="view-heading"><h2 id="offline-help-heading">Offline help</h2><button class="quiet-button" type="button" data-offline-help-back>Back</button></div>
+      <div data-offline-source-help>
+        <h3>Create an offline copy</h3><p><strong>Find photos</strong> reads metadata for accessible still photos containing unnamed people, including other faces in those photos. Videos and photos outside that selection are excluded. Preparing originals needs the API-key permission <code>asset.download</code>.</p>
+        <p>The count is unique photos. Size is an estimate from available metadata; <strong>Size unknown</strong> means no usable estimate. Some photos may have unknown sizes even when a partial estimate is shown. Downloading needs room on Workbench's storage drive and retains a 64 MiB reserve.</p>
+        <p>Enter an optional copy name, then choose <strong>Create offline copy</strong>. This saves photos on the Workbench server and builds the ZIP. <strong>Storage details</strong> shows that server path; in Docker it is inside the state volume. Only the final <strong>Download offline copy</strong> saves a ZIP through your browser.</p>
+        <p>You can keep using Workbench while creation runs. Cancel stops the current work. Completed originals are retained for an explicit Resume. After a reload or lost response, refresh the status, then Continue or Resume when offered; Workbench does not replay a transfer automatically.</p>
+      </div>
+      <h3>Review on another computer</h3><p>Download and extract the ZIP into a new folder. Install Python 3.10 or newer, then run <code>python people_workbench.py</code> there (or <code>py -3 people_workbench.py</code> on Windows). Choose <strong>Open saved offline workspace</strong>. No Immich connection, account or credentials are needed.</p>
+      <p>Use Naming, Group photos, Investigate and available Face Review. Saved progress persists across restarts; some people have only partial coverage. Wait for saves to finish, then use <strong>Download changes</strong> to return the small results ZIP. It contains review work, not photos or application code. Keep your portable copy until the source has accepted the returned work.</p>
+      <p>The portable ZIP contains private photos, names and review data. Share and store it with care. It carries no live credentials and cannot Sync directly.</p>
+      <div data-offline-source-help>
+        <h3 id="offline-help-import">Import offline changes</h3><p>Use the exact source Workbench and original Immich account. Choose the returned file on <strong>Import offline changes</strong>. Select ready groups; conflicts keep existing work and explain the current issue. Already imported work is not applied again. Help visits preserve your selection until the preview expires or its context changes.</p>
+        <p>Import saves locally and takes a pre-import state snapshot. Accepted reviews and progress can be saved directly; proposed Immich changes enter <strong>Pending</strong>. Review Pending and explicitly Sync checked actions to apply them to Immich. Excluding a conflict does not resolve it. Reconcile at the source or prepare a fresh export where needed.</p>
+        <p>If an import response is lost, explicitly review the same file again to check the saved outcome before importing. Never assume the previous attempt failed.</p>
+        <h3>Existing folder copies</h3><p>Older unmarked folder copies retain their original reconnect workflow: connect that copy to the same Immich server and account, review Pending, then explicitly Sync. Their local progress does not import automatically into the original Workbench.</p>
+        <p><a data-view="offline-create" href="/offline/create">Create offline copy</a> · <a data-view="offline-import" href="/offline/import">Import offline changes</a> · <a data-view="snapshots-help" href="/help/snapshots">State snapshot help</a></p>
+      </div>
+    </section>
+    <section id="snapshots-help-view" class="view help-page" aria-labelledby="snapshots-help-heading">
+      <div class="view-heading"><h2 id="snapshots-help-heading">State snapshot help</h2><button class="quiet-button" type="button" data-offline-help-back>Back</button></div>
+      <p>Snapshots capture saved Workbench progress and references to saved media, without duplicating photos or exporting credentials. Workbench takes one before every actual nonempty import; you can also save and download a manual snapshot.</p>
+      <p>They are local progress records, not a photo-library backup. This version has no restore or delete action. A snapshot cannot undo work already synced to Immich. Unsubmitted browser text and failed saves are not part of a snapshot.</p>
+      <p data-offline-source-help><a data-view="snapshots" href="/settings/snapshots">State snapshots</a></p>
+    </section>
+  </main>
     </div>
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
+  <dialog id="naming-help-dialog" aria-labelledby="naming-help-title">
+    <div class="dialog-form">
+      <div class="detail-heading"><h2 id="naming-help-title" tabindex="-1">Naming shortcuts</h2><button class="icon-button" type="button" data-close aria-label="Close naming shortcuts">×</button></div>
+      <p>Names and merges enter Pending. Only explicit Sync applies them to Immich.</p>
+      <dl class="shortcut-list">
+        <div><dt><kbd>Tab</kbd></dt><dd>Accept a visible completion, or move to the next field</dd></div>
+        <div><dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Choose a name suggestion</dd></div>
+        <div><dt><kbd>Enter</kbd></dt><dd>Queue the name or selected merge, then move on</dd></div>
+        <div><dt><kbd>Page Up</kbd> / <kbd>Page Down</kbd></dt><dd>Change the representative face</dd></div>
+      </dl>
+      <h3>Clusters only</h3>
+      <dl class="shortcut-list">
+        <div><dt><kbd>Alt+S</kbd></dt><dd>Skip to a later round</dd></div>
+        <div><dt><kbd>Alt+I</kbd></dt><dd>Queue hiding the cluster in Pending</dd></div>
+        <div><dt><kbd>Alt+D</kbd></dt><dd>Move the cluster to Investigate</dd></div>
+      </dl>
+    </div>
+  </dialog>
   <dialog id="face-review-help-dialog" aria-labelledby="face-review-help-title">
     <div class="dialog-form">
       <div class="detail-heading"><div><h2 id="face-review-help-title">Face review shortcuts</h2><p>Decisions stay local until Submit review. Immich changes only after Pending Sync.</p></div><button class="icon-button" type="button" data-close aria-label="Close shortcuts">×</button></div>
@@ -356,6 +478,12 @@
     </div>
   </dialog>
 
+  <dialog id="offline-field-help" aria-labelledby="offline-field-help-title">
+    <div class="dialog-form">
+      <div class="detail-heading"><h2 id="offline-field-help-title"></h2><button class="icon-button" data-close aria-label="Close help">×</button></div>
+      <p id="offline-field-help-copy"></p>
+    </div>
+  </dialog>
   <dialog id="sync-confirm-dialog" aria-labelledby="sync-confirm-title" aria-describedby="sync-confirm-description">
     <div class="dialog-form">
       <h2 id="sync-confirm-title">Sync checked changes to Immich?</h2>
@@ -378,7 +506,7 @@
 
   <dialog id="asset-preview-dialog" class="asset-preview-dialog">
     <div class="dialog-form">
-      <div class="detail-heading"><div><h2 id="asset-preview-title">Photo preview</h2><p id="asset-preview-caption" class="muted"></p></div><button class="icon-button" data-close aria-label="Close">×</button></div>
+      <div class="detail-heading"><div><h2 id="asset-preview-title">Photo preview</h2><p id="asset-preview-caption" class="muted"></p><a id="asset-preview-original" target="_blank" rel="noopener" hidden>Open stored original</a></div><button class="icon-button" data-close aria-label="Close">×</button></div>
       <div class="asset-preview-tools">
         <button id="asset-preview-toggle-box" class="quiet-button" type="button" hidden><span id="asset-preview-toggle-label">Hide box</span> <kbd>H</kbd></button>
         <button id="asset-preview-rotate-box" class="quiet-button" type="button" title="Rotate face rectangle 90 degrees clockwise" hidden>Rotate box <kbd>R</kbd> <span id="asset-preview-rotate-label">0°</span></button>
@@ -447,7 +575,7 @@
         <input class="name-input" autocomplete="off" spellcheck="false" aria-label="Person name">
         <div class="suggestions" role="listbox"></div>
       </div>
-      <div class="card-actions"><span class="hotkey-hint">Alt+S skip · Alt+I ignore · Alt+D investigate</span><button class="investigate-button quiet-button" type="button" tabindex="-1" title="Move to Investigate">Investigate</button></div>
+      <div class="card-actions"><button class="investigate-button quiet-button" type="button" tabindex="-1" title="Move to Investigate">Investigate</button></div>
     </article>
   </template>
 
