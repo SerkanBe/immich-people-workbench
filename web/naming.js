@@ -2,6 +2,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 export function createNaming({ api, assetThumb, cleanName, loadNames, personThumb, refreshSummary, renderInvestigate, renderPagination, showToast, state, ui }) {
+  let saving = 0;
+  state.namingSaving = 0;
+  function publishSaving() {
+    state.namingSaving = saving;
+    if (typeof document.dispatchEvent === "function" && typeof Event === "function") document.dispatchEvent(new Event("workbench-save-state"));
+  }
+  async function saveNaming(action) {
+    saving += 1; publishSaving();
+    try { return await action(); }
+    finally { saving -= 1; publishSaving(); }
+  }
+
   function matchingNames(fragment, excludeId = "") {
     const needle = cleanName(fragment).toLocaleLowerCase();
     if (!needle) return [];
@@ -162,15 +174,18 @@ export function createNaming({ api, assetThumb, cleanName, loadNames, personThum
     updateOptimisticNames(model, operation, extra);
     removeCardAndFocusNext(model);
     showToast(operation === "merge" ? `Merge into ${extra.targetName} queued` : operation === "hide" ? "Person queued as ignored" : `${extra.name} queued`);
-    api("/api/queue", { method: "POST", body: payload })
-      .then(() => refreshSummary())
-      .catch(async error => {
+    return saveNaming(async () => {
+      try {
+        await api("/api/queue", { method: "POST", body: payload });
+        await refreshSummary();
+      } catch (error) {
         showToast(`Could not save the pending change: ${error.message}`);
         await loadNames();
         if (model.mode === "investigate") await renderInvestigate(true, focusIndex);
         else await renderPeopleGrid(model.mode, model.mode === "unnamed" ? ui.grid : ui.namedGrid, true, focusIndex);
         await refreshSummary();
-      });
+      }
+    });
   }
 
   async function submitCard(model) {
@@ -192,23 +207,23 @@ export function createNaming({ api, assetThumb, cleanName, loadNames, personThum
 
   async function skipCard(model) {
     const focusIndex = currentCardIndex(model);
-    await api("/api/skip", { method: "POST", body: { personId: model.person.id } });
-    await renderPeopleGrid("unnamed", ui.grid, true, focusIndex);
+    await saveNaming(async () => {
+      await api("/api/skip", { method: "POST", body: { personId: model.person.id } });
+      await renderPeopleGrid("unnamed", ui.grid, true, focusIndex);
+    });
   }
 
   async function investigateCard(model) {
-    await api("/api/investigate/add", { method: "POST", body: { personId: model.person.id } });
-    removeCardAndFocusNext(model);
-    showToast("Moved to Investigate");
-    await refreshSummary();
+    await saveNaming(async () => {
+      await api("/api/investigate/add", { method: "POST", body: { personId: model.person.id } });
+      removeCardAndFocusNext(model);
+      showToast("Moved to Investigate");
+      await refreshSummary();
+    });
   }
 
   function attachNameBehavior(model) {
     const { input } = model;
-    const hint = document.createElement("p");
-    hint.className = "name-keyboard-hint";
-    hint.textContent = "Tab complete or next · ↑/↓ choose · Enter submit";
-    input.closest(".name-wrap").append(hint);
     input.addEventListener("focus", () => updateSuggestions(model));
     input.addEventListener("input", () => updateSuggestions(model));
     input.addEventListener("blur", () => setTimeout(() => model.list.classList.remove("open"), 120));
@@ -287,6 +302,14 @@ export function createNaming({ api, assetThumb, cleanName, loadNames, personThum
   }
 
   function bindNamingControls() {
+    const help = document.querySelector("#naming-help-dialog");
+    let helpTrigger = null;
+    document.querySelectorAll("[data-naming-help]").forEach(button => button.addEventListener("click", () => {
+      helpTrigger = button;
+      help.showModal();
+      document.querySelector("#naming-help-title").focus();
+    }));
+    help.addEventListener("close", () => helpTrigger?.focus());
     let namedSearchTimer = null;
     document.querySelector("#named-search").addEventListener("input", () => {
       clearTimeout(namedSearchTimer); state.pages.named = 1;

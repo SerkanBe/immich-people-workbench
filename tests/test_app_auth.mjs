@@ -11,14 +11,16 @@ const end = source.indexOf('\nfunction showToast', start);
 const apiSource = source.slice(start, end);
 
 function setup(status, data) {
-  const calls = [], redirects = [];
+  const calls = [], redirects = [], saveStates = [];
+  const state = {};
   const context = vm.createContext({
-    URLSearchParams,
+    URLSearchParams, Event, state,
+    document: {dispatchEvent(event) { if (event.type === "workbench-save-state") saveStates.push(state.localRequests); }},
     window: { location: { pathname: '/pending', assign: value => redirects.push(value) } },
     fetch: async (path, options) => { calls.push([path, options]); return { status, ok: status >= 200 && status < 300, statusText: 'Synthetic', json: async () => data }; },
   });
   vm.runInContext(`${apiSource}\nglobalThis.callApi = api;`, context);
-  return { context, calls, redirects };
+  return { context, calls, redirects, saveStates };
 }
 
 test('typed 401 carries only known reason and permissions, preserves route, and does not retry', async () => {
@@ -49,4 +51,15 @@ test('unknown reason and injected permission values are dropped from redirects',
   const url = new URL(x.redirects[0], 'http://workbench.test');
   assert.equal(url.searchParams.get('next'), '/pending');
   assert.equal(url.searchParams.has('reason'), false); assert.equal(url.searchParams.has('missing'), false);
+});
+
+
+test('structured import errors stay inline and save tracking excludes preview and inventory reads', async () => {
+  const x = setup(409, {code:'preview_stale', error:'Review the file again'});
+  await assert.rejects(x.context.callApi('/api/offline/import/apply', {method:'POST'}), {status:409, code:'preview_stale'});
+  await assert.rejects(x.context.callApi('/api/face-review/scan-next', {method:'POST'}), {status:409});
+  assert.deepEqual(x.saveStates, []);
+  await assert.rejects(x.context.callApi('/api/queue', {method:'POST'}), {status:409});
+  assert.deepEqual(x.saveStates, [1,0]);
+  assert.deepEqual(x.redirects, []);
 });

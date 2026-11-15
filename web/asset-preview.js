@@ -23,7 +23,7 @@ export function projectFaceBox(box, imageWidth, imageHeight, frameWidth, frameHe
   };
 }
 
-export function createAssetPreview({ assetThumb }) {
+export function createAssetPreview({ assetThumb, isOffline = () => false }) {
   const dialog = document.querySelector("#asset-preview-dialog");
   const viewport = document.querySelector("#asset-preview-viewport");
   const stage = document.querySelector("#asset-preview-stage");
@@ -36,6 +36,8 @@ export function createAssetPreview({ assetThumb }) {
   const rotateLabel = document.querySelector("#asset-preview-rotate-label");
   const zoomLabel = document.querySelector("#asset-preview-zoom-level");
   const reviewControls = document.querySelector("#asset-preview-review");
+  const originalLink = document.querySelector("#asset-preview-original");
+  let activeAssetId = null, offlineOriginal = false, previewFallback = false;
   const zoomLevels = [1, 1.5, 2, 3, 4];
   let activeFaceBox = null;
   let boxVisible = true;
@@ -59,16 +61,22 @@ export function createAssetPreview({ assetThumb }) {
     return Math.max(100, Math.min(window.innerHeight * (review ? 0.55 : 0.68), window.innerHeight - (review ? 400 : 270)));
   }
 
+  function mediaCaption() {
+    if (!offlineOriginal) return "Immich preview";
+    if (previewFallback) return `Saved preview${image.naturalWidth ? ` · ${image.naturalWidth} × ${image.naturalHeight}` : ""}. Your browser could not display the original; open the stored original in a compatible viewer.`;
+    return "Stored original · full detail";
+  }
+
   function positionFaceBox() {
     marker.hidden = true;
     toggleBox.hidden = true;
     rotateBox.hidden = true;
-    caption.textContent = "Immich preview — the original file is not downloaded.";
+    caption.textContent = mediaCaption();
     if (!activeFaceBox || !image.complete || !image.naturalWidth || !image.naturalHeight) return;
     const frameWidth = image.clientWidth, frameHeight = image.clientHeight;
     const position = projectFaceBox(activeFaceBox, image.naturalWidth, image.naturalHeight, frameWidth, frameHeight, boxRotation);
     if (!position) {
-      caption.textContent = "Immich preview — face coordinates unavailable for this image.";
+      caption.textContent = `${mediaCaption()} · face coordinates unavailable for this image.`;
       return;
     }
     marker.style.left = `${position.left}px`;
@@ -81,8 +89,8 @@ export function createAssetPreview({ assetThumb }) {
     toggleLabel.textContent = boxVisible ? "Hide box" : "Show box";
     rotateLabel.textContent = `${boxRotation * 90}°`;
     caption.textContent = boxVisible
-      ? "Highlighted rectangle: Immich face coordinates on this preview. Rotate the box if the photo orientation differs. Original file not downloaded."
-      : "Face rectangle hidden. Immich preview; original file not downloaded.";
+      ? `${mediaCaption()}. Highlighted rectangle: Immich face coordinates. Rotate the box if the photo orientation differs.`
+      : `${mediaCaption()}. Face rectangle hidden.`;
   }
 
   function setZoom(nextIndex, pointer = null) {
@@ -114,6 +122,9 @@ export function createAssetPreview({ assetThumb }) {
   function openAssetPreview(assetId, fileName = "Photo preview", faceBox = null, { review = false } = {}) {
     const continueReview = review && dialog.open && dialog.classList.contains("has-review");
     activeFaceBox = faceBox;
+    activeAssetId = assetId;
+    offlineOriginal = isOffline(); previewFallback = false;
+    if (originalLink) { originalLink.hidden = !offlineOriginal; originalLink.href = `/media/original/${encodeURIComponent(assetId)}`; }
     if (!continueReview) boxVisible = true;
     boxRotation = 0;
     zoomIndex = 0;
@@ -135,9 +146,9 @@ export function createAssetPreview({ assetThumb }) {
     viewport.setAttribute("aria-label", review
       ? "Photo preview. Press Space to close; Enter to zoom in or fit; use plus and minus keys to adjust zoom."
       : "Photo preview. Press Enter or Space to zoom in or fit; use plus and minus keys to adjust zoom.");
-    caption.textContent = "Immich preview — the original file is not downloaded.";
+    caption.textContent = mediaCaption();
     document.querySelector("#asset-preview-title").textContent = fileName || "Photo preview";
-    image.src = assetThumb(assetId);
+    image.src = offlineOriginal ? `/media/original/${encodeURIComponent(assetId)}` : assetThumb(assetId);
     image.alt = fileName || "Photo preview";
     if (!dialog.open) dialog.showModal();
     viewport.scrollLeft = 0;
@@ -209,6 +220,11 @@ export function createAssetPreview({ assetThumb }) {
     else if (key === "0") { event.preventDefault(); setZoom(0); }
   });
   image.addEventListener("load", positionFaceBox);
+  image.addEventListener("error", () => {
+    if (!dialog.open || !activeAssetId) return;
+    if (offlineOriginal && !previewFallback) { previewFallback = true; image.src = assetThumb(activeAssetId); caption.textContent = mediaCaption(); }
+    else { marker.hidden = true; caption.textContent = offlineOriginal ? "This photo is unavailable in the saved preview. Open the stored original in a compatible viewer." : "Photo preview unavailable."; }
+  });
   window.addEventListener("resize", () => {
     if (zoomIndex) image.style.maxHeight = `${fittedHeight() * zoomLevels[zoomIndex]}px`;
     positionFaceBox();
@@ -222,7 +238,7 @@ export function createAssetPreview({ assetThumb }) {
     ignoredTouchClickId = null;
     drag = null;
     viewport.classList.remove("is-dragging");
-    activeFaceBox = null;
+    activeFaceBox = null; activeAssetId = null;
     reviewControls.hidden = true;
     dialog.classList.remove("has-review");
     marker.hidden = true;

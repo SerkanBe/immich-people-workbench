@@ -1,5 +1,6 @@
 // Copyright (C) 2026 Serkan Bekdemir
 // SPDX-License-Identifier: AGPL-3.0-only
+import { createOfflineWorkspace } from "./offline.js";
 import { createMergeWorkbench } from "./merge.js";
 import { createFaceReview } from "./face-review.js";
 import { createNaming } from "./naming.js";
@@ -7,14 +8,14 @@ import { createGroupPhotos } from "./group-photos.js";
 import { createInvestigate } from "./investigate.js";
 import { createPending } from "./pending.js";
 import { createAssetPreview } from "./asset-preview.js";
-import { createNavigationDrawer, routeForView, updateNavigationState, viewFromPath } from "./navigation.js";
+import { createNavigationDrawer, OFFLINE_ROUTES, routeForView, updateNavigationState, viewFromPath } from "./navigation.js";
 import { MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM, readMergeCanvasState, readPageSize, savePageSize, saveMergeCanvasState } from "./browser-storage.js";
 
 "use strict";
 
 const MERGE_CARD_WIDTH = 220, MERGE_CARD_HEIGHT = 260;
 const MERGE_WORKSPACE_ENABLED = false;
-const VIEW_ROUTES = new Set(["unnamed", "group-photos", ...(MERGE_WORKSPACE_ENABLED ? ["merge"] : []), "investigate", "faces", "pending", "named", "ignored"]);
+const VIEW_ROUTES = new Set(["unnamed", "group-photos", ...(MERGE_WORKSPACE_ENABLED ? ["merge"] : []), "investigate", "faces", "pending", "named", "ignored", ...Object.keys(OFFLINE_ROUTES)]);
 
 const ui = {
   duplicate: document.querySelector("#duplicate-dialog"),
@@ -41,6 +42,23 @@ const state = {
 };
 
 async function api(path, options = {}) {
+  // Face inventory scans are read-only for logical review state despite using POST.
+  const mutation = options.method && options.method !== "GET" && !path.startsWith("/api/offline/") && path !== "/api/face-review/scan-next";
+  if (mutation) {
+    state.localRequests = (state.localRequests || 0) + 1;
+    state.localRevision = (state.localRevision || 0) + 1;
+    document.dispatchEvent(new Event("workbench-save-state"));
+  }
+  try { return await requestJson(path, options); }
+  finally {
+    if (mutation) {
+      state.localRequests -= 1;
+      document.dispatchEvent(new Event("workbench-save-state"));
+    }
+  }
+}
+
+async function requestJson(path, options = {}) {
   const init = { method: options.method || "GET", headers: {} };
   if (options.body !== undefined) {
     init.headers["Content-Type"] = "application/json";
@@ -56,9 +74,9 @@ async function api(path, options = {}) {
     const missing = Array.isArray(data.missingPermissions) ? [...new Set(data.missingPermissions.filter(value => known.has(value)))].slice(0, 10) : [];
     if (data.code === "missing_permissions" && missing.length) params.set("missing", missing.join(","));
     window.location.assign(`/login?${params}`);
-    throw new Error("Sign in required");
+    throw Object.assign(new Error("Sign in required"), {status:response.status, code:data.code});
   }
-  if (!response.ok) throw new Error(data.error || `${response.status} ${response.statusText}`);
+  if (!response.ok) throw Object.assign(new Error(data.error || `${response.status} ${response.statusText}`), {status:response.status, code:data.code, limit:data.limit});
   return data;
 }
 
@@ -135,19 +153,21 @@ async function refreshSummary() {
   state.sort = summary.sort || state.sort;
   syncPeopleSortControls();
   const connection = summary.connection;
+  const offline = summary.offline || summary.portable;
   const account = connection?.displayName || "Account connected";
-  const mode = connection?.authMode === "apiKey" ? "API key" : "Admin login";
+  const mode = offline ? "Offline workspace" : connection?.authMode === "apiKey" ? "API key" : "Admin login";
   const warning = connection?.overbroad ? " · Warning: key grants extra permissions" : "";
-  document.querySelector("#connection-status").textContent = summary.connected
+  document.querySelector("#connection-status").textContent = offline ? "Offline workspace · local queue enabled" : summary.connected
     ? (connection?.authMode ? `${account} · ${mode} · Immich ${summary.version}${warning}` : `Immich ${summary.version} · local queue enabled`)
     : "Not connected";
-  document.querySelector("#reload-button").hidden = !summary.connected;
+  document.querySelector("#reload-button").hidden = !summary.connected || offline;
+  offlineWorkspace.updateSummary();
   for (const key of ["unnamed", "investigate", "faces", "pending", "named", "ignored"]) {
     document.querySelector(`#${key}-count`).textContent = summary.counts[key] ?? 0;
   }
   if (MERGE_WORKSPACE_ENABLED) document.querySelector("#merge-count").textContent = summary.counts.unnamed ?? 0;
   document.querySelector("#pending-count").textContent = summary.counts.pending ?? 0;
-  document.querySelector("#reset-button").disabled = !summary.connected || !(summary.counts.pending > 0);
+  document.querySelector("#reset-button").disabled = !!offline || !summary.connected || !(summary.counts.pending > 0);
   document.querySelector("#investigate-return-all").disabled = !summary.connected || !(summary.counts.investigate > 0);
   const working = ["loading", "statistics"].includes(summary.phase);
   const panel = document.querySelector("#progress-panel");
@@ -186,6 +206,8 @@ function switchView(view, pushHistory = true, render = true, focusDestination = 
   if (!MERGE_WORKSPACE_ENABLED && /^\/merge\/?$/.test(window.location.pathname)) window.history.replaceState(null, "", routeForView(view));
   else if (pushHistory && window.location.pathname !== routeForView(view)) window.history.pushState(null, "", routeForView(view));
   state.view = view;
+  offlineWorkspace.setView(view);
+  document.querySelector(".page-size-control").hidden = Object.hasOwn(OFFLINE_ROUTES, view);
   updateNavigationState(document, view);
   document.querySelectorAll(".view").forEach(section => section.classList.toggle("active", section.id === `${view}-view`));
   if (render) return renderCurrentView(!focusDestination).catch(error => showToast(error.message));
@@ -193,6 +215,7 @@ function switchView(view, pushHistory = true, render = true, focusDestination = 
 
 async function renderCurrentView(focusFirst = false, refresh = true) {
   if (refresh) await refreshSummary();
+  if (Object.hasOwn(OFFLINE_ROUTES, state.view)) { await offlineWorkspace.showView(state.view); return; }
   if (state.summary.phase !== "ready") return;
   if (state.view === "unnamed") await renderPeopleGrid("unnamed", ui.grid, focusFirst);
   if (state.view === "group-photos") await renderGroupPhotos();
@@ -210,13 +233,13 @@ const { renderGroupPhotos, bindGroupPhotos } = createGroupPhotos({ api, assetThu
 
 const { renderMergeWorkbench, initializeMergeCanvas, bindMergeControls } = createMergeWorkbench({ api, cleanName, moveSlide, personThumb, refreshSummary, saveMergeCanvasState: () => saveMergeCanvasState(state, showToast), showSlide, showToast, state, ui, MERGE_CARD_WIDTH, MERGE_CARD_HEIGHT, MERGE_MIN_WORLD_WIDTH, MERGE_MIN_WORLD_HEIGHT, MERGE_MIN_ZOOM, MERGE_MAX_ZOOM });
 
-const openAssetPreview = createAssetPreview({ assetThumb });
+const openAssetPreview = createAssetPreview({ assetThumb, isOffline: () => state.summary?.offline === true });
 
 const { renderInvestigate, bindInvestigateControls } = createInvestigate({ api, assetThumb, attachNameBehavior, moveSlide, openAssetPreview, personThumb, refreshSummary, renderPagination, showSlide, showToast, state, ui });
 
 const { renderFaceReview, bindFaceReviewControls } = createFaceReview({ api, assetThumb, changePeopleSort, drawFace, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui });
 
-const { renderPending, bindPendingControls } = createPending({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui, waitUntilReady });
+const { renderPending, bindPendingControls } = createPending({ api, assetThumb, cleanName, drawFace, loadNames, matchingNames, openAssetPreview, personThumb, refreshSummary, renderPagination, showToast, state, ui, waitUntilReady, refreshOffline: () => offlineWorkspace.refresh() });
 
 async function renderIgnored() {
   const data = await api(`/api/people?kind=ignored&sort=${encodeURIComponent(state.sort)}&page=${state.pages.ignored}&size=${state.pageSize}`);
@@ -233,10 +256,29 @@ async function renderIgnored() {
   }
 }
 
+const offlineWorkspace = createOfflineWorkspace({ api, state, document, window, showToast, onNavigate: view => switchView(view), onImported: async () => {
+  state.faceReviewNeedsRefresh = true;
+  state.pages.pending = 1;
+  await refreshSummary();
+  await loadNames();
+  if (state.view === "pending") await renderPending();
+} });
+
 document.querySelector("#page-size-select").value = String(state.pageSize);
 document.querySelector('.nav-button[data-view="merge"]').hidden = !MERGE_WORKSPACE_ENABLED;
 createNavigationDrawer({ document, window, onNavigate: (view, fromDrawer) => switchView(view, true, true, fromDrawer) });
 window.addEventListener("popstate", () => switchView(viewFromPath(window.location.pathname), false));
+document.addEventListener("click", event => {
+  const link = event.target.closest?.("a[data-view]");
+  if (!link || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  const before = state.view;
+  Promise.resolve(switchView(link.dataset.view)).then(() => {
+    if (state.view !== link.dataset.view || before === state.view) return;
+    const heading = document.querySelector(".view.active h2");
+    if (heading && document.activeElement === link) { heading.setAttribute("tabindex", "-1"); heading.focus(); }
+  });
+});
 document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => switchView(button.dataset.go)));
 document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
 document.querySelector("#reload-button").addEventListener("click", async () => { resetListPages(); await api("/api/reload", { method: "POST", body: {} }); await waitUntilReady(); });
@@ -264,5 +306,6 @@ bindPendingControls();
 switchView(state.view, false, false);
 refreshSummary().then(async summary => {
   state.sort = summary.sort || "most";
+  await offlineWorkspace.refresh();
   if (summary.connected) await waitUntilReady();
 }).catch(error => showToast(error.message));

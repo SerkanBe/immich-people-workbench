@@ -22,11 +22,13 @@ create a key with these ten permissions:
 | `face.read` | Read assigned faces |
 | `face.update` | Reassign an incorrect face |
 
+`asset.download` is optional and is used only when preparing or downloading an
+[offline workspace](offline.md). Normal connected features do not need it.
+
 Paste the key into Workbench. If a permission is missing, the connection page
 names it; update the key in Immich and reconnect. A key with `all` or extra
 permissions may connect with a warning, but Workbench cannot limit the key's
-authority. It does not need delete, upload, original-download, or key-management
-permissions.
+authority. It does not need delete, upload, or key-management permissions.
 
 ## Credentials and saved progress
 

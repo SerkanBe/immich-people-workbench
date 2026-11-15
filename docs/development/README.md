@@ -3,6 +3,11 @@
 The Python server is in `people_workbench.py`, the browser app is in `web/`,
 and tests use synthetic data.
 
+Offline transfers use `workspace_state.py` for captures and history,
+`workspace_packages.py` for portable ZIPs, and `workspace_import.py` for returned
+changes and Sync guards. See [Offline transfer formats](offline-formats.md) for
+their transaction boundaries, identities, limits and continuation behavior.
+
 Face Review stores the assigned face IDs discovered as a person's photo pages
 load in local SQLite. Completion requires the last page and a submitted decision
 for every assigned face. Immich's person statistics count photos, so they cannot

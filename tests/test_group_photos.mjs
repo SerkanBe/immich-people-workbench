@@ -47,6 +47,7 @@ function setup(photo, scanOverride = {}, nextPhoto = null, mode = {}) {
       for (const listener of this.listeners.get(type) || []) listener(event);
       return event;
     },
+    dispatchEvent(event) { return this.dispatch(event.type, event); },
   };
   globalThis.requestAnimationFrame = callback => callback();
   let current = photo, deferred = 0;
@@ -69,6 +70,7 @@ function setup(photo, scanOverride = {}, nextPhoto = null, mode = {}) {
       return { ok: true };
     }
     if (path === "/api/group-photos/advance") {
+      if (mode.advance) await mode.advance(options.body);
       current = nextPhoto; deferred = options.body.decisions.length ? 0 : 1;
       return { queued: options.body.decisions.length, status: deferred ? "deferred" : "done" };
     }
@@ -312,7 +314,11 @@ test("failed Group-photo draft stays visible and explicit Submit retries before 
   const run = setup(retryPhoto, {}, null, { draft: async () => { if (failing) throw Error("Local changes are busy during Sync"); }, toast: message => toasts.push(message) });
   await run.controls.renderGroupPhotos();
   const input = run.elements.get("#group-name"); input.value = "Synthetic retry name"; input.dispatch("input");
+  assert.equal(run.state.groupSaving, true);
+  assert.equal(run.state.groupUnsaved, true);
   await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(run.state.groupSaving, false);
+  assert.equal(run.state.groupUnsaved, true, "failed drafts remain unsaved after the save request settles");
   assert.equal(run.drafts.size, 0); assert.match(toasts.at(-1), /Submit Names will retry/);
   // A newly loaded face signature must not overwrite the unsaved local snapshot.
   retryPhoto.faces[3].name = "New context label";
@@ -321,6 +327,8 @@ test("failed Group-photo draft stays visible and explicit Submit retries before 
   run.elements.get("#group-advance").click();
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(run.calls.some(([path]) => path === "/api/group-photos/advance"), false);
+  assert.equal(run.state.groupSaving, false);
+  assert.equal(run.state.groupUnsaved, true);
   assert.equal(input.value, "Synthetic retry name");
   failing = false; run.elements.get("#group-advance").click();
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -329,5 +337,55 @@ test("failed Group-photo draft stays visible and explicit Submit retries before 
   assert.equal(run.calls[advanceIndex-1][0], "/api/group-photos/draft");
   assert.equal(run.calls[advanceIndex][1].decisions[0].name, "Synthetic retry name");
   assert.equal(run.drafts.get("cluster").name, "Synthetic retry name");
+  assert.equal(run.state.groupSaving, false);
+  assert.equal(run.state.groupUnsaved, false, "only a successful explicit retry clears the warning");
   assert.equal(run.calls.some(([path]) => path === "/api/sync"), false);
+});
+
+test("capture stays busy across queued draft saves and explicit photo submission", async () => {
+  const saves = [], events = []; let finishAdvance;
+  const run = setup(structuredClone(photo), {}, null, {
+    draft: () => new Promise(resolve => saves.push(resolve)),
+    advance: () => new Promise(resolve => { finishAdvance = resolve; }),
+  });
+  await run.controls.renderGroupPhotos();
+  document.addEventListener("workbench-save-state", () => events.push({ busy: run.state.groupSaving, unsaved: run.state.groupUnsaved }));
+  const input = run.elements.get("#group-name");
+  input.value = "First draft"; input.dispatch("input");
+  input.value = "Latest draft"; input.dispatch("input");
+  assert.equal(run.state.groupSaving, true, "queued work is busy before its API request starts");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(saves.length, 1);
+  saves[0]();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(saves.length, 2);
+  assert.equal(run.state.groupSaving, true);
+  assert.equal(run.state.groupUnsaved, true, "an earlier response cannot clear a newer unsaved snapshot");
+  assert.equal(events.some(item => !item.busy), false, "queue handoff never publishes a capture-ready gap");
+  saves[1]();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(run.state.groupSaving, false);
+  assert.equal(run.state.groupUnsaved, false);
+  run.elements.get("#group-advance").click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof finishAdvance, "function");
+  assert.equal(run.state.groupSaving, true, "Submit Names remains busy until the local transaction returns");
+  finishAdvance();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(run.state.groupSaving, false);
+  assert.equal(run.state.groupUnsaved, false);
+  assert.equal(run.calls.some(([path]) => path === "/api/sync"), false);
+});
+
+test("Group photo shortcuts do not submit or move focus from another dialog", async () => {
+  const run = setup(structuredClone(photo));
+  await run.controls.renderGroupPhotos();
+  const before = run.calls.length, target = { closest: selector => selector === "dialog" ? {} : null };
+  for (const props of [{ key: "Enter", ctrlKey: true }, { key: "?" }, { key: "h" }, { key: "Tab" }]) {
+    assert.equal(document.dispatch("keydown", { ...props, target }).defaultPrevented, undefined);
+  }
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(run.calls.length, before);
+  assert.equal(run.state.groupSaving, false);
+  assert.equal(run.elements.get("#group-help-dialog").open, undefined);
 });

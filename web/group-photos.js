@@ -6,6 +6,18 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
   let photo = null, active = 0, drafts = new Map(), matches = [], selectedIndex = -1;
   let pollTimer = null, saving = Promise.resolve(), busy = false;
   const unsavedDrafts = new Map();
+  let savingOperations = 0;
+  function publishSaving() {
+    state.groupSaving = busy || savingOperations > 0;
+    state.groupUnsaved = unsavedDrafts.size > 0;
+    if (typeof document.dispatchEvent === "function" && typeof Event === "function") document.dispatchEvent(new Event("workbench-save-state"));
+  }
+  async function saveGroup(action) {
+    savingOperations += 1; publishSaving();
+    try { return await action(); }
+    finally { savingOperations -= 1; publishSaving(); }
+  }
+  state.groupSaving = false; state.groupUnsaved = false;
   const input = $("#group-name"), list = $("#group-suggestions"), ghost = $("#group-ghost");
   const submitButton = $("#group-advance"), markerLayer = $("#group-markers");
   const markerVisibilityKey = "immichPeopleWorkbench.groupMarkersVisible.v1";
@@ -45,6 +57,7 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
   async function persistDraft(key, snapshot) {
     await api("/api/group-photos/draft", { method: "POST", body: snapshot });
     if (unsavedDrafts.get(key) === snapshot) unsavedDrafts.delete(key);
+    publishSaving();
   }
 
   function saveDraft(personId, draft) {
@@ -54,17 +67,23 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
       targetPersonId: draft.targetPersonId, operation: draft.operation || "rename" });
     const key = `${photo.id}:${personId}`;
     unsavedDrafts.set(key, snapshot);
-    saving = saving.catch(() => {}).then(() => persistDraft(key, snapshot));
+    const previous = saving;
+    saving = saveGroup(async () => {
+      await previous.catch(() => {});
+      await persistDraft(key, snapshot);
+    });
     saving.catch(error => showToast(`Could not save the name draft: ${error.message} Submit Names will retry saving it.`));
   }
 
   async function retryDrafts(assetId) {
-    await saving.catch(() => {});
-    // Retry the exact latest unsaved local snapshots before any advance. Failed
-    // attempts retain their draft; a lost response is safe to save again locally.
-    for (const [key, snapshot] of [...unsavedDrafts]) {
-      if (snapshot.assetId === assetId) await persistDraft(key, snapshot);
-    }
+    await saveGroup(async () => {
+      await saving.catch(() => {});
+      // Retry the exact latest unsaved local snapshots before any advance. Failed
+      // attempts retain their draft; a lost response is safe to save again locally.
+      for (const [key, snapshot] of [...unsavedDrafts]) {
+        if (snapshot.assetId === assetId) await persistDraft(key, snapshot);
+      }
+    });
   }
 
   function updateSuggestions() {
@@ -250,7 +269,7 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
 
   async function advance() {
     if (busy || !photo) return;
-    busy = true;
+    busy = true; publishSaving();
     const assetId = photo.id;
     input.disabled = true; submitButton.disabled = true;
     try {
@@ -277,7 +296,7 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
       }
       throw error;
     } finally {
-      busy = false; submitButton.disabled = false;
+      busy = false; publishSaving(); submitButton.disabled = false;
       if (photo) selectFace(active, false);
     }
   }
@@ -310,7 +329,7 @@ export function createGroupPhotos({ api, assetThumb, cleanName, drawFace, loadNa
       }
     });
     document.addEventListener("keydown", event => {
-      if (state.view !== "group-photos" || $("#duplicate-dialog").open || $("#group-help-dialog").open) return;
+      if (state.view !== "group-photos" || $("#duplicate-dialog").open || $("#group-help-dialog").open || event.target?.closest?.("dialog")) return;
       if (event.key === "Tab" && !event.defaultPrevented) {
         const focused = document.activeElement;
         const position = focused?.classList.contains("group-marker") ? active

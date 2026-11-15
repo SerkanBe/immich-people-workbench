@@ -12,8 +12,10 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import errno
 import hashlib
 import html
+import http.client
 import http.cookies
 import ipaddress
 import json
@@ -33,20 +35,31 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+import shutil
 from contextlib import contextmanager, nullcontext
 from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
+from workspace_state import guard_token_rows, install_schema, record_event, state_revision
+import workspace_state as workspace_state
+from workspace_import import ImportManager, ResultsError
+from offline_workspace import OfflineWorkspace, OfflineClient, OfflineError, OfflineConflict, Cancelled
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 DEFAULT_STATE_DIR = ROOT / ".people-workbench"
 DEFAULT_IMMICH_URL = "http://localhost:2283"
 MAX_BODY = 1_000_000
+WORKFLOW_BUSY_TIMEOUT_MS = 5_000
+# SQLite's fixed primary result codes; Python 3.10 lacks these named constants.
+SQLITE_RETRYABLE_CODES = frozenset({getattr(sqlite3, "SQLITE_BUSY", 5), getattr(sqlite3, "SQLITE_LOCKED", 6)})
 MAX_IMAGE = 20_000_000
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{20,50}$")
-PAGE_ROUTES = frozenset({"/unnamed", "/naming/clusters", "/naming/group-photos", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored"})
+PAGE_ROUTES = frozenset({
+    "/unnamed", "/naming/clusters", "/naming/group-photos", "/merge", "/investigate", "/faces", "/pending", "/named", "/ignored",
+    "/offline/create", "/offline/import", "/offline/exports", "/settings/snapshots", "/help/offline", "/help/snapshots",
+})
 SESSION_SECONDS = 8 * 60 * 60
 ADMIN_CHECK_SECONDS = 60
 SESSION_COOKIE = "people_workbench_session"
@@ -140,7 +153,8 @@ def mutation_guard(lock):
 def local_mutation(method):
     @wraps(method)
     def guarded(self, *args, **kwargs):
-        with mutation_guard(self.mutation_lock):
+        with (self.workflow_transaction(method.__name__) if isinstance(self, Store)
+              else mutation_guard(self.mutation_lock)):
             return method(self, *args, **kwargs)
     return guarded
 
@@ -246,6 +260,16 @@ class Immich:
         self.connection_metadata: dict[str, Any] = {}
 
     def request(self, method: str, path: str, payload: Any = None) -> tuple[bytes, str]:
+        budget = getattr(getattr(self, "_validation_local", None), "budget", None)
+        timeout, response_limit = 60, MAX_IMAGE
+        if budget is not None:
+            if time.monotonic() >= budget["deadline"]:
+                raise workspace_state.WorkspaceError("Validation timed out; no changes were applied.", "validation_timeout")
+            if budget["reads"] >= 1000:
+                raise workspace_state.WorkspaceError("Validation read limit exceeded.", "resource_limit")
+            budget["reads"] += 1
+            timeout = min(5, max(0.001, budget["deadline"] - time.monotonic()))
+            response_limit = min(2 * 1024 ** 2, 64 * 1024 ** 2 - budget["bytes"])
         data = json.dumps(payload).encode() if payload is not None else None
         headers = {"Accept": "application/json"}
         if self.credential:
@@ -254,9 +278,15 @@ class Immich:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
         try:
-            with self.opener.open(request, timeout=60) as response:
-                body = response.read(MAX_IMAGE + 1)
-                if len(body) > MAX_IMAGE:
+            with self.opener.open(request, timeout=timeout) as response:
+                body = response.read(response_limit + 1)
+                if budget is not None:
+                    budget["bytes"] += len(body)
+                    if time.monotonic() >= budget["deadline"]:
+                        raise workspace_state.WorkspaceError("Validation timed out; no changes were applied.", "validation_timeout")
+                if len(body) > response_limit:
+                    if budget is not None:
+                        raise workspace_state.WorkspaceError("Validation data limit exceeded.", "resource_limit")
                     raise ToolError("Immich response exceeded the safety limit")
                 return body, response.headers.get_content_type()
         except urllib.error.HTTPError as exc:
@@ -268,12 +298,106 @@ class Immich:
         except (ValueError, OSError):
             raise ConnectionError("Cannot reach Immich. Check its URL, network and HTTPS certificate.") from None
 
+    @contextmanager
+    def validation_budget(self, deadline):
+        if not hasattr(self, "_validation_local"):
+            self._validation_local = threading.local()
+        previous = getattr(self._validation_local, "budget", None)
+        previous_deadline = previous["deadline"] if previous is not None else None
+        self._validation_local.budget = previous if previous is not None else {"deadline": deadline, "reads": 0, "bytes": 0}
+        self._validation_local.budget["deadline"] = min(deadline, previous_deadline) if previous_deadline is not None else deadline
+        try:
+            yield
+        finally:
+            if previous is not None:
+                previous["deadline"] = previous_deadline
+            self._validation_local.budget = previous
+
     def json(self, method: str, path: str, payload: Any = None) -> Any:
         body, _ = self.request(method, path, payload)
         try:
             return json.loads(body)
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ToolError("Immich returned invalid JSON") from None
+
+    def download_original(self, asset_id: str, path: Path, cancel: threading.Event,
+                          max_bytes: int, reserve_bytes: int, *, budget=None) -> tuple[int, str, str]:
+        """Stream a separately authorized original; normal request() stays bounded."""
+        if not UUID_RE.fullmatch(asset_id):
+            raise ToolError("Invalid original asset ID")
+        headers = {"Accept": "application/octet-stream"}
+        if self.credential:
+            headers["x-immich-user-token" if self.session else "x-api-key"] = self.credential
+        request = urllib.request.Request(self.base + f"/assets/{asset_id}/original", headers=headers)
+        temp = path.with_suffix(".part")
+        charged = 0
+        complete = False
+        try:
+            with self.opener.open(request, timeout=60) as response:
+                length = response.headers.get("Content-Length")
+                try:
+                    expected = int(length) if length is not None else None
+                except ValueError:
+                    raise OfflineError("Unexpected original response", code="invalid_original_response") from None
+                if expected is not None and expected <= 0:
+                    raise OfflineError("Original download was incomplete", code="incomplete_original")
+                if expected is not None and expected > max_bytes:
+                    raise OfflineError("Original exceeds download bounds", code="original_limit", limit_bytes=max_bytes)
+                free = shutil.disk_usage(path.parent).free
+                if expected is not None and expected + reserve_bytes > free:
+                    raise OfflineError("Insufficient space for original", code="insufficient_storage",
+                                       required_bytes=expected + reserve_bytes, available_bytes=free)
+                mime = response.headers.get_content_type()
+                if mime in {"application/json", "text/html"}:
+                    raise OfflineError("Unexpected original response", code="invalid_original_response")
+                size, digest = 0, hashlib.sha256()
+                with temp.open("wb", buffering=0) as output:
+                    while True:
+                        if cancel.is_set():
+                            raise Cancelled("Offline preparation cancelled; completed files can be resumed")
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        if size > max_bytes:
+                            raise OfflineError("Original exceeds download bounds", code="original_limit", limit_bytes=max_bytes)
+                        if budget is not None:
+                            budget.write(output, chunk, path)
+                            charged += len(chunk)
+                        else:
+                            free = shutil.disk_usage(path.parent).free
+                            if free < len(chunk) + reserve_bytes:
+                                raise OfflineError("Insufficient space for original", code="insufficient_storage",
+                                                   required_bytes=len(chunk) + reserve_bytes, available_bytes=free)
+                            if output.write(chunk) != len(chunk):
+                                raise OSError(errno.EIO, "Incomplete original write")
+                        digest.update(chunk)
+                        if expected is not None and size == expected:
+                            break
+                    output.flush()
+                    os.fsync(output.fileno())
+                if not size or expected is not None and size != expected:
+                    raise OfflineError("Original download was incomplete", code="incomplete_original")
+                os.replace(temp, path)
+                complete = True
+                return size, mime, digest.hexdigest()
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            raise UpstreamError(exc.code) from None
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise TimeoutError("Immich original download timed out") from None
+            raise ConnectionError("Cannot reach Immich to download originals") from None
+        except http.client.IncompleteRead:
+            raise OfflineError("Original download was incomplete", code="incomplete_original") from None
+        finally:
+            temp.unlink(missing_ok=True)
+            if budget is not None and not complete:
+                budget.release(charged)
+
+    def download_transport(self):
+        """A worker owns its opener; credentials and TLS policy remain in memory."""
+        return Immich(self.base, self.credential, self.context is not None, session=self.session)
 
     def version(self) -> str:
         data = self.json("GET", "/server/version")
@@ -312,6 +436,8 @@ class Immich:
             if not isinstance(data, dict) or not isinstance(data.get("people"), list):
                 raise ToolError("Unexpected people response from Immich")
             batch = [item for item in data["people"] if isinstance(item, dict) and isinstance(item.get("id"), str)]
+            if len(batch) != len(data["people"]) or data.get("hasNextPage") and not batch:
+                raise ToolError("Incomplete people response from Immich")
             people.extend(batch)
             if not data.get("hasNextPage") or not batch:
                 return people
@@ -389,8 +515,12 @@ class Immich:
         elif isinstance(data, dict):
             assets = data
         else:
-            assets = {}
+            raise ToolError("Unexpected asset search response from Immich")
+        if not isinstance(assets.get("items"), list):
+            raise ToolError("Unexpected asset search items from Immich")
         items = [item for item in assets.get("items", []) if isinstance(item, dict) and isinstance(item.get("id"), str)]
+        if len(items) != len(assets["items"]):
+            raise ToolError("Incomplete asset search response from Immich")
         total = assets.get("total") if isinstance(assets.get("total"), int) else None
         next_page = assets.get("nextPage")
         has_more = bool(next_page) if next_page is not None else total is not None and page * size < total
@@ -402,7 +532,9 @@ class Immich:
 
     def faces(self, asset_id: str) -> list[dict[str, Any]]:
         data = self.json("GET", "/faces?" + urllib.parse.urlencode({"id": asset_id}))
-        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        if not isinstance(data, list) or any(not isinstance(item, dict) or not isinstance(item.get("id"), str) for item in data):
+            raise ToolError("Unexpected face metadata from Immich")
+        return data
 
     def asset(self, asset_id: str) -> dict[str, Any]:
         data = self.json("GET", f"/assets/{asset_id}")
@@ -451,6 +583,10 @@ class StoreConnection(sqlite3.Connection):
     """Keep SQLite's transaction context semantics and close on context exit."""
 
     def __exit__(self, *args: Any) -> bool:
+        if getattr(self, "workflow_active", False):
+            if args[0] is not None:
+                self.workflow_failed = True
+            return False
         try:
             return super().__exit__(*args)
         finally:
@@ -461,6 +597,7 @@ class Store:
     def __init__(self, path: Path):
         self.path = path
         self.mutation_lock = threading.RLock()
+        self._workflow = threading.local()
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(
@@ -553,8 +690,52 @@ class Store:
                 db.execute("ALTER TABLE pending ADD COLUMN merge_step TEXT NOT NULL DEFAULT 'ready'")
             if "operation" not in {row["name"] for row in db.execute("PRAGMA table_info(group_photo_drafts)")}:
                 db.execute("ALTER TABLE group_photo_drafts ADD COLUMN operation TEXT NOT NULL DEFAULT 'rename'")
+            install_schema(db)
+
+    @contextmanager
+    def workflow_transaction(self, kind: str, origin: str = "source_user", *, commit_guard=None):
+        """Commit one logical action, borrowing its connection in nested helpers."""
+        with mutation_guard(self.mutation_lock):
+            active = getattr(self._workflow, "connection", None)
+            if active is not None:
+                try:
+                    yield active
+                except BaseException:
+                    active.workflow_failed = True
+                    raise
+                return
+            db = self.connect()
+            try:
+                db.execute(f"PRAGMA busy_timeout={WORKFLOW_BUSY_TIMEOUT_MS}")
+                db.execute("BEGIN IMMEDIATE")
+                start = state_revision(db)
+                db.workflow_active = True
+                db.workflow_failed = False
+                self._workflow.connection = db
+                yield db
+                if db.workflow_failed:
+                    raise ToolError("Local action failed; no changes were saved")
+                record_event(db, kind, origin, start)
+                with commit_guard() if commit_guard else nullcontext():
+                    db.commit()
+            except sqlite3.OperationalError as exc:
+                db.rollback()
+                code = getattr(exc, "sqlite_errorcode", 0) & 0xff
+                if code in SQLITE_RETRYABLE_CODES or str(exc).startswith(("database is locked", "database table is locked", "database schema is locked")):
+                    raise SyncInProgress("Local changes are busy. Wait for the current save to finish, then retry.") from None
+                raise
+            except BaseException:
+                db.rollback()
+                raise
+            finally:
+                self._workflow.connection = None
+                db.workflow_active = False
+                db.close()
 
     def connect(self) -> sqlite3.Connection:
+        active = getattr(self._workflow, "connection", None)
+        if active is not None:
+            return active
         db = sqlite3.connect(self.path, timeout=30, factory=StoreConnection)
         db.row_factory = sqlite3.Row
         return db
@@ -703,10 +884,20 @@ class Store:
         # One SQLite read transaction binds both queues to the token. A write
         # between separate reads must not produce a token for a mixed snapshot.
         with self.connect() as db:
-            db.execute("BEGIN")
-            rows = db.execute("SELECT * FROM pending ORDER BY created_at, person_id").fetchall()
-            faces = db.execute("SELECT * FROM face_detach_pending ORDER BY created_at, face_id").fetchall()
-        return [dict(row) for row in rows], [dict(row) for row in faces]
+            if getattr(self._workflow, "connection", None) is None:
+                db.execute("BEGIN")
+            rows = [dict(row) for row in db.execute("SELECT * FROM pending ORDER BY created_at, person_id")]
+            faces = [dict(row) for row in db.execute("SELECT * FROM face_detach_pending ORDER BY created_at, face_id")]
+            guards = {(entity, key[0]): (action_id, revision, guard)
+                      for entity, key, action_id, revision, guard in guard_token_rows(db)}
+        # Bind guarded intent to the same review token without serializing it to
+        # the browser. Unguarded rows retain the existing token format.
+        for entity, id_field, items in (("pending", "person_id", rows), ("face_detach_pending", "face_id", faces)):
+            for row in items:
+                guard = guards.get((entity, row[id_field]))
+                if guard is not None:
+                    row["_review_guard"] = guard
+        return rows, faces
 
     def pending(self) -> list[dict[str, Any]]:
         with self.connect() as db:
@@ -812,7 +1003,8 @@ class Store:
     def submit_face_review(self, person_id: str, expected: list[dict[str, Any]]) -> dict[str, int]:
         counts = {"correct": 0, "wrong": 0, "unreviewed": 0}
         with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+            if not db.in_transaction:
+                db.execute("BEGIN IMMEDIATE")
             drafts = db.execute("SELECT * FROM face_review_drafts WHERE person_id=?", (person_id,)).fetchall()
             identity = lambda rows: sorted((row["face_id"], row["asset_id"], row["verdict"]) for row in rows)
             if identity(drafts) != identity(expected):
@@ -1003,9 +1195,11 @@ class Store:
         return str(row["value"]) if row else default
 
     def set_setting(self, key: str, value: str) -> None:
-        with self.connect() as db:
+        if self.setting(key, None) == value:
+            return
+        with self.workflow_transaction("setting") as db:
             db.execute(
-                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE settings.value != excluded.value",
                 (key, value),
             )
 
@@ -1042,6 +1236,39 @@ class AppState:
         self.group_filtered = 0
         self.group_below_minimum = 0
         self.group_without_actionable = 0
+        self.offline = OfflineWorkspace(self)
+        self.source_root = Path(__file__).resolve().parent
+        self.transfers = ImportManager(self)
+        self._packages = None
+
+    def portable_policy(self) -> dict[str, bool]:
+        marker = self.source_root / "portable-workspace.json"
+        exists = marker.exists() or marker.is_symlink()
+        try:
+            with self.store.connect() as db:
+                identity = workspace_state.instance_identity(db)
+                portable = identity["mode"] != "source" or exists
+                descriptor = workspace_state.portable_descriptor(db)
+            if not portable:
+                return {"portable": False, "valid": True}
+            valid = (exists and not marker.is_symlink() and marker.is_file() and marker.stat().st_size <= 65536
+                     and descriptor is not None and json.loads(marker.read_text(encoding="utf-8")) == descriptor)
+            return {"portable": True, "valid": bool(valid)}
+        except (OSError, ValueError, workspace_state.WorkspaceError):
+            return {"portable": True, "valid": False}
+
+    def assert_online(self) -> None:
+        policy = self.portable_policy()
+        if policy["portable"]:
+            code = "portable_restricted" if policy["valid"] else "portable_invalid"
+            raise workspace_state.WorkspaceError("This portable workspace stays offline. Return results to its source Workbench.", code)
+
+    def package_manager(self):
+        self.assert_online()
+        if self._packages is None:
+            from workspace_packages import PackageManager
+            self._packages = PackageManager(self, self.source_root)
+        return self._packages
 
     def invalidate_group_scan(self) -> None:
         with self.lock:
@@ -1087,7 +1314,10 @@ class AppState:
         with self.lock:
             if self.client is None:
                 raise ToolError("Connect to Immich first")
-            return self.client
+            client = self.client
+        if not getattr(client, "offline", False):
+            self.assert_online()
+        return client
 
     @staticmethod
     def face_inventory_current(scan: dict[str, Any] | None, person: dict[str, Any]) -> bool:
@@ -1095,6 +1325,7 @@ class AppState:
                     and scan["person_updated_at"] == str(person.get("updatedAt") or ""))
 
     def connect(self, client: Immich) -> str:
+        self.assert_online()
         version = client.version()
         with self.lock:
             self.client, self.version = client, version
@@ -1104,10 +1335,14 @@ class AppState:
         self.set_status("connected", f"Connected to Immich {version}")
         return version
 
-    def load(self) -> None:
+    def load(self, refresh_guards: bool = False) -> None:
         client: Immich | None = None
         try:
             client = self.require_client()
+            if not getattr(client, "offline", False):
+                self.offline.validate(client)
+                if refresh_guards:
+                    self.transfers.refresh_unverified(client)
             if not self.set_status_for_client(client, "loading", "Loading people from Immich"):
                 return
             people = client.all_people()
@@ -1156,6 +1391,10 @@ class AppState:
         investigate_ids = self.store.investigate_ids()
         return {
             "connected": connected,
+            "portable": self.portable_policy()["portable"],
+            "offline": bool(getattr(self.client, "offline", False)),
+            "offlineCoverage": {"availableAssets": len(self.client.assets), "totalAssets": None, "complete": False,
+                                "scope": "Visible unnamed clusters and their still photos; named people may have partial coverage"} if isinstance(self.client, OfflineClient) else None,
             "version": version,
             "connection": dict(getattr(self.client, "connection_metadata", {})) if connected else {},
             "capabilities": {"unnamedGroupMerge": True},
@@ -1209,6 +1448,9 @@ class AppState:
                 scan = inventory.get(person["id"])
                 current = self.face_inventory_current(scan, person)
                 complete = bool(current and scan["complete"])
+                if isinstance(self.client, OfflineClient):
+                    person["offlineCoverage"] = self.client.coverage(person["id"])
+                    complete = complete and person["offlineCoverage"]["complete"]
                 known = int(scan["total"]) if current else 0
                 reviewed = int(scan["handled"] or 0) if current and complete else saved_counts.get(person["id"], 0)
                 person["reviewedCount"] = reviewed
@@ -1279,13 +1521,14 @@ class AppState:
             order = payload.get("order")
             if minimum < 2 or minimum > 20 or order not in GROUP_ORDERS or not isinstance(payload.get("includeArchived"), bool):
                 raise ToolError("Invalid Group photos settings")
-            old = self.group_settings()
-            self.store.set_setting("group_min_faces", str(minimum))
-            self.store.set_setting("group_archived", "true" if payload["includeArchived"] else "false")
-            self.store.set_setting("group_order", order)
-            if minimum != old["minFaces"] or payload["includeArchived"] != old["includeArchived"]:
-                self.store.restart_group_initial()
-                self.invalidate_group_scan()
+            with self.store.workflow_transaction("group_settings"):
+                old = self.group_settings()
+                self.store.set_setting("group_min_faces", str(minimum))
+                self.store.set_setting("group_archived", "true" if payload["includeArchived"] else "false")
+                self.store.set_setting("group_order", order)
+                if minimum != old["minFaces"] or payload["includeArchived"] != old["includeArchived"]:
+                    self.store.restart_group_initial()
+                    self.invalidate_group_scan()
             return self.group_settings()
 
     def _group_actionable(self, person_id: str | None, pending_ids: set[str], merge_targets: set[str]) -> bool:
@@ -1438,7 +1681,7 @@ class AppState:
         threading.Thread(target=self._group_scan, args=(generation, client, person_ids), daemon=True).start()
 
     @local_mutation
-    def group_photo_state(self) -> dict[str, Any]:
+    def group_photo_state(self, *, _repairs: list[tuple[str, tuple[Any, ...]]] | None = None) -> dict[str, Any]:
         self.start_group_scan()
         with self.group_lock:
             settings = self.group_settings()
@@ -1458,24 +1701,30 @@ class AppState:
             deferred_pass = self.store.setting("group_pass", "initial") == "deferred"
             current = self.store.setting("group_current")
             indexed_ids = {row["id"] for row in candidates}
+            # Project the repair plan locally while the remote reads are still
+            # ahead. Only the final application opens a writer transaction.
+            repairs: list[tuple[str, tuple[Any, ...]]] = []
+
+            def mark_done(asset_id: str) -> None:
+                repairs.append(("group_advance", (asset_id, "done", [])))
+                progress[asset_id] = "done"
+
             reopened = False
             for candidate in candidates:
                 status = progress.get(candidate["id"])
                 if status == "done" and candidate["unnamedCount"]:
-                    self.store.clear_group_progress(candidate["id"])
+                    repairs.append(("clear_group_progress", (candidate["id"],)))
                     progress.pop(candidate["id"], None)
                     reopened = True
                 elif status != "done" and not candidate["unnamedCount"]:
-                    self.store.group_advance(candidate["id"], "done", [])
-                    progress[candidate["id"]] = "done"
+                    mark_done(candidate["id"])
             if complete and not failures:
                 for asset_id, status in list(progress.items()):
                     if status in {"deferred", "ready"} and asset_id not in indexed_ids:
-                        self.store.group_advance(asset_id, "done", [])
-                        progress[asset_id] = "done"
+                        mark_done(asset_id)
             if reopened and deferred_pass:
-                self.store.restart_group_initial()
-                progress = self.store.group_progress()
+                repairs.append(("restart_group_initial", ()))
+                progress = {key: "deferred" if value == "ready" else value for key, value in progress.items()}
                 deferred_pass = False
                 current = ""
             eligible = [row for row in candidates if (progress.get(row["id"]) == "ready" if deferred_pass else row["id"] not in progress)]
@@ -1487,7 +1736,7 @@ class AppState:
                     client = self.require_client()
                     asset = client.asset(candidate["id"])
                     if not group_asset_allowed(asset, settings["includeArchived"]):
-                        self.store.group_advance(candidate["id"], "done", [])
+                        mark_done(candidate["id"])
                         continue
                     faces, actionable = self._group_face_data(client.faces(candidate["id"]))
                 except Exception:
@@ -1495,14 +1744,19 @@ class AppState:
                         self.group_failures += 1
                     break
                 if len(faces) < settings["minFaces"] or not actionable:
-                    self.store.group_advance(candidate["id"], "done", [])
+                    mark_done(candidate["id"])
                     continue
                 if current != candidate["id"]:
-                    self.store.set_setting("group_current", candidate["id"])
+                    repairs.append(("set_setting", ("group_current", candidate["id"])))
                 photo = {key: value for key, value in candidate.items() if key != "clusterCounts"}
                 photo.update({"faces": faces, "drafts": self.store.group_drafts(candidate["id"]), "unnamedCount": sum(face["status"] == "actionable" for face in faces)})
                 break
-            progress = self.store.group_progress()
+            if _repairs is not None:
+                _repairs.extend(repairs)
+            elif repairs:
+                with self.store.workflow_transaction("group_photo_repairs", origin="local_maintenance"):
+                    for method, args in repairs:
+                        getattr(self.store, method)(*args)
             deferred = sum(status == "deferred" for status in progress.values())
             with self.lock:
                 failures = self.group_failures
@@ -1597,10 +1851,14 @@ class AppState:
     @local_mutation
     def start_group_deferred(self) -> dict[str, Any]:
         with self.group_lock:
-            state = self.group_photo_state()
+            repairs = []
+            state = self.group_photo_state(_repairs=repairs)
             if not state["checkpoint"] or state["deferred"] == 0:
                 raise ToolError("Deferred photos are not ready for review")
-            self.store.start_group_deferred()
+            with self.store.workflow_transaction("group_deferred_pass"):
+                for method, args in repairs:
+                    getattr(self.store, method)(*args)
+                self.store.start_group_deferred()
             return {"ok": True}
 
     @local_mutation
@@ -1631,9 +1889,10 @@ class AppState:
                 raise ToolError("Merge target does not have a current or pending name")
             payload["targetName"] = target_name
             payload["name"] = target_name
-        self.store.upsert_pending(payload)
-        self.store.unmark_investigate(person_id)
-        self.store.clear_progress(person_id)
+        with self.store.workflow_transaction("person_queue"):
+            self.store.upsert_pending(payload)
+            self.store.unmark_investigate(person_id)
+            self.store.clear_progress(person_id)
 
     @local_mutation
     def queue_merge_group(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1691,10 +1950,11 @@ class AppState:
             )
             result = {"targetPersonId": survivor_id, "targetName": name, "merged": len(person_ids) - 1, "renamed": bool(name)}
 
-        self.store.upsert_pending_many(entries)
-        for person_id in person_ids:
-            self.store.unmark_investigate(person_id)
-            self.store.clear_progress(person_id)
+        with self.store.workflow_transaction("merge_group"):
+            self.store.upsert_pending_many(entries)
+            for person_id in person_ids:
+                self.store.unmark_investigate(person_id)
+                self.store.clear_progress(person_id)
         return result
 
     def pending_public(self, rows: list[dict[str, Any]] | None = None,
@@ -1730,17 +1990,33 @@ class AppState:
                 "lastError": row["last_error"], "currentName": person.get("name", ""),
                 "assetCount": person.get("assetCount"),
             })
+        guarded = {}
+        for row in [*rows, *face_rows]:
+            if row.get("_review_guard"):
+                guarded[row.get("face_id", row.get("person_id"))] = json.loads(row["_review_guard"][2])
+        for item in result:
+            guard = guarded.get(item.get("faceId", item.get("personId")), {})
+            if guard.get("status") == "baseline_unverified":
+                item["guardStatus"] = "baseline_unverified"
+                item["guardReason"] = "Use Reload, then review Pending again before Sync. Your local intent is saved."
         return result
 
     def pending_data(self) -> dict[str, Any]:
         rows, faces = self.store.pending_snapshot()
-        return {"pending": self.pending_public(rows, faces), "reviewToken": pending_review_token(rows, faces)}
+        return {"pending": self.pending_public(rows, faces), "reviewToken": pending_review_token(rows, faces),
+                "offlineConflicts": self.offline.prune_conflicts()}
 
     def pending_page(self, page: int, size: int) -> dict[str, Any]:
         data = self.pending_data()
-        return {**paginate(data["pending"], page, size, "pending"), "reviewToken": data["reviewToken"]}
+        return {**paginate(data["pending"], page, size, "pending"), "reviewToken": data["reviewToken"],
+                "offlineConflicts": data["offlineConflicts"]}
 
     def scan_face_review_page(self, active_person_id: str = "", retry_failed: bool = False) -> dict[str, Any]:
+        if isinstance(self.client, OfflineClient):
+            # A partial offline library cannot establish a global review inventory.
+            # Individual available photos remain pageable and editable on demand.
+            return {"busy": False, "personId": "", "progress": None, "complete": 0,
+                    "total": len(self.people), "failed": 0, "done": True, "offline": True}
         if active_person_id and not UUID_RE.fullmatch(active_person_id):
             raise ToolError("Invalid active person ID")
         if not self.face_scan_lock.acquire(blocking=False):
@@ -1847,12 +2123,14 @@ class AppState:
             face["queued"] = face["faceId"] in queued
             face["reviewed"] = face["faceId"] in reviewed
             face["draftVerdict"] = drafts[face["faceId"]]["verdict"] if face["faceId"] in drafts else None
-        self.store.record_face_review_page(person_id, page, size, faces, has_more, person.get("assetCount"),
+        coverage = client.coverage(person_id) if isinstance(client, OfflineClient) else None
+        self.store.record_face_review_page(person_id, page, size, faces, has_more or bool(coverage and not coverage["complete"]), person.get("assetCount"),
                                            str(person.get("updatedAt") or ""))
         counts = self.face_review_progress(person_id, person)
         pages = max(1, (total + size - 1) // size)
         return {
             "faces": faces, "page": page, "size": size, "pages": pages,
+            "offlineCoverage": coverage,
             "hasPrevious": page > 1, "hasNext": has_more, "hasMore": has_more,
             "from": (page - 1) * size + 1 if total else 0,
             "to": min(page * size, total), "total": total, "totalAssets": total,
@@ -1877,6 +2155,8 @@ class AppState:
         if not self.face_inventory_current(scan, person):
             inventory, scan = set(), None
         complete = bool(scan and scan["complete"])
+        if isinstance(self.client, OfflineClient):
+            complete = complete and self.client.coverage(person_id)["complete"]
         queued = {row["face_id"] for row in self.store.face_detaches() if row["source_person_id"] == person_id}
         drafts = self.store.face_review_drafts(person_id)
         draft_correct = {row["face_id"] for row in drafts if row["verdict"] == "correct"}
@@ -2012,14 +2292,16 @@ class AppState:
                 break
         if not matching:
             raise ToolError("This face is no longer assigned to that person")
-        self.store.queue_face_detach(face_id, person_id, asset_id, str(payload.get("fileName") or ""))
-        self.store.set_face_reviewed(face_id, person_id, False)
+        with self.store.workflow_transaction("face_detach"):
+            self.store.queue_face_detach(face_id, person_id, asset_id, str(payload.get("fileName") or ""))
+            self.store.set_face_reviewed(face_id, person_id, False)
 
     @local_mutation
     def discard_pending(self) -> int:
         with self.group_lock:
-            discarded = self.store.clear_pending()
-            self.store.reset_group_pass()
+            with self.store.workflow_transaction("discard_pending"):
+                discarded = self.store.clear_pending()
+                self.store.reset_group_pass()
             self.invalidate_group_scan()
             with self.lock:
                 self.sample_cache = {}
@@ -2137,12 +2419,19 @@ class AppState:
             self.sync_lock.release()
 
     def _sync(self, review_token: str | None = None) -> dict[str, Any]:
+        self.assert_online()
         all_pending, all_face_pending = self.store.pending_snapshot()
         if review_token is not None and (not isinstance(review_token, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", review_token)
                 or not secrets.compare_digest(review_token, pending_review_token(all_pending, all_face_pending))):
             raise SyncInProgress("Pending changed; review updated selections before syncing again.")
         client = self.require_client()
+        if getattr(client, "offline", False):
+            raise OfflineError("Reconnect to Immich, review Pending and explicitly Sync.")
+        self.transfers.validate_pending(client, all_pending, all_face_pending)
+        conflicts = self.offline.validate(client, all_pending, all_face_pending)
+        if conflicts:
+            raise OfflineConflict(conflicts)
         draft_people = {row["person_id"] for row in self.store.face_review_drafts()}
         pending_by_id = {row["person_id"]: row for row in all_pending}
         rows = [row for row in all_pending if row["included"]]
@@ -2152,25 +2441,39 @@ class AppState:
         rows.sort(key=lambda row: (priority.get(row["operation"], 9), row["created_at"], row["person_id"]))
         results = []
         failed_ids: set[str] = set()
+
+        def checkpoint(write, *args: Any) -> None:
+            with self.store.workflow_transaction(write.__name__, origin="sync_checkpoint"):
+                write(*args)
+
         for row in face_rows:
             face_id = row["face_id"]
             try:
+                self.transfers.action_ready("face_detach_pending", face_id)
                 self.store.invalidate_face_review_inventory(row["source_person_id"])
                 target_id = row.get("target_person_id")
                 if not target_id:
-                    target_id = client.create_person()["id"]
-                    self.store.set_face_detach_target(face_id, target_id)
+                    self.transfers.before_create(row)
+                    try:
+                        target_id = client.create_person()["id"]
+                    except UpstreamError as exc:
+                        if exc.status in {400, 401, 403, 404}:
+                            self.transfers.create_refused(row)
+                        raise
+                    checkpoint(self.store.set_face_detach_target, face_id, target_id)
+                    if not self.transfers.effect("create", row, target_id):
+                        raise ToolError("Created face target could not be verified; reconcile before retrying")
                 self.store.invalidate_face_review_inventory(target_id)
                 client.reassign_face(target_id, face_id)
-                self.store.remove_face_detach(face_id)
-                self.store.remove_face_review(face_id)
+                self.transfers.effect("detach", row, target_id)
+                checkpoint(self.store.remove_face_detach, face_id)
                 results.append({
                     "faceId": face_id, "personId": row["source_person_id"],
                     "operation": "detach-face", "result": "synced", "targetPersonId": target_id,
                 })
             except Exception as exc:
                 unresolved_faces.add(row["source_person_id"])
-                self.store.set_face_detach_error(face_id, str(exc))
+                checkpoint(self.store.set_face_detach_error, face_id, str(exc))
                 results.append({
                     "faceId": face_id, "personId": row["source_person_id"],
                     "operation": "detach-face", "result": "failed", "error": str(exc),
@@ -2178,6 +2481,7 @@ class AppState:
         for row in rows:
             person_id = row["person_id"]
             try:
+                self.transfers.action_ready("pending", person_id)
                 operation = row["operation"]
                 target_id = row.get("target_person_id") if operation == "merge" else None
                 if person_id in draft_people or target_id in draft_people:
@@ -2189,6 +2493,7 @@ class AppState:
                     if row.get("feature_asset_id"):
                         body["featureFaceAssetId"] = row["feature_asset_id"]
                     client.update_person(person_id, body)
+                    self.transfers.effect("rename", row)
                 elif operation == "merge":
                     target_id = row.get("target_person_id")
                     if not target_id:
@@ -2202,38 +2507,44 @@ class AppState:
                     self.store.invalidate_face_review_inventory(target_id)
                     step = row["merge_step"]
                     if step in {"inflight", "uncertain"}:
-                        self.store.set_merge_step(person_id, "uncertain")
+                        checkpoint(self.store.set_merge_step, person_id, "uncertain")
                         raise MergeUncertain("Merge outcome is uncertain. Check source and destination in Immich; remove this request only after reconciling the result. Sync will not repeat the merge automatically.")
                     if step != "complete":
                         # Commit before the request: a crash or lost reply must not
                         # automatically replay a possibly completed upstream merge.
-                        self.store.set_merge_step(person_id, "inflight")
+                        checkpoint(self.store.set_merge_step, person_id, "inflight")
                         try:
                             client.merge(target_id, person_id)
                         except MergeRejected:
-                            self.store.set_merge_step(person_id, "ready")
+                            checkpoint(self.store.set_merge_step, person_id, "ready")
                             raise
                         except Exception:
-                            self.store.set_merge_step(person_id, "uncertain")
+                            checkpoint(self.store.set_merge_step, person_id, "uncertain")
                             raise
-                        self.store.set_merge_step(person_id, "complete")
+                        checkpoint(self.store.set_merge_step, person_id, "complete")
+                        if not self.transfers.effect("merge", row, target_id):
+                            raise ToolError("Merge completed; its remaining target facts require reconciliation")
                     if row.get("feature_asset_id"):
                         try:
                             client.update_person(target_id, {"featureFaceAssetId": row["feature_asset_id"]})
+                            self.transfers.effect("feature", row, target_id)
                         except Exception as exc:
                             raise ToolError("Merge completed; representative photo update failed. Retry Sync to apply only the photo update. " + str(exc)) from exc
                 elif operation == "hide":
                     client.update_person(person_id, {"isHidden": True})
+                    self.transfers.effect("hide", row)
                 elif operation == "unhide":
                     client.update_person(person_id, {"isHidden": False})
+                    self.transfers.effect("unhide", row)
                 else:
                     raise ToolError("Unsupported pending operation")
-                self.store.remove_pending(person_id)
-                self.store.clear_progress(person_id)
+                with self.store.workflow_transaction("person_synced", origin="sync_checkpoint"):
+                    self.store.remove_pending(person_id)
+                    self.store.clear_progress(person_id)
                 results.append({"personId": person_id, "operation": operation, "result": "synced"})
             except Exception as exc:
                 failed_ids.add(person_id)
-                self.store.set_error(person_id, str(exc))
+                checkpoint(self.store.set_error, person_id, str(exc))
                 results.append({"personId": person_id, "operation": row["operation"], "result": "failed", "error": str(exc)})
         self.reports.mkdir(parents=True, exist_ok=True)
         report = self.reports / f"sync-{dt.datetime.now().astimezone():%Y%m%d-%H%M%S}.json"
@@ -2241,6 +2552,7 @@ class AppState:
         temp.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temp, report)
         if rows or face_rows:
+            self.offline.refresh_after_sync(client, rows, face_rows, results)
             self.load()
         return {"results": results, "failed": sum(item["result"] == "failed" for item in results), "report": str(report)}
 
@@ -2328,6 +2640,7 @@ class AdminSession:
             return version, self.cookie
 
     def login(self, url: str, email: str, password: str, insecure: bool) -> tuple[str, str]:
+        self.state.assert_online()
         if not email.strip() or not password:
             raise ToolError("Immich email and password are required")
         with mutation_guard(self.state.mutation_lock):
@@ -2342,6 +2655,7 @@ class AdminSession:
             return self._install(client, identity, client.version())
 
     def connect_key(self, url: str, key: str, insecure: bool) -> tuple[str, str]:
+        self.state.assert_online()
         if not isinstance(url, str):
             raise AuthenticationError("Enter a valid Immich URL.", "invalid_input")
         if not isinstance(key, str) or not key.strip() or any(ord(c) < 32 or ord(c) == 127 for c in key):
@@ -2368,6 +2682,8 @@ class AdminSession:
         epoch, client, user_id, mode, expires, checked = snapshot
         if time.monotonic() >= expires or client is None:
             raise AuthenticationError("Your Workbench connection expired. Reconnect; local work is saved.", "session_expired")
+        if mode == "offline":
+            return client.connection_metadata
         if mode == "apiKey":
             identity = self.key_identity(client)
             actual_user = identity["userId"]
@@ -2438,6 +2754,7 @@ class AdminSession:
                 raise AuthenticationError("Reconnect with the required permissions; local work is saved.", "missing_permissions", missing)
 
     def sync(self, cookie: str, review_token: str) -> dict[str, Any]:
+        self.state.assert_online()
         if not self.state.sync_lock.acquire(blocking=False):
             raise SyncInProgress("Sync already in progress")
         try:
@@ -2445,6 +2762,8 @@ class AdminSession:
                 snapshot = self._snapshot(cookie)
                 if snapshot is None:
                     raise AuthenticationError("Sign in required", "session_expired")
+                if snapshot[3] == "offline":
+                    raise OfflineError("Reconnect to Immich, review Pending and explicitly Sync.")
                 try:
                     identity = self._verify(snapshot)
                 except AuthenticationError as exc:
@@ -2466,6 +2785,24 @@ class AdminSession:
         with mutation_guard(self.state.mutation_lock), self.lock:
             if cookie and cookie.isascii() and self.cookie and secrets.compare_digest(cookie, self.cookie):
                 self._clear()
+
+    def open_offline(self) -> str:
+        policy = self.state.portable_policy()
+        if policy["portable"] and not policy["valid"]:
+            raise workspace_state.WorkspaceError("Portable workspace is incomplete or damaged.", "portable_invalid")
+        with mutation_guard(self.state.mutation_lock), self.lock:
+            self.state.offline.cancel()
+            client = self.state.offline.open_client()
+            self.state.disconnect()
+            self.state.client, self.state.version = client, client.version()
+            self.state.people = {p["id"]: p for p in client.all_people()}
+            self.state.set_status("ready", "Offline workspace open; changes stay local until reconnect and explicit Sync")
+            self.epoch += 1
+            self.mode, self.user_id = "offline", client.snapshot["owner"]["userId"]
+            self.cookie = secrets.token_urlsafe(32)
+            self.expires = time.monotonic() + SESSION_SECONDS
+            self.checked = time.monotonic()
+            return self.cookie
 
     def _clear(self) -> None:
         # Call only under mutation_lock then auth.lock; persistent work is retained.
@@ -2572,6 +2909,45 @@ class Handler(BaseHTTPRequestHandler):
     def same_origin(self) -> bool:
         return self.policy.same_origin(self.headers, self.client_address[0])
 
+    def offline_local(self) -> bool:
+        """Offline private data is available only on an actual loopback listener."""
+        try:
+            listener = self.server.server_address[0]
+            host = urllib.parse.urlsplit("http://" + self.headers.get("Host", "")).hostname
+            return (ipaddress.ip_address(listener).is_loopback
+                    and ipaddress.ip_address(self.client_address[0]).is_loopback
+                    and (host == "localhost" or ipaddress.ip_address(host).is_loopback)
+                    and not self.headers.get("Forwarded") and not self.headers.get("X-Forwarded-For")
+                    and not self.headers.get("X-Forwarded-Host"))
+        except (ValueError, TypeError):
+            return False
+
+    def authorization(self):
+        policy = STATE.portable_policy()
+        if policy["portable"] and (not policy["valid"] or AUTH.mode != "offline"):
+            return False, None
+        if AUTH.mode == "offline" and not self.offline_local():
+            return False, None
+        return AUTH.authorization(self.session_cookie())
+
+    def original(self, asset_id: str) -> None:
+        client = STATE.require_client()
+        if not isinstance(client, OfflineClient):
+            raise OfflineError("Original media is available through the prepared offline workspace")
+        item = client.snapshot["media"]["originals"].get(asset_id)
+        if not item:
+            raise OfflineError("Original is not available offline")
+        path = STATE.offline.media_path(client.snapshot, item["path"])
+        with path.open("rb") as stream:
+            self.send_response(200)
+            self.send_header("Content-Type", item["mime"])
+            self.send_header("Content-Security-Policy", "sandbox; default-src 'none'")
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            shutil.copyfileobj(stream, self.wfile, length=1024 * 1024)
+
     def redirect(self, location: str) -> None:
         self.send_response(303)
         self.send_header("Location", location)
@@ -2602,17 +2978,148 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0 or length > MAX_BODY:
-            raise ToolError("Invalid request size")
+    def body(self, limit: int = MAX_BODY) -> dict[str, Any]:
+        sizes = self.headers.get_all("Content-Length", [])
+        if len(sizes) != 1 or not sizes[0].isdigit() or self.headers.get("Transfer-Encoding"):
+            raise workspace_state.WorkspaceError("Invalid request framing.")
+        length = int(sizes[0])
+        if length <= 0:
+            raise workspace_state.WorkspaceError("Invalid request size.")
+        if length > limit:
+            raise workspace_state.WorkspaceError("Request exceeds its size limit.", "resource_limit")
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise workspace_state.WorkspaceError("Duplicate request field.")
+                value[key] = item
+            return value
         try:
-            value = json.loads(self.rfile.read(length))
-        except json.JSONDecodeError as exc:
+            data = self.rfile.read(length)
+            if len(data) != length:
+                raise workspace_state.WorkspaceError("Incomplete request body.")
+            value = json.loads(data, object_pairs_hook=unique)
+        except (UnicodeError, json.JSONDecodeError) as exc:
             raise ToolError("Invalid JSON") from exc
         if not isinstance(value, dict):
             raise ToolError("JSON object required")
         return value
+
+    def transfer_error(self, exc) -> None:
+        code = getattr(exc, "code", "invalid_results")
+        status = {"resource_limit": 413, "source_mismatch": 403, "portable_restricted": 403, "portable_invalid": 403,
+                  "mutation_busy": 409, "resource_busy": 409, "preview_capacity": 409, "preview_expired": 409, "preview_stale": 409,
+                  "not_ready": 409, "storage_quota": 409, "snapshot_quota": 409, "cancelled": 409, "baseline_unverified": 409,
+                  "validation_timeout": 504, "export_timeout": 504, "insufficient_storage": 507,
+                  "snapshot_failed": 500, "import_failed": 500}.get(code, 400)
+        self.send_json({"error": str(exc), "code": code}, status)
+
+    def transfer_context(self):
+        with AUTH.lock:
+            return (AUTH.epoch, AUTH.user_id, id(STATE.client))
+
+    def private_download_origin(self):
+        return self.headers.get("Sec-Fetch-Site") != "cross-site" and (not self.headers.get_all("Origin", []) or self.same_origin())
+
+    def download(self, path: Path, filename: str, kind: str = "application/zip"):
+        if not self.private_download_origin():
+            raise workspace_state.WorkspaceError("Invalid download origin.", "source_mismatch")
+        with path.open("rb") as stream:
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Disposition", 'attachment; filename="' + filename + '"')
+            self.send_header("Content-Length", str(os.fstat(stream.fileno()).st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            shutil.copyfileobj(stream, self.wfile, length=1024 * 1024)
+
+    def offline_get(self, path):
+        if not self.private_download_origin():
+            raise workspace_state.WorkspaceError("Invalid download origin.", "source_mismatch")
+        if path == "/api/offline/packages":
+            STATE.assert_online()
+            with STATE.store.connect() as db:
+                snapshots = workspace_state.list_snapshots(db)
+            self.send_json({"portable": False, "workspaces": STATE.package_manager().list(), "snapshots": snapshots})
+        elif path == "/api/offline/results":
+            policy = STATE.portable_policy()
+            if not policy["portable"] or not policy["valid"] or AUTH.mode != "offline":
+                raise workspace_state.WorkspaceError("Open a valid portable workspace to return changes.", "portable_restricted")
+            from workspace_packages import write_results_zip
+            artifact = None
+            try:
+                with STATE.store.workflow_transaction("results_export") as db:
+                    result = workspace_state.compute_changes(db)
+                    artifact = write_results_zip(result, STATE.store.path.parent)
+                    workspace_state.note_results_emitted(db, result)
+                self.download(artifact.path, "offline-changes.zip")
+            finally:
+                if artifact is not None:
+                    artifact.path.unlink(missing_ok=True)
+        elif re.fullmatch(r"/api/offline/packages/[0-9a-f-]{36}/download", path):
+            export_id = path.split("/")[4]
+            self.download(STATE.package_manager().download(export_id), "people-workbench-" + export_id + ".zip")
+        elif re.fullmatch(r"/api/offline/state-snapshots/[0-9a-f-]{36}/download", path):
+            STATE.assert_online()
+            snapshot_id = path.split("/")[4]
+            with STATE.store.connect() as db:
+                _, body = workspace_state.read_snapshot(db, snapshot_id)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Disposition", 'attachment; filename="workbench-state-' + snapshot_id + '.json"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            for offset in range(0, len(body), 1024 * 1024):
+                self.wfile.write(body[offset:offset + 1024 * 1024])
+        else:
+            return False
+        return True
+
+    def offline_post(self, path):
+        known = {"/api/offline/packages", "/api/offline/import/preview", "/api/offline/import/preview/page", "/api/offline/import/apply", "/api/offline/state-snapshots"}
+        if path not in known and not re.fullmatch(r"/api/offline/packages/[0-9a-f-]{36}/cancel", path):
+            return False
+        STATE.assert_online()
+        AUTH.require_capabilities(self.session_cookie())
+        context = self.transfer_context()
+        if path == "/api/offline/import/preview":
+            with STATE.transfers.slot():
+                payload = self.body(24 * 1024 ** 2)
+                if set(payload) != {"zipBase64"} or not isinstance(payload["zipBase64"], str) or len(payload["zipBase64"]) > (16 * 1024 ** 2 + 2) // 3 * 4:
+                    raise workspace_state.WorkspaceError("Invalid results upload.", "resource_limit")
+                import base64
+                try:
+                    wire = base64.b64decode(payload["zipBase64"], validate=True)
+                except (ValueError, UnicodeError):
+                    raise workspace_state.WorkspaceError("Invalid results encoding.") from None
+                self.send_json(STATE.transfers.preview(wire, context, locked=True))
+        elif path == "/api/offline/import/preview/page":
+            payload = self.body()
+            self.send_json(STATE.transfers.page(payload.get("token"), payload.get("cursor"), context))
+        elif path == "/api/offline/import/apply":
+            payload = self.body(4 * 1024 ** 2)
+            if payload.get("confirmation") != "IMPORT_LOCAL":
+                raise workspace_state.WorkspaceError("Local import confirmation required.")
+            self.send_json(STATE.transfers.apply(payload.get("token"), payload.get("ids"), context))
+        elif path == "/api/offline/state-snapshots":
+            payload = self.body()
+            with STATE.store.workflow_transaction("manual_snapshot") as db:
+                snapshot = workspace_state.create_snapshot(db, payload.get("name", "State snapshot"), "manual")
+            self.send_json(snapshot)
+        elif path == "/api/offline/packages":
+            payload = self.body()
+            with mutation_guard(STATE.mutation_lock):
+                result = STATE.package_manager().start(payload.get("name", "Offline review"))
+            self.send_json(result, 202)
+        else:
+            self.body()
+            with mutation_guard(STATE.mutation_lock):
+                result = STATE.package_manager().cancel(path.split("/")[4])
+            self.send_json(result)
+        return True
 
     def static(self, name: str) -> None:
         target = (WEB / name).resolve()
@@ -2662,8 +3169,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect("/naming/clusters")
                 return
             if path == "/login":
-                authorized, failure = AUTH.authorization(self.session_cookie())
-                if authorized:
+                authorized, failure = self.authorization()
+                if authorized and AUTH.mode != "offline":
                     self.redirect("/")
                 elif failure and failure.reconnect and query.get("reason", [""])[0] not in CONNECTION_REASONS:
                     requested = query.get("next", ["/"])[0]
@@ -2674,7 +3181,11 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/styles.css", "/login-key.css", "/login.js"}:
                 self.static(path[1:])
                 return
-            authorized, failure = AUTH.authorization(self.session_cookie())
+            if path == "/api/offline/status":
+                authorized, _ = self.authorization()
+                self.send_json(STATE.offline.status(private=authorized))
+                return
+            authorized, failure = self.authorization()
             if not authorized:
                 if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                     self.login_redirect(path.rstrip("/") or "/", failure)
@@ -2682,16 +3193,19 @@ class Handler(BaseHTTPRequestHandler):
                     response = failure.response() if failure else {"error": "Sign in required"}
                     self.send_json(response, 401)
                 return
+            if path.startswith("/api/offline/") and self.offline_get(path):
+                return
             if path == "/" or path.rstrip("/") in PAGE_ROUTES:
                 self.static("index.html")
-            elif path in {"/app.js", "/navigation.js", "/merge.js", "/face-review.js", "/naming.js", "/group-photos.js", "/investigate.js", "/pending.js", "/browser-storage.js", "/asset-preview.js"}:
+            elif path in {"/app.js", "/navigation.js", "/merge.js", "/face-review.js", "/naming.js", "/group-photos.js", "/investigate.js", "/pending.js", "/browser-storage.js", "/asset-preview.js", "/offline.js"}:
                 self.static(path[1:])
             elif path == "/api/state":
                 self.send_json(STATE.summary())
             elif path == "/api/people":
                 kind = query.get("kind", ["unnamed"])[0]
                 order = query.get("sort", [STATE.store.setting("sort", "most")])[0]
-                STATE.store.set_setting("sort", order)
+                if "sort" in query:
+                    STATE.store.set_setting("sort", order)
                 if "page" in query or "size" in query or "q" in query or "hideCompleted" in query or "nameFilter" in query:
                     try:
                         page = int(query.get("page", ["1"])[0])
@@ -2764,12 +3278,22 @@ class Handler(BaseHTTPRequestHandler):
                 if not UUID_RE.fullmatch(asset_id):
                     raise ToolError("Invalid asset ID")
                 self.image(*STATE.require_client().request("GET", f"/assets/{asset_id}/thumbnail?size=preview"))
+            elif path.startswith("/media/original/"):
+                asset_id = path.rsplit("/", 1)[-1]
+                if not UUID_RE.fullmatch(asset_id):
+                    raise ToolError("Invalid asset ID")
+                self.original(asset_id)
             else:
                 self.send_error(404)
+        except (workspace_state.WorkspaceError, ResultsError) as exc:
+            self.transfer_error(exc)
         except SyncInProgress as exc:
-            self.send_json({"error": str(exc)}, 409)
+            self.send_json({"error": str(exc), "code": "mutation_busy"}, 409)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, 502)
+            if path.startswith("/api/offline/"):
+                self.transfer_error(workspace_state.WorkspaceError("Offline transfer failed safely; existing work is retained.", "import_failed"))
+            else:
+                self.send_json({"error": str(exc)}, 502)
 
     def do_POST(self) -> None:
         if not self.allowed():
@@ -2779,18 +3303,40 @@ class Handler(BaseHTTPRequestHandler):
         if not self.same_origin():
             self.send_json({"error": "Invalid request origin"}, 403)
             return
-        if path not in {"/api/login", "/api/connect-key"}:
-            authorized, failure = AUTH.authorization(self.session_cookie())
+        if path not in {"/api/login", "/api/connect-key", "/api/offline/open"}:
+            authorized, failure = self.authorization()
             if not authorized:
                 self.send_json(failure.response() if failure else {"error": "Sign in required"}, 401)
                 return
         try:
+            if path in {"/api/login", "/api/connect-key", "/api/sync"}:
+                STATE.assert_online()
+            if self.offline_post(path):
+                return
             guard = nullcontext() if path in {"/api/sync", "/api/face-review/scan-next", "/api/group-photos/retry"} else mutation_guard(STATE.mutation_lock)
             with guard:
                 payload = self.body()
-                if path not in {"/api/login", "/api/connect-key", "/api/logout", "/api/sync"}:
+                if path not in {"/api/login", "/api/connect-key", "/api/logout", "/api/sync", "/api/offline/open"}:
                     AUTH.require_capabilities(self.session_cookie())
-                if path == "/api/login":
+                if path == "/api/offline/open":
+                    if not self.offline_local():
+                        self.send_json({"error": "Offline workspaces require a loopback listener and direct local browser connection"}, 403)
+                        return
+                    session_cookie = AUTH.open_offline()
+                    cookie = f"{SESSION_COOKIE}={session_cookie}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS}"
+                    self.send_json({"ok": True, "offline": True}, cookie=cookie)
+                elif path == "/api/offline/plan":
+                    STATE.offline.start_plan(STATE.require_client())
+                    self.send_json(STATE.offline.status(private=True), 202)
+                elif path == "/api/offline/download":
+                    if payload.get("confirmation") != "DOWNLOAD_ORIGINALS":
+                        raise OfflineError("Original download confirmation missing")
+                    STATE.offline.start_download(STATE.require_client(), payload.get("planId"))
+                    self.send_json(STATE.offline.status(private=True), 202)
+                elif path == "/api/offline/cancel":
+                    STATE.offline.cancel()
+                    self.send_json(STATE.offline.status(private=True))
+                elif path == "/api/login":
                     try:
                         version, session_cookie = AUTH.login(str(payload.get("url", "")), str(payload.get("email", "")), str(payload.get("password", "")), bool(payload.get("insecureTls")))
                     except Exception as exc:
@@ -2812,7 +3358,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True}, cookie=f"{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
                 elif path == "/api/reload":
                     STATE.set_status("loading", "Reloading people from Immich")
-                    threading.Thread(target=STATE.load, daemon=True).start()
+                    threading.Thread(target=STATE.load, kwargs={"refresh_guards": True}, daemon=True).start()
                     self.send_json({"ok": True}, 202)
                 elif path == "/api/reset":
                     if payload.get("confirmation") != "DISCARD":
@@ -2848,7 +3394,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"ok": True})
                 elif path == "/api/pending/return":
                     person_id = str(payload.get("personId", ""))
-                    with STATE.group_lock:
+                    with STATE.group_lock, STATE.store.workflow_transaction("person_return"):
                         STATE.store.remove_pending(person_id)
                         STATE.store.skip(person_id)
                         STATE.invalidate_group_scan()
@@ -2908,12 +3454,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(AUTH.sync(self.session_cookie(), review_token if isinstance(review_token, str) else ""))
                 else:
                     self.send_error(404)
+        except (workspace_state.WorkspaceError, ResultsError) as exc:
+            self.transfer_error(exc)
+        except OfflineConflict as exc:
+            self.send_json({"error": str(exc), "offlineConflicts": exc.conflicts}, 409)
         except SyncInProgress as exc:
-            self.send_json({"error": str(exc)}, 409)
+            self.send_json({"error": str(exc), "code": "mutation_busy"}, 409)
         except AuthenticationError as exc:
             self.send_json(exc.response(), 403)
         except Exception as exc:
-            self.send_json({"error": str(exc)}, 400)
+            if path.startswith("/api/offline/") and path not in {"/api/offline/open", "/api/offline/plan", "/api/offline/download", "/api/offline/cancel"}:
+                self.transfer_error(workspace_state.WorkspaceError("Offline transfer failed safely; existing work is retained.", "import_failed"))
+            else:
+                self.send_json({"error": str(exc)}, 400)
 
 
 class WorkbenchServer(ThreadingHTTPServer):
@@ -3038,6 +3591,10 @@ def main() -> int:
             deadline = time.monotonic() + args.shutdown_timeout
             server.stop_admission()
             threading.Thread(target=enforce_deadline, daemon=True).start()
+            STATE.offline.close()
+            STATE.transfers.close()
+            if STATE._packages is not None:
+                threading.Thread(target=STATE._packages.close, daemon=True).start()
             threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, stop)
@@ -3054,6 +3611,11 @@ def main() -> int:
     finally:
         server.stop_admission()
         server.server_close()
+        if not STATE.offline.close(deadline if deadline is not None else time.monotonic() + args.shutdown_timeout):
+            force_exit()
+        STATE.transfers.close()
+        if STATE._packages is not None:
+            STATE._packages.close()
     if not server.drain(deadline if deadline is not None else time.monotonic() + args.shutdown_timeout):
         force_exit()
     return 0

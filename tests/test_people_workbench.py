@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import people_workbench as workbench
+from workspace_state import action_head, set_action_guard
 from people_workbench import AdminSession, AppState, Handler, Immich, Store, ToolError, group_asset_allowed, name_fragment_matches, paginate, sort_group_assets, sort_people
 
 
@@ -1259,6 +1260,28 @@ class GroupPhotoTests(unittest.TestCase):
             time.sleep(.01)
         self.fail("Group photo scan did not finish")
 
+    def test_group_get_reads_upstream_before_atomic_repair_commit(self):
+        self.app.start_group_scan()
+        self.wait_scan()
+        self.store.group_advance(self.PHOTO, "done", [])
+        before = self.store.group_progress()
+        original_asset, original_faces = self.fake.asset, self.fake.faces
+        def checked(method):
+            def call(asset_id):
+                self.assertIsNone(getattr(self.store._workflow, "connection", None))
+                with closing(sqlite3.connect(self.store.path, timeout=0)) as writer, writer:
+                    writer.execute("BEGIN IMMEDIATE")
+                return method(asset_id)
+            return call
+        self.fake.asset, self.fake.faces = checked(original_asset), checked(original_faces)
+        with mock.patch.object(workbench, "record_event", side_effect=RuntimeError("synthetic journal failure")):
+            with self.assertRaisesRegex(RuntimeError, "synthetic journal failure"):
+                self.app.group_photo_state()
+        self.assertEqual(self.store.group_progress(), before)
+        self.assertEqual(self.store.setting("group_current"), "")
+        self.assertEqual(self.app.group_photo_state()["photo"]["id"], self.PHOTO)
+        self.assertNotIn(self.PHOTO, self.store.group_progress())
+
     def test_group_asset_rules_and_ordering(self):
         self.assertTrue(group_asset_allowed({"type": "IMAGE", "visibility": "archive"}, True))
         self.assertFalse(group_asset_allowed({"type": "IMAGE", "visibility": "archive"}, False))
@@ -1832,6 +1855,12 @@ class ReleaseSafetyTests(unittest.TestCase):
                         with self.assertRaises(urllib.error.HTTPError) as caught: urllib.request.urlopen(request)
                         self.assertEqual(caught.exception.code, 409)
                         self.assertIn("error", json.loads(caught.exception.read()))
+                request = urllib.request.Request(base+"/api/people?sort=fewest",
+                    headers={"Cookie":"people_workbench_session=synthetic-session"})
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(request)
+                self.assertEqual(caught.exception.code, 409)
+                self.assertEqual(self.store.setting("sort"), "")
                 for path in ["/api/state", "/api/pending", "/api/people", "/api/names"]:
                     with urllib.request.urlopen(urllib.request.Request(base+path, headers={"Cookie":"people_workbench_session=synthetic-session"})) as response:
                         self.assertEqual(response.status, 200)
@@ -1839,6 +1868,135 @@ class ReleaseSafetyTests(unittest.TestCase):
                 server.shutdown(); server.server_close(); server_thread.join(5)
         release.set(); sync_thread.join(10)
         self.assertFalse(errors); self.assertEqual(results[0]["failed"], 0)
+
+
+class WorkflowTransactionTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.store = Store(Path(self.directory.name) / "state.sqlite3")
+        self.app = AppState(self.store, Path(self.directory.name) / "reports")
+        self.fake = FakeImmich()
+        self.app.client = self.fake
+        self.app.people = {row["id"]: row for row in self.fake.rows}
+        self.source = self.fake.rows[0]["id"]
+
+    def revision(self):
+        with self.store.connect() as db:
+            return workbench.state_revision(db)
+
+    def test_nested_helpers_borrow_one_connection_and_commit_one_event(self):
+        with mock.patch.object(workbench, "record_event", wraps=workbench.record_event) as record:
+            with self.store.workflow_transaction("test_compound") as outer:
+                self.store.skip(self.source)
+                with self.store.connect() as inner:
+                    self.assertIs(inner, outer)
+                self.assertTrue(outer.in_transaction)
+                self.store.mark_investigate(self.source)
+                with closing(sqlite3.connect(self.store.path)) as observer:
+                    self.assertEqual(observer.execute("SELECT COUNT(*) FROM progress").fetchone()[0], 0)
+            self.assertEqual(record.call_count, 1)
+        self.assertEqual(self.store.skips()[self.source], 1)
+        self.assertIn(self.source, self.store.investigate_ids())
+
+    def test_caught_nested_failure_still_rolls_back_entire_action(self):
+        before = self.revision()
+        with self.assertRaisesRegex(ToolError, "no changes were saved"):
+            with self.store.workflow_transaction("test_failure"):
+                self.store.skip(self.source)
+                try:
+                    with self.store.connect() as db:
+                        db.execute("INSERT INTO nonexistent_table VALUES(1)")
+                except sqlite3.OperationalError:
+                    pass
+        self.assertEqual(self.store.skips(), {})
+        self.assertEqual(self.revision(), before)
+
+    def test_queue_cleanup_failure_rolls_back_pending_and_revision(self):
+        self.store.skip(self.source)
+        self.store.mark_investigate(self.source)
+        before = self.revision()
+        with mock.patch.object(self.store, "clear_progress", side_effect=RuntimeError("synthetic cleanup failure")):
+            with self.assertRaisesRegex(RuntimeError, "synthetic cleanup failure"):
+                self.app.queue({"personId": self.source, "operation": "rename", "name": "Demo Name"})
+        self.assertEqual(self.store.pending(), [])
+        self.assertIn(self.source, self.store.investigate_ids())
+        self.assertEqual(self.store.skips()[self.source], 1)
+        self.assertEqual(self.revision(), before)
+        self.assertEqual(self.fake.calls, [])
+
+    def test_reset_failure_preserves_pending_and_group_progress(self):
+        self.store.upsert_pending({"personId": self.source, "operation": "rename", "name": "Demo Name"})
+        self.store.group_advance("synthetic-photo", "deferred", [])
+        before = self.revision()
+        with mock.patch.object(self.store, "reset_group_pass", side_effect=RuntimeError("synthetic reset failure")):
+            with self.assertRaisesRegex(RuntimeError, "synthetic reset failure"):
+                self.app.discard_pending()
+        self.assertEqual(len(self.store.pending()), 1)
+        self.assertEqual(self.store.group_progress(), {"synthetic-photo": "deferred"})
+        self.assertEqual(self.revision(), before)
+
+    def test_event_failure_rolls_back_successful_workflow_writes(self):
+        before = self.revision()
+        with mock.patch.object(workbench, "record_event", side_effect=RuntimeError("synthetic event failure")):
+            with self.assertRaisesRegex(RuntimeError, "synthetic event failure"):
+                self.store.skip(self.source)
+        self.assertEqual(self.store.skips(), {})
+        self.assertEqual(self.revision(), before)
+
+    def test_safe_setting_unchanged_is_noop_and_changed_value_is_busy(self):
+        self.store.set_setting("sort", "most")
+        before = self.revision()
+        started, release = threading.Event(), threading.Event()
+        def hold():
+            with workbench.mutation_guard(self.store.mutation_lock):
+                started.set()
+                release.wait(5)
+        thread = threading.Thread(target=hold)
+        thread.start()
+        self.assertTrue(started.wait(5))
+        try:
+            self.store.set_setting("sort", "most")
+            with self.assertRaises(workbench.SyncInProgress):
+                self.store.set_setting("sort", "fewest")
+        finally:
+            release.set()
+            thread.join(5)
+        self.assertEqual(self.revision(), before)
+
+    def test_guard_refresh_invalidates_review_token_without_exposing_guard(self):
+        self.app.queue({"personId": self.source, "operation": "rename", "name": "Demo Name"})
+        before = self.app.pending_data()
+        with self.store.workflow_transaction("review_refresh") as db:
+            set_action_guard(db, "pending", [self.source], {"status": "verified"})
+        after = self.app.pending_data()
+        self.assertEqual(after["pending"], before["pending"])
+        self.assertNotEqual(after["reviewToken"], before["reviewToken"])
+        with self.assertRaises(workbench.SyncInProgress):
+            self.app.sync(before["reviewToken"])
+        self.assertEqual(self.fake.calls, [])
+
+    def test_successful_sync_records_terminal_disposition(self):
+        self.app.queue({"personId": self.source, "operation": "rename", "name": "Demo Name"})
+        token = self.app.pending_data()["reviewToken"]
+        self.assertEqual(self.app.sync(token)["failed"], 0)
+        with self.store.connect() as db:
+            action = action_head(db, "pending", [self.source])
+        self.assertEqual(action["disposition"], "synced")
+
+    def test_detach_validates_upstream_before_opening_writer_transaction(self):
+        asset = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        original = self.fake.faces
+        def checked_faces(asset_id):
+            self.assertIsNone(getattr(self.store._workflow, "connection", None))
+            with closing(sqlite3.connect(self.store.path, timeout=0)) as competing_writer, competing_writer:
+                competing_writer.execute("BEGIN IMMEDIATE")
+            return original(asset_id)
+        self.fake.faces = checked_faces
+        self.app.queue_face_detach({"personId": self.source, "assetId": asset,
+                                   "faceId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"})
+        self.assertEqual(len(self.store.face_detaches()), 1)
+        self.assertEqual(self.fake.calls, [])
 
 
 if __name__ == "__main__":
