@@ -6,6 +6,7 @@ import errno
 import hashlib
 import io
 import json
+import ntpath
 import os
 from pathlib import Path
 import signal
@@ -39,6 +40,61 @@ class ParallelTests(OfflineFixture, unittest.TestCase):
 
     def no_media_threads(self):
         self.assertFalse(any(t.name.startswith("offline-media") for t in threading.enumerate()))
+
+    def test_media_directories_exist_before_workers_resolve_paths(self):
+        root = self.manager.root / "snapshots" / self.manager.plan["id"]
+        original = self.manager.media_path
+        checked = set()
+        lock = threading.Lock()
+
+        def media_path(snapshot, relative):
+            if threading.current_thread().name.startswith("offline-media"):
+                kind = relative.split("/", 1)[0]
+                self.assertTrue((root / kind).is_dir(), f"{kind} directory missing before worker path resolution")
+                with lock:
+                    checked.add(kind)
+            return original(snapshot, relative)
+
+        with mock.patch.object(self.manager, "media_path", side_effect=media_path):
+            self.start()
+            self.assertEqual(self.wait_job(), "ready", self.job_diagnostic())
+        self.assertEqual(checked, {"originals", "previews"})
+        self.assertTrue((root / "people").is_dir())
+        self.assertEqual(self.client.writes, [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows final-path resolution")
+    def test_windows_preview_parent_creation_during_resolution(self):
+        # Windows realpath can retain the extended prefix when a missing-parent
+        # error becomes a missing-file error during its normalization probes.
+        self.manager.plan["assets"] = {A1: self.manager.plan["assets"][A1]}
+        self.manager.plan["faces"] = {A1: self.manager.plan["faces"][A1]}
+        root = self.manager.root / "snapshots" / self.manager.plan["id"]
+        preview = root / "previews"
+        target = ntpath.normcase(str(root.resolve() / "previews" / A1))
+        native = ntpath._getfinalpathname
+        visited, raced = threading.Event(), threading.Event()
+
+        def final_path(path):
+            is_target = ntpath.normcase(path.removeprefix("\\\\?\\")) == target
+            if is_target:
+                visited.set()
+            try:
+                return native(path)
+            except OSError as exc:
+                if is_target and exc.winerror == 3:
+                    # Deterministically model another worker creating the parent
+                    # between the first WinAPI failure and realpath's next probe.
+                    preview.mkdir(parents=True, exist_ok=True)
+                    raced.set()
+                raise
+
+        with mock.patch.object(ntpath, "_getfinalpathname", side_effect=final_path):
+            self.start()
+            self.assertEqual(self.wait_job(), "ready", self.job_diagnostic())
+        self.assertTrue(visited.is_set())
+        self.assertFalse(raced.is_set(), "workers must resolve paths only after parents exist")
+        self.assertEqual(self.manager.job["downloadedFiles"], 1)
+        self.assertEqual(self.client.writes, [])
 
     def test_three_workers_and_stage_progress_are_bounded_and_durable(self):
         self.expand()

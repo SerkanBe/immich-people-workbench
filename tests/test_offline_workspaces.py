@@ -320,8 +320,12 @@ class OfflineTests(OfflineFixture, unittest.TestCase):
     def test_relative_media_paths_cannot_escape_snapshot(self):
         snapshot = self.prepare()
         for path in ("../../../../private", str(self.directory / "private")):
-            with self.subTest(path=path), self.assertRaises(OfflineError):
-                self.manager.media_path(snapshot, path)
+            with self.subTest(path=path):
+                with self.assertRaises(OfflineError) as failure:
+                    self.manager.media_path(snapshot, path)
+                code, message = preparation_error(failure.exception, "preview")
+                self.assertEqual(code, "invalid_media_path")
+                self.assertNotIn(str(self.directory), message)
 
     def test_offline_session_reads_local_only_and_sync_refuses(self):
         auth, cookie = self.open_offline()

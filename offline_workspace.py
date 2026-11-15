@@ -75,6 +75,7 @@ def preparation_error(exc, step):
         "connection_changed": "The Workbench connection changed. Reconnect, then resume preparation.",
         "offline_work_changed": "Offline Pending or Face Review work changed. Resolve it before replacing the snapshot.",
         "invalid_metadata": "Immich returned photo or person metadata that could not be used safely.",
+        "invalid_media_path": "A cached media path does not stay inside its snapshot directory.",
     }
     if code in messages:
         message = messages[code]
@@ -268,7 +269,7 @@ class OfflineWorkspace:
         base = (self.root / "snapshots" / safe_id(snapshot["id"])).resolve()
         path = (base / relative).resolve()
         if not path.is_relative_to(base) or path == base:
-            raise OfflineError("Invalid offline media path")
+            raise OfflineError("Invalid offline media path", code="invalid_media_path")
         return path
 
     def active(self, verify=False, allow_stale=False):
@@ -572,6 +573,14 @@ class OfflineWorkspace:
             stop.check()
 
         self._check_source(client, snapshot)
+        # Create parents before parallel path resolution. On Windows, a parent
+        # appearing during realpath() can retain the extended prefix on one path
+        # but not another, making a valid child fail the containment check.
+        root = self.root / "snapshots" / safe_id(snapshot["id"])
+        root.mkdir(parents=True, exist_ok=True)
+        for kind in ("originals", "previews", "people"):
+            self._check_cancel()
+            self.media_path(snapshot, kind).mkdir(parents=True, exist_ok=True)
         valid = {}
         for aid, item in snapshot["media"]["originals"].items():
             self._check_source(client, snapshot)
